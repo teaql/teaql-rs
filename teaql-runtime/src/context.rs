@@ -445,9 +445,12 @@ impl UserContext {
         &self,
         operation: crate::RuntimeOperation,
     ) -> crate::FailOpenRuntimeTelemetryScope {
-        let telemetry: Arc<dyn crate::RuntimeTelemetry> = Arc::new(crate::runtime_logging::LocalLogTelemetry {
-            delegate: self.runtime_telemetry.clone(), logger: self.runtime_logger.clone(), error_category: None,
-        });
+        let telemetry: Arc<dyn crate::RuntimeTelemetry> =
+            Arc::new(crate::runtime_logging::LocalLogTelemetry {
+                delegate: self.runtime_telemetry.clone(),
+                logger: self.runtime_logger.clone(),
+                error_category: None,
+            });
         crate::start_runtime_operation(&telemetry, operation)
     }
 
@@ -1662,11 +1665,11 @@ impl UserContext {
             sink.on_event(self, &event)?;
         }
         let (mask_fields, max_len) = self
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.entity(&event.entity))
-                .map(|desc| (desc.audit_mask_fields.clone(), desc.audit_value_max_len))
-                .unwrap_or_else(|| (vec![], None));
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.entity(&event.entity))
+            .map(|desc| (desc.audit_mask_fields.clone(), desc.audit_value_max_len))
+            .unwrap_or_else(|| (vec![], None));
 
         let safe_event = event.build_safe_event(&mask_fields, max_len);
         if let Some(sink) = self.custom_event_sink.as_ref() {

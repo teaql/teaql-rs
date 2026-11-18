@@ -122,7 +122,8 @@ impl RuntimeLogger {
                 return Err(invalid());
             }
             valid = name.clone();
-            let log_format = options.log_format
+            let log_format = options
+                .log_format
                 .or_else(|| env.get("TEAQL_LOG_FORMAT").cloned())
                 .unwrap_or_else(|| "json".into());
             if !matches!(log_format.as_str(), "json" | "human") {
@@ -363,16 +364,27 @@ impl RuntimeLogger {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error),
         };
-        if !active.is_file() { return Err(invalid()); }
-        if active.len() == 0 { return Ok(()); }
+        if !active.is_file() {
+            return Err(invalid());
+        }
+        if active.len() == 0 {
+            return Ok(());
+        }
         let mut first = String::new();
         BufReader::new(File::open(path)?).read_line(&mut first)?;
-        let Some(first) = first.strip_suffix('\n') else { return Err(invalid()); };
-        if self.log_format == "human" && human_header(first) { return Ok(()); }
+        let Some(first) = first.strip_suffix('\n') else {
+            return Err(invalid());
+        };
+        if self.log_format == "human" && human_header(first) {
+            return Ok(());
+        }
         if self.log_format == "json" {
             if let Ok(Value::Object(record)) = serde_json::from_str(first) {
-                if EVENT_FIELDS.iter().all(|key| record.get(*key).is_some_and(Value::is_string))
-                    && matches!(record["level"].as_str(), Some("INFO" | "WARN" | "ERROR")) {
+                if EVENT_FIELDS
+                    .iter()
+                    .all(|key| record.get(*key).is_some_and(Value::is_string))
+                    && matches!(record["level"].as_str(), Some("INFO" | "WARN" | "ERROR"))
+                {
                     return Ok(());
                 }
             }
@@ -422,7 +434,14 @@ impl RuntimeLogger {
 fn trace(nodes: &[teaql_core::TraceNode]) -> Vec<Value> {
     nodes.iter().map(|node| json!({"kind": format!("{:?}", node.kind), "name": node.entity_type, "detail": node.comment})).collect()
 }
-const EVENT_FIELDS: [&str; 6] = ["timestamp", "level", "log_name", "runtime", "event", "message"];
+const EVENT_FIELDS: [&str; 6] = [
+    "timestamp",
+    "level",
+    "log_name",
+    "runtime",
+    "event",
+    "message",
+];
 
 fn human_text(value: &str, escape_backslash: bool) -> String {
     let mut output = String::new();
@@ -440,10 +459,20 @@ fn human_text(value: &str, escape_backslash: bool) -> String {
 
 fn human_record(record: &Value) -> String {
     let text = |key: &str| human_text(record[key].as_str().unwrap_or_default(), true);
-    let mut output = format!("{} [TeaQL][{}][{}] {} runtime={}\n  {}\n", text("timestamp"),
-        text("log_name"), text("level"), text("event"), text("runtime"), text("message"));
+    let mut output = format!(
+        "{} [TeaQL][{}][{}] {} runtime={}\n  {}\n",
+        text("timestamp"),
+        text("log_name"),
+        text("level"),
+        text("event"),
+        text("runtime"),
+        text("message")
+    );
     let fields = record.as_object().expect("runtime event is an object");
-    let mut keys: Vec<_> = fields.keys().filter(|key| !EVENT_FIELDS.contains(&key.as_str())).collect();
+    let mut keys: Vec<_> = fields
+        .keys()
+        .filter(|key| !EVENT_FIELDS.contains(&key.as_str()))
+        .collect();
     keys.sort();
     for key in keys {
         if let Some(sql) = fields[key].as_str().filter(|_| key.as_str() == "sql") {
@@ -452,20 +481,34 @@ fn human_record(record: &Value) -> String {
                 output.push_str(&format!("    {}\n", human_text(line, true)));
             }
         } else {
-            output.push_str(&format!("  {}={}\n", human_text(key, true), human_text(&fields[key].to_string(), false)));
+            output.push_str(&format!(
+                "  {}={}\n",
+                human_text(key, true),
+                human_text(&fields[key].to_string(), false)
+            ));
         }
     }
     output
 }
 
 fn human_header(line: &str) -> bool {
-    let Some((timestamp, rest)) = line.split_once(' ') else { return false; };
-    let utc = DateTime::parse_from_rfc3339(timestamp).is_ok_and(|date| date.offset().local_minus_utc() == 0);
-    let Some((event, runtime)) = rest.rsplit_once(" runtime=") else { return false; };
-    utc && rest.starts_with("[TeaQL][") && !runtime.is_empty()
+    let Some((timestamp, rest)) = line.split_once(' ') else {
+        return false;
+    };
+    let utc = DateTime::parse_from_rfc3339(timestamp)
+        .is_ok_and(|date| date.offset().local_minus_utc() == 0);
+    let Some((event, runtime)) = rest.rsplit_once(" runtime=") else {
+        return false;
+    };
+    utc && rest.starts_with("[TeaQL][")
+        && !runtime.is_empty()
         && !runtime.chars().any(char::is_whitespace)
-        && ["][INFO] ", "][WARN] ", "][ERROR] "].iter().any(|level| event.contains(level))
-        && !line.chars().any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+        && ["][INFO] ", "][WARN] ", "][ERROR] "]
+            .iter()
+            .any(|level| event.contains(level))
+        && !line
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
 }
 
 fn archive_path(path: &Path, number: u32) -> PathBuf {
