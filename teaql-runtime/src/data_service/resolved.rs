@@ -1898,7 +1898,7 @@ where
         self.data_service
             .metadata
             .context
-            .observe_query_request(self.entity(), async {
+            .observe_data_service_request(self.entity(), async {
                 scoped
                     .as_ref()
                     .unwrap_or(self)
@@ -1921,7 +1921,7 @@ where
         self.data_service
             .metadata
             .context
-            .observe_query_request(self.entity(), async {
+            .observe_data_service_request(self.entity(), async {
                 scoped
                     .as_ref()
                     .unwrap_or(self)
@@ -1951,7 +1951,7 @@ where
         self.data_service
             .metadata
             .context
-            .observe_query_request(
+            .observe_data_service_request(
                 self.entity(),
                 self.fetch_stream_with_source_internal(
                     query.as_query(),
@@ -1974,7 +1974,7 @@ where
         self.data_service
             .metadata
             .context
-            .observe_query_request(self.entity(), async {
+            .observe_data_service_request(self.entity(), async {
                 scoped
                     .as_ref()
                     .unwrap_or(self)
@@ -2000,7 +2000,7 @@ where
         self.data_service
             .metadata
             .context
-            .observe_query_request(self.entity(), async {
+            .observe_data_service_request(self.entity(), async {
                 scoped
                     .fetch_smart_list_with_relation_aggregates_internal(
                         query.as_query(),
@@ -2027,7 +2027,7 @@ where
         self.data_service
             .metadata
             .context
-            .observe_query_request(self.entity(), async {
+            .observe_data_service_request(self.entity(), async {
                 scoped
                     .as_ref()
                     .unwrap_or(self)
@@ -2053,7 +2053,7 @@ where
         self.data_service
             .metadata
             .context
-            .observe_query_request(self.entity(), async {
+            .observe_data_service_request(self.entity(), async {
                 scoped
                     .as_ref()
                     .unwrap_or(self)
@@ -2082,7 +2082,7 @@ where
         self.data_service
             .metadata
             .context
-            .observe_query_request(self.entity(), async {
+            .observe_data_service_request(self.entity(), async {
                 scoped
                     .fetch_enhanced_entities_with_relation_aggregates_internal(
                         query.as_query(),
@@ -2112,7 +2112,7 @@ where
         self.data_service
             .metadata
             .context
-            .observe_query_request(self.entity(), async {
+            .observe_data_service_request(self.entity(), async {
                 scoped
                     .fetch_enhanced_entities_with_relation_aggregates_owned_internal(
                         query.into_query(),

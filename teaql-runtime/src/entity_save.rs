@@ -2515,7 +2515,7 @@ where
         self,
         context: &'a UserContext,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Entity, RuntimeError>> + Send + 'a>> {
-        Box::pin(context.observe_mutation_request(
+        Box::pin(context.observe_runtime_mutation_request(
             || T::entity_descriptor().name,
             with_graph_fix_scope(context, async move {
                 let entity = self.into_entity(); // applies comment onto the entity
@@ -2567,7 +2567,7 @@ where
     T: crate::LedgerEntity + Send + 'static,
 {
     context
-        .observe_mutation_request(
+        .observe_runtime_mutation_request(
             || T::entity_descriptor().name,
             with_graph_fix_scope(context, save_audited_ledger_entity_inner(audited, context)),
         )
@@ -2591,7 +2591,7 @@ where
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
     context
-        .observe_mutation_request(
+        .observe_runtime_mutation_request(
             || T::entity_descriptor().name,
             with_graph_fix_scope(
                 context,
