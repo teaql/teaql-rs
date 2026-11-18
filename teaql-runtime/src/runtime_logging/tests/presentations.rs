@@ -42,8 +42,7 @@ fn parse(bytes: &[u8], format: &str) -> Vec<Value> {
             } else if line == "  sql:" {
                 sql = Some(Vec::new());
                 row["sql"] = json!("");
-            } else if line.starts_with("    ") && sql.is_some() {
-                let lines = sql.as_mut().unwrap();
+            } else if let Some(lines) = sql.as_mut().filter(|_| line.starts_with("    ")) {
                 lines.push(scalar(&line[4..]));
                 row["sql"] = json!(lines.join("\n"));
             } else {

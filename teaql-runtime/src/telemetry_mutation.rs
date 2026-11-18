@@ -16,6 +16,7 @@ impl UserContext {
     /// One audited-save invocation owns its validation, physical mutations,
     /// authoritative readbacks and owned transaction/audit completion. This
     /// trace root is not a mutation ledger and never merges business state.
+    #[cfg(test)]
     pub(crate) fn observe_mutation_request<'a, T: 'a, E: 'a, F, N>(
         &'a self,
         entity_name: N,

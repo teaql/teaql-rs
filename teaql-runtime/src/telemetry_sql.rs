@@ -99,6 +99,7 @@ impl crate::UserContext {
                 as Arc<dyn SqlStatementTelemetry>
         })
     }
+    #[cfg(test)]
     pub(crate) fn observe_query_request<
         'a,
         T: 'a,

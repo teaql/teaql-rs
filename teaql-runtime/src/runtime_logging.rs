@@ -292,7 +292,7 @@ impl RuntimeLogger {
             }
             files.push((suffix.parse::<u32>().map_err(|_| invalid())?, entry.path()));
         }
-        files.sort_by(|a, b| b.0.cmp(&a.0));
+        files.sort_by_key(|entry| std::cmp::Reverse(entry.0));
         Ok(files)
     }
 
@@ -379,15 +379,17 @@ impl RuntimeLogger {
             return Ok(());
         }
         if self.log_format == "json" {
-            if let Ok(Value::Object(record)) = serde_json::from_str(first) {
-                if EVENT_FIELDS
-                    .iter()
-                    .all(|key| record.get(*key).is_some_and(Value::is_string))
-                    && matches!(record["level"].as_str(), Some("INFO" | "WARN" | "ERROR"))
+            return match serde_json::from_str::<Value>(first) {
+                Ok(Value::Object(record))
+                    if EVENT_FIELDS
+                        .iter()
+                        .all(|key| record.get(*key).is_some_and(Value::is_string))
+                        && matches!(record["level"].as_str(), Some("INFO" | "WARN" | "ERROR")) =>
                 {
-                    return Ok(());
+                    Ok(())
                 }
-            }
+                _ => Err(invalid()),
+            };
         }
         Err(invalid())
     }
