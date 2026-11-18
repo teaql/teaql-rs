@@ -32,6 +32,10 @@ mod language;
 mod ledger_keys;
 pub mod log_formatter;
 mod log_privacy;
+mod runtime_logging;
+pub use runtime_logging::{
+    RuntimeLogger, RuntimeLoggingError, RuntimeLoggingOptions, parse_log_size,
+};
 mod mutation_policy;
 mod mutation_version;
 pub mod object_storage;

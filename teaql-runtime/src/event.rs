@@ -437,8 +437,38 @@ impl RawAuditEvent {
         audit_mask_fields: &[String],
         audit_value_max_len: Option<usize>,
     ) -> SafeAuditEvent {
+        self.build_safe_event_inner(
+            audit_mask_fields,
+            crate::log_privacy::plaintext_enabled(),
+            |field, value| {
+                build_safe_audit_field(field, value, audit_mask_fields, audit_value_max_len)
+            },
+        )
+    }
+
+    pub(crate) fn build_runtime_log_event(
+        &self,
+        audit_mask_fields: &[String],
+        audit_value_max_len: Option<usize>,
+    ) -> SafeAuditEvent {
+        self.build_safe_event_inner(audit_mask_fields, false, |field, value| {
+            build_safe_audit_field_inner(
+                field,
+                value,
+                audit_mask_fields,
+                audit_value_max_len,
+                false,
+            )
+        })
+    }
+
+    fn build_safe_event_inner(
+        &self,
+        audit_mask_fields: &[String],
+        allow: bool,
+        project: impl Fn(&str, Option<&str>) -> SafeAuditField,
+    ) -> SafeAuditEvent {
         let mut safe_fields = Vec::new();
-        let allow = crate::log_privacy::plaintext_enabled();
         let mut secrets = Vec::new();
         if let Some(source) = &self.diagnostic_redactions {
             source.extend_secrets(allow, &mut secrets);
@@ -472,12 +502,7 @@ impl RawAuditEvent {
                 Value::U64(number) => number.to_string(),
                 _ => format!("{:?}", v),
             });
-            let mut safe_field = build_safe_audit_field(
-                &change.field,
-                raw_val_str.as_deref(),
-                audit_mask_fields,
-                audit_value_max_len,
-            );
+            let mut safe_field = project(&change.field, raw_val_str.as_deref());
             if change
                 .old_value
                 .iter()
@@ -553,6 +578,22 @@ pub fn build_safe_audit_field(
     audit_mask_fields: &[String],
     audit_value_max_len: Option<usize>,
 ) -> SafeAuditField {
+    build_safe_audit_field_inner(
+        field_name,
+        raw_value,
+        audit_mask_fields,
+        audit_value_max_len,
+        crate::log_privacy::plaintext_enabled(),
+    )
+}
+
+fn build_safe_audit_field_inner(
+    field_name: &str,
+    raw_value: Option<&str>,
+    audit_mask_fields: &[String],
+    audit_value_max_len: Option<usize>,
+    allow_plaintext: bool,
+) -> SafeAuditField {
     match raw_value {
         None => SafeAuditField {
             name: field_name.to_string(),
@@ -570,7 +611,7 @@ pub fn build_safe_audit_field(
             let should_mask = credential
                 || ((audit_mask_fields.iter().any(|f| f == field_name)
                     || field_name.starts_with('#'))
-                    && !crate::log_privacy::plaintext_enabled());
+                    && !allow_plaintext);
 
             let mut value = match (credential, should_mask) {
                 (true, _) => "[REDACTED]".to_owned(),

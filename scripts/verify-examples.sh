@@ -44,7 +44,16 @@ SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL="$verification_dir/env-helper.db" \
   TEAQL_AUDIT_DEBUG_ENDPOINT="$verification_dir/env-helper-audit-sensitive.log" \
   TEAQL_AUDIT_LOG=_full_with_payload \
   cargo run --quiet --manifest-path examples/school-management/Cargo.toml --bin env_runtime_save_probe
-grep -F -q 'SQL: -- TeaQL SAFE' "$verification_dir/env-helper-safe.log"
+python3 - "$verification_dir/env-helper-safe.log" <<'PY'
+import json, sys
+from pathlib import Path
+records = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
+sql = [row for row in records if row.get('category') == 'SQL']
+assert sql, 'ordinary runtime file must contain structured SQL events'
+assert any('-- TeaQL SAFE' in (row.get('sql') or '') for row in sql), 'ordinary SQL lost its safe rendering marker'
+assert all(all(key in row for key in ('timestamp', 'level', 'log_name', 'runtime', 'event', 'message')) for row in records)
+print('PASS: JSON runtime SQL retains safe rendering and typed event fields')
+PY
 grep -F -q "'En*************ol'" "$verification_dir/env-helper-safe.log"
 grep -F -q "'1 Runtime Road'" "$verification_dir/env-helper-safe.log"
 if grep -E -q 'Parameterized SQL:|SQL omitted:|Env Helper School|PRIVATE-FAILURE-CANARY' "$verification_dir/env-helper-safe.log"; then

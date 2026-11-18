@@ -217,11 +217,19 @@ pub struct UserContext {
     local_lock_owner: u64,
     remote_lock_owner: String,
     runtime_telemetry: Arc<dyn crate::RuntimeTelemetry>,
+    pub(crate) runtime_logger: Arc<crate::RuntimeLogger>,
     last_fix_evidence: Mutex<Vec<FixEvidence>>,
 }
 
 impl Default for UserContext {
     fn default() -> Self {
+        Self::new_with_logger(crate::RuntimeLogger::default_logger())
+    }
+}
+
+impl UserContext {
+    /// Compose the application destination before creating request contexts.
+    pub fn new_with_logger(runtime_logger: Arc<crate::RuntimeLogger>) -> Self {
         crate::checker_messages::prepare();
         let pid = std::process::id();
         let thread_id_str = format!("{:?}", std::thread::current().id());
@@ -296,6 +304,7 @@ impl Default for UserContext {
                     .as_nanos()
             ),
             runtime_telemetry: crate::telemetry_startup::standard_runtime_telemetry(),
+            runtime_logger,
             last_fix_evidence: Mutex::new(Vec::new()),
         }
     }
@@ -427,6 +436,8 @@ impl UserContext {
     }
 
     pub(crate) fn runtime_telemetry_is_noop(&self) -> bool {
+        // This describes only the SDK adapter. Local operation logging is
+        // independent; stream wrappers retain their existing identity rules.
         self.runtime_telemetry.is_noop()
     }
 
@@ -434,7 +445,13 @@ impl UserContext {
         &self,
         operation: crate::RuntimeOperation,
     ) -> crate::FailOpenRuntimeTelemetryScope {
-        crate::start_runtime_operation(&self.runtime_telemetry, operation)
+        let telemetry: Arc<dyn crate::RuntimeTelemetry> =
+            Arc::new(crate::runtime_logging::LocalLogTelemetry {
+                delegate: self.runtime_telemetry.clone(),
+                logger: self.runtime_logger.clone(),
+                error_category: None,
+            });
+        crate::start_runtime_operation(&telemetry, operation)
     }
 
     pub fn user_identifier(&self) -> Option<&str> {
@@ -1647,19 +1664,23 @@ impl UserContext {
         if let Some(sink) = self.event_sink.as_ref() {
             sink.on_event(self, &event)?;
         }
-        if let Some(sink) = self.custom_event_sink.as_ref() {
-            let (mask_fields, max_len) = self
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.entity(&event.entity))
-                .map(|desc| (desc.audit_mask_fields.clone(), desc.audit_value_max_len))
-                .unwrap_or_else(|| (vec![], None));
+        let (mask_fields, max_len) = self
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.entity(&event.entity))
+            .map(|desc| (desc.audit_mask_fields.clone(), desc.audit_value_max_len))
+            .unwrap_or_else(|| (vec![], None));
 
+        if let Some(sink) = self.custom_event_sink.as_ref() {
             let safe_event = event.build_safe_event(&mask_fields, max_len);
             sink.on_safe_event(self, &safe_event)?;
         }
 
-        crate::log_formatter::LogManager::write_audit_log(&event);
+        // The plaintext acknowledgement applies to explicitly selected debug
+        // sinks. Ordinary runtime files always use the model's safe projection.
+        self.runtime_logger
+            .audit(&event.build_runtime_log_event(&mask_fields, max_len));
+        crate::log_formatter::LogManager::write_sensitive_audit_log(&event);
 
         Ok(())
     }
