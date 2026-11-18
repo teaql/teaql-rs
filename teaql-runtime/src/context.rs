@@ -1671,12 +1671,15 @@ impl UserContext {
             .map(|desc| (desc.audit_mask_fields.clone(), desc.audit_value_max_len))
             .unwrap_or_else(|| (vec![], None));
 
-        let safe_event = event.build_safe_event(&mask_fields, max_len);
         if let Some(sink) = self.custom_event_sink.as_ref() {
+            let safe_event = event.build_safe_event(&mask_fields, max_len);
             sink.on_safe_event(self, &safe_event)?;
         }
 
-        self.runtime_logger.audit(&safe_event);
+        // The plaintext acknowledgement applies to explicitly selected debug
+        // sinks. Ordinary runtime files always use the model's safe projection.
+        self.runtime_logger
+            .audit(&event.build_runtime_log_event(&mask_fields, max_len));
         crate::log_formatter::LogManager::write_sensitive_audit_log(&event);
 
         Ok(())

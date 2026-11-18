@@ -64,6 +64,116 @@ fn read(path: &Path, format: &str) -> Vec<Value> {
 }
 
 #[test]
+fn ordinary_audit_remains_masked_when_plaintext_debug_is_acknowledged() {
+    for format in ["json", "human"] {
+        for debug in [false, true] {
+            let dir = TestDirectory::new();
+            let ordinary = dir.0.join("ordinary.log");
+            let sensitive = dir.0.join("sensitive.log");
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "runtime_logging::tests::presentations::audit_debug_worker",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("TEAQL_AUDIT_DEBUG_WORKER", "yes")
+                .env("TEAQL_LOG_FORMAT", format)
+                .env("TEAQL_LOG_ENDPOINT", &ordinary)
+                .env("TEAQL_AUDIT_DEBUG_ENDPOINT", &sensitive)
+                .env("TEAQL_AUDIT_LOG", "_full_with_payload")
+                .env("TMPDIR", &dir.0);
+            if debug {
+                command.env(crate::log_privacy::ENV, crate::log_privacy::ACK);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let bytes = fs::read(&ordinary).unwrap();
+            let text = std::str::from_utf8(&bytes).unwrap();
+            assert!(!text.contains("PRIVATE-AUDIT-BUSINESS"));
+            assert!(!text.contains("PASSWORD-CANARY"));
+            let rows = parse(&bytes, format);
+            let audit = rows
+                .iter()
+                .find(|row| row["event"] == "audit.event")
+                .unwrap();
+            assert_eq!(audit["entity_id"], 42);
+            let fields = audit["fields"].as_array().unwrap();
+            let name = fields
+                .iter()
+                .find(|field| field["field"] == "name")
+                .unwrap();
+            assert_eq!(name["masked"], true);
+            let address = fields
+                .iter()
+                .find(|field| field["field"] == "address")
+                .unwrap();
+            assert_eq!(address["value"], "1 Runtime Road");
+            assert_eq!(address["masked"], false);
+            if debug {
+                let text = fs::read_to_string(&sensitive).unwrap();
+                assert!(text.contains("PRIVATE-AUDIT-BUSINESS"));
+                assert!(!text.contains("PASSWORD-CANARY"));
+            } else {
+                assert!(!sensitive.exists());
+            }
+        }
+    }
+}
+
+#[test]
+fn audit_debug_worker() {
+    if std::env::var("TEAQL_AUDIT_DEBUG_WORKER").as_deref() != Ok("yes") {
+        return;
+    }
+    struct Collector(Arc<Mutex<Vec<crate::SafeAuditEvent>>>);
+    impl crate::SafeAuditEventSink for Collector {
+        fn on_safe_event(
+            &self,
+            _: &UserContext,
+            event: &crate::SafeAuditEvent,
+        ) -> Result<(), crate::RuntimeError> {
+            self.0.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+    }
+    let collected = Arc::new(Mutex::new(Vec::new()));
+    let metadata = crate::InMemoryMetadataStore::new().with_entity(
+        teaql_core::EntityDescriptor::new("Customer").audit_mask_fields(vec!["name".into()]),
+    );
+    let context = UserContext::default()
+        .with_metadata(metadata)
+        .with_custom_event_sink(Collector(collected.clone()));
+    let event = crate::RawAuditEvent::created(
+        "Customer",
+        teaql_core::Record::from([
+            ("id".into(), teaql_core::Value::U64(42)),
+            ("name".into(), "PRIVATE-AUDIT-BUSINESS".into()),
+            ("address".into(), "1 Runtime Road".into()),
+            ("password".into(), "PASSWORD-CANARY".into()),
+        ]),
+    );
+    context.send_event(event.clone()).unwrap();
+    assert_eq!(
+        event.values["name"],
+        teaql_core::Value::from("PRIVATE-AUDIT-BUSINESS")
+    );
+    let values = collected.lock().unwrap();
+    assert_eq!(values.len(), 1);
+    let name = values[0]
+        .fields
+        .iter()
+        .find(|field| field.name == "name")
+        .unwrap();
+    assert_eq!(name.masked, !crate::log_privacy::plaintext_enabled());
+}
+
+#[test]
 fn positive_retention_keeps_numeric_newest_order_and_whole_blocks() {
     for format in ["json", "human"] {
         let dir = TestDirectory::new();
