@@ -36,6 +36,8 @@ impl Q {
             .enhance_children_if_needed()
     }
 
+
+
     pub fn customers() -> CustomerRequest {
         CustomerRequest::new()
             .select_self()
@@ -53,6 +55,8 @@ impl Q {
             .select_self_fields()
             .enhance_children_if_needed()
     }
+
+
 
     pub fn order_statuses() -> OrderStatusRequest {
         OrderStatusRequest::new()
@@ -72,6 +76,8 @@ impl Q {
             .enhance_children_if_needed()
     }
 
+
+
     pub fn customer_orders() -> CustomerOrderRequest {
         CustomerOrderRequest::new()
             .select_self()
@@ -89,6 +95,8 @@ impl Q {
             .select_self_fields()
             .enhance_children_if_needed()
     }
+
+
 
     pub fn products() -> ProductRequest {
         ProductRequest::new()
@@ -108,6 +116,8 @@ impl Q {
             .enhance_children_if_needed()
     }
 
+
+
     pub fn order_lines() -> OrderLineRequest {
         OrderLineRequest::new()
             .select_self()
@@ -126,6 +136,8 @@ impl Q {
             .enhance_children_if_needed()
     }
 
+
+
     pub fn order_search_presets() -> OrderSearchPresetRequest {
         OrderSearchPresetRequest::new()
             .select_self()
@@ -143,4 +155,6 @@ impl Q {
             .select_self_fields()
             .enhance_children_if_needed()
     }
+
+
 }

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use teaql_macros::{teaql_entity, TeaqlEntity};
 
+
 /// [TEAQL AI WARNING]
 /// TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
 /// DO NOT GUESS METHOD NAMES!
@@ -12,13 +13,15 @@ use teaql_macros::{teaql_entity, TeaqlEntity};
 /// Read the method signatures in this file before proceeding.
 #[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
-#[teaql(reverse_relation(name = "work_item_list", target = "WorkItem", local_key = "id", foreign_key = "platform_id", many))]
-#[teaql(entity = "Platform", table = "platform_data", data_service = "sqlite")]
+#[teaql(indexed_layout)]
+#[teaql(reverse_relation(name = "work_item_list", target = "WorkItem", json_type = "crate::WorkItem", local_key = "id", foreign_key = "platform_id", many))]
+#[teaql(entity = "Platform", table = "platform_data", data_service = "sqlite", audit_mask_fields = "")]
 pub struct Platform {
 #[teaql(id)]
     id: u64,
 
 // @source model.xml:7
+#[teaql(max_length = 100)]
     name: String,
 #[teaql(version)]
     version: i64,
@@ -31,6 +34,19 @@ pub struct Platform {
 impl Platform {
     pub const ENTITY_NAME: &'static str = "Platform";
 
+    // Framework metadata: complete fixed layout, including overflow slots.
+    pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "e5c9f1d176ea19c50ebeacae413fa8885a3403d4d9ac9775fe79aecd0d931638";
+    pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
+        ("id", 0),
+        ("name", 1),
+        ("version", 2),
+    ];
+    pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
+        ("id", "id", "id"),
+        ("name", "name", "name"),
+        ("version", "version", "version"),
+    ];
+
     pub fn with_id(id: u64) -> teaql_core::Value {
         teaql_core::Value::U64(id)
     }
@@ -42,7 +58,9 @@ impl Platform {
             version: 0_i64,
             dynamic: BTreeMap::new(),
             __teaql_runtime_state: root,
-            __load_state: teaql_core::eval::LoadState::FullyLoaded,
+            __load_state: teaql_core::eval::LoadState::NotLoaded.into_indexed(
+                <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
+            ).expect("new entity load state"),
         }
     }
 
@@ -56,7 +74,9 @@ impl Platform {
     }
 
     pub fn set_load_state(&mut self, state: teaql_core::eval::LoadState) {
-        self.__load_state = state;
+        self.__load_state = state.into_indexed(
+            <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
+        ).expect("compatible entity load state");
     }
 
     pub fn id(&self) -> u64 {
@@ -67,6 +87,7 @@ impl Platform {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "id", value);
+        self.__load_state.mark_loaded("id").expect("generated field layout");
         self
     }
 
@@ -81,6 +102,7 @@ impl Platform {
                     teaql_core::eval::EvalResult::Value(self.id())
                 }}
 
+
     pub fn name(&self) -> String {
         self.changed_name().and_then(|value| value.try_text().map(|value| value.to_owned())).unwrap_or_else(|| self.name.clone())
     }
@@ -89,6 +111,7 @@ impl Platform {
         let value = value.into();
         self.name = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.name.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "name", value);
+        self.__load_state.mark_loaded("name").expect("generated field layout");
         self
     }
 
@@ -103,6 +126,7 @@ impl Platform {
                     teaql_core::eval::EvalResult::Value(self.name())
                 }}
 
+
     pub fn version(&self) -> i64 {
         self.changed_version().and_then(|value| value.try_i64()).unwrap_or(self.version)
     }
@@ -111,6 +135,7 @@ impl Platform {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "version", value);
+        self.__load_state.mark_loaded("version").expect("generated field layout");
         self
     }
 
@@ -124,6 +149,7 @@ impl Platform {
                 } else {
                     teaql_core::eval::EvalResult::Value(self.version())
                 }}
+
     /// Returns the relation view installed by the query that loaded this entity.
     /// This method never performs an implicit database query.
     pub fn work_item_list(&self) -> teaql_runtime::RelationHandle<'_, teaql_core::SmartList<crate::WorkItem>> {
@@ -143,3 +169,4 @@ impl Platform {
     }
 
 }
+

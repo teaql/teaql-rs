@@ -26,17 +26,34 @@ pub struct ScalarTypeProbeRequest<R = crate::ScalarTypeProbe> {
     relation_filters: Vec<RelationFilter>,
     child_enhancements: Vec<QuerySelection>,
     query_options: QueryOptions,
+    roll_up_links: Vec<RollupLink>,
+    roll_up_publication: Option<RollupTarget>,
     marker: PhantomData<R>,
 }
 
 impl<R> Clone for ScalarTypeProbeRequest<R> {
     fn clone(&self) -> Self {
+        if !self.roll_up_links.is_empty() {
+            let snapshot = self.__resolved_roll_up_selection().expect("invalid roll-up configuration");
+            return Self {
+                query: snapshot.query,
+                relation_selections: snapshot.relation_selections,
+                relation_filters: snapshot.relation_filters,
+                child_enhancements: snapshot.child_enhancements,
+                query_options: snapshot.query_options,
+                roll_up_links: Vec::new(),
+                roll_up_publication: None,
+                marker: PhantomData,
+            };
+        }
         Self {
             query: self.query.clone(),
             relation_selections: self.relation_selections.clone(),
             relation_filters: self.relation_filters.clone(),
             child_enhancements: self.child_enhancements.clone(),
             query_options: self.query_options.clone(),
+            roll_up_links: Vec::new(),
+            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -52,6 +69,8 @@ impl<R> ScalarTypeProbeRequest<R> {
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
             query_options: QueryOptions::default(),
+            roll_up_links: Vec::new(),
+            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -63,6 +82,8 @@ impl<R> ScalarTypeProbeRequest<R> {
             relation_filters: self.relation_filters,
             child_enhancements: self.child_enhancements,
             query_options: self.query_options,
+            roll_up_links: self.roll_up_links,
+            roll_up_publication: self.roll_up_publication,
             marker: PhantomData,
         }
     }
@@ -88,7 +109,57 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn into_query(self) -> SelectQuery {
-        self.query
+        QuerySelection::from(self).into_query()
+    }
+
+    fn __base_roll_up_selection(&self) -> QuerySelection {
+        QuerySelection {
+            query: self.query.clone(),
+            relation_selections: self.relation_selections.clone(),
+            relation_filters: self.relation_filters.clone(),
+            child_enhancements: self.child_enhancements.clone(),
+            query_options: self.query_options.clone(),
+        }
+    }
+
+    fn __resolved_roll_up_selection(&self) -> Result<QuerySelection, RuntimeError> {
+        resolve_rollup_links(self.__base_roll_up_selection(), &self.roll_up_links)
+    }
+
+    fn __publish_roll_up(&self) {
+        if let Some(target) = &self.roll_up_publication {
+            *target.lock().expect("poisoned roll-up configuration") = RollupState {
+                selection: self.__base_roll_up_selection(),
+                links: self.roll_up_links.clone(),
+            };
+        }
+    }
+
+    fn __synced(self) -> Self {
+        self.__publish_roll_up();
+        self
+    }
+
+    pub(crate) fn __roll_up_target(&mut self) -> RollupTarget {
+        if self.roll_up_publication.is_none() {
+            self.roll_up_publication = Some(std::sync::Arc::new(std::sync::Mutex::new(RollupState {
+                selection: self.__base_roll_up_selection(), links: self.roll_up_links.clone(),
+            })));
+        }
+        self.__publish_roll_up();
+        self.roll_up_publication.as_ref().unwrap().clone()
+    }
+
+    fn __resolve_roll_ups(&mut self) -> Result<(), RuntimeError> {
+        if self.roll_up_links.is_empty() { return Ok(()); }
+        let selection = self.__resolved_roll_up_selection()?;
+        self.query = selection.query;
+        self.relation_selections = selection.relation_selections;
+        self.relation_filters = selection.relation_filters;
+        self.child_enhancements = selection.child_enhancements;
+        self.query_options = selection.query_options;
+        self.roll_up_links.clear();
+        Ok(())
     }
 
 
@@ -97,13 +168,14 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub(crate) async fn _execute_for_list<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<SmartList<R>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
     {
+        self.__resolve_roll_ups()?;
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
         let mut query = authorize_query(apply_runtime_metadata(
@@ -118,35 +190,29 @@ impl<R> ScalarTypeProbeRequest<R> {
         if !use_id_set {
             if let Some((alias, count_query)) = &requested_count {
                 let count_rows = context.fetch_compact_rows("ScalarTypeProbe", count_query).await?;
-                total = Some(count_rows.first().and_then(|row| row.get(alias))
-                    .and_then(teaql_core::Value::try_u64)
-                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+                total = Some(exact_list_count(&count_rows, alias)?);
             }
         }
-        let (mut rows, facets) = if query_options.facets.is_empty() {
-            let rows = context.fetch_entity_smart_list::<R>(
-                "ScalarTypeProbe",
-                query,
-                relation_aggregates,
-            ).await?;
-            (rows, std::collections::BTreeMap::new())
+        if !query.as_query().group_by.is_empty() || !query.as_query().object_group_bys.is_empty() {
+            return Err(RuntimeError::Graph("grouped projections require execute_for_rows".into()));
+        }
+        let mut rows = if !query.as_query().aggregates.is_empty() {
+            let records = context.fetch_compact_rows("ScalarTypeProbe", &query).await?;
+            let mut rows = SmartList::new(Vec::new());
+            if let Some(record) = records.into_iter().next() { rows.aggregations = record.into_map(); }
+            rows
         } else {
-            let rows = context.fetch_entity_smart_list::<R>(
-                "ScalarTypeProbe",
-                query.clone(),
-                relation_aggregates,
-            ).await?;
-            let facets = execute_facets(context, query.as_query(), &query_options)
-                .await?;
-            (rows, facets)
+            context.fetch_entity_smart_list::<R>(
+                "ScalarTypeProbe", query.clone(), relation_aggregates,
+            ).await?
         };
+        let facets = if query_options.facets.is_empty() { std::collections::BTreeMap::new() }
+            else { execute_facets(context, query.as_query(), &query_options).await? };
         if let Some((alias, count_query)) = requested_count {
             if total.is_none() { total = rows.total_count; }
             if total.is_none() {
                 let count_rows = context.fetch_compact_rows("ScalarTypeProbe", &count_query).await?;
-                total = Some(count_rows.first().and_then(|row| row.get(&alias))
-                    .and_then(teaql_core::Value::try_u64)
-                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+                total = Some(exact_list_count(&count_rows, &alias)?);
             }
             rows.total_count = total;
             rows.aggregations.insert(alias, teaql_core::Value::U64(total.expect("requested count resolved")));
@@ -157,12 +223,13 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub(crate) async fn _execute_for_rows<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<SmartList<teaql_core::CompactRow>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
+        self.__resolve_roll_ups()?;
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &self.query_options,
@@ -172,18 +239,23 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub(crate) async fn _execute_for_stream<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<TeaqlEntityStream<'a, R, RuntimeError>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
     {
+        self.__resolve_roll_ups()?;
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &self.query_options,
             &self.child_enhancements,
         ))?;
+        let shape = query.as_query();
+        if !shape.aggregates.is_empty() || !shape.group_by.is_empty() || !shape.object_group_bys.is_empty() {
+            return Err(RuntimeError::Graph("Entity streams require entity rows; use a record or aggregation query".to_owned()));
+        }
         Ok(context.user_context().observe_generated_stream(
             "ScalarTypeProbe", context.fetch_entity_stream("ScalarTypeProbe", query),
         ))
@@ -214,12 +286,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
 
     pub(crate) async fn _execute_for_count<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<u64, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
+        self.__resolve_roll_ups()?;
         let query_options = self.query_options.clone();
         let query = apply_runtime_metadata(
             self.query,
@@ -239,12 +312,13 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub(crate) async fn _execute_for_exists<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<bool, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
+        self.__resolve_roll_ups()?;
         let mut query = apply_runtime_metadata(
             self.query,
             &self.query_options,
@@ -258,22 +332,22 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn search_with_text(mut self, text: impl Into<String>) -> Self {
         self.query = self.query.search_with_text(text);
-        self
+        self.__synced()
     }
 
     pub fn filter(mut self, filter: Expr) -> Self {
         self.query = self.query.filter(filter);
-        self
+        self.__synced()
     }
 
     pub fn and_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.and_filter(filter);
-        self
+        self.__synced()
     }
 
     pub fn or_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.or_filter(filter);
-        self
+        self.__synced()
     }
 
     pub fn append_search_criteria(self, criteria: Expr) -> Self {
@@ -291,18 +365,18 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             property2.as_ref(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_deleted_rows(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self
+        self.__synced()
     }
 
     pub fn deleted_rows_only(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
         self.query = self.query.and_filter(Expr::lte("version", 0_i64));
-        self
+        self.__synced()
     }
 
     pub fn match_types(
@@ -310,29 +384,36 @@ impl<R> ScalarTypeProbeRequest<R> {
         types: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(TYPE_FIELD, types.into_iter().map(Into::into)));
-        self
+        self.__synced()
     }
 
 
     pub fn with_type_group(mut self) -> Self {
         self.query = self.query.project(TYPE_GROUP_FIELD);
-        self
+        self.__synced()
     }
 
-    pub fn matching_any_of(mut self, request: impl Into<QuerySelection>) -> Self {
-        let selection = request.into();
-        let entity = EntityDescriptor::new(selection.query.entity.clone());
-        self.query = self.query.and_filter(Expr::in_subquery("id", entity, selection.query.clone(), "id"));
-        self
+    pub fn matching_any_of<O>(mut self, request: ScalarTypeProbeRequest<O>) -> Self {
+        let filter = QuerySelection::from(request).into_query().filter;
+        if let Some(criteria) = crate::request_support::criteria_alternatives_excluding_version(filter) {
+            self.query = self.query.and_filter(criteria);
+        }
+        self.__synced()
     }
 
-    pub fn match_any_of(self, request: impl Into<QuerySelection>) -> Self {
+    pub fn match_any_of<O>(self, request: ScalarTypeProbeRequest<O>) -> Self {
         self.matching_any_of(request)
+    }
+
+    pub fn matching_ids_of<O>(mut self, request: ScalarTypeProbeRequest<O>) -> Self {
+        let entity = <crate::ScalarTypeProbe as teaql_core::TeaqlEntity>::entity_descriptor();
+        self.query = self.query.and_filter(Expr::in_subquery("id", entity, QuerySelection::from(request).into_query(), "id"));
+        self.__synced()
     }
 
     pub fn enhance_child(mut self, request: impl Into<QuerySelection>) -> Self {
         self.child_enhancements.push(request.into());
-        self
+        self.__synced()
     }
 
     pub fn enhance_children_if_needed(self) -> Self {
@@ -343,7 +424,7 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.query_options.comment = Some(comment.into());
-        self
+        self.__synced()
     }
 
     pub fn raw_sql(self, raw_sql: impl Into<String>) -> Self {
@@ -352,7 +433,7 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn unsafe_raw_sql(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql = Some(raw_sql.into_sql());
-        self
+        self.__synced()
     }
 
     pub fn raw_sql_filter(self, raw_sql: impl Into<String>) -> Self {
@@ -361,7 +442,7 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn unsafe_raw_sql_filter(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql_search_criteria.push(raw_sql.into_sql());
-        self
+        self.__synced()
     }
     pub fn filter_with_json(self, json_expr: impl Into<String>) -> Self {
         self.merge_dynamic_json_expr(json_expr.into())
@@ -407,7 +488,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             }
         }
 
-        self
+        self.__synced()
     }
 
     pub(crate) fn apply_dynamic_json_filter(self, field: &str, value: &JsonValue) -> Self {
@@ -416,7 +497,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         } else if let Some(storage_field) = Self::dynamic_json_self_field(field) {
             self.and_filter(dynamic_json_filter_expr(storage_field, value))
         } else {
-            self
+            self.__synced()
         }
     }
 
@@ -439,7 +520,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             }
             _ => {}
         }
-        self
+        self.__synced()
     }
 
     fn apply_dynamic_json_single_order_by(
@@ -461,7 +542,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         } else {
             self.query = self.query.order_desc(storage_field);
         }
-        self
+        self.__synced()
     }
 
     fn dynamic_json_self_field(field: &str) -> Option<&'static str> {
@@ -525,28 +606,28 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .dynamic_properties
             .push(RawDynamicProperty::new(property_name, raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn limit(mut self, limit: u64) -> Self {
         self.query = self.query.limit(limit);
-        self
+        self.__synced()
     }
 
     pub fn stream(mut self, chunk_size: usize) -> Self {
         assert!(chunk_size > 0, "stream chunk size must be positive");
         self.query = self.query.stream(chunk_size);
-        self
+        self.__synced()
     }
 
     pub fn stream_default(mut self) -> Self {
         self.query = self.query.stream_default();
-        self
+        self.__synced()
     }
 
     pub fn skip(mut self, offset: u64) -> Self {
         self.query = self.query.offset(offset);
-        self
+        self.__synced()
     }
 
     pub fn offset_only(self, offset: u64) -> Self {
@@ -559,12 +640,12 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn page_offset(mut self, offset: u64, limit: u64) -> Self {
         self.query = self.query.page(offset, limit);
-        self
+        self.__synced()
     }
 
     pub fn optimize_for_continuous_page_fetch(mut self) -> Self {
         self.query = self.query.optimize_for_continuous_page_fetch();
-        self
+        self.__synced()
     }
 
     pub fn optimize_for_continuous_page_fetch_with(
@@ -575,12 +656,12 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query = self
             .query
             .optimize_for_continuous_page_fetch_with(namespace, ttl_seconds);
-        self
+        self.__synced()
     }
 
     pub fn optimize_pagination_with_id_set(mut self) -> Self {
         self.query = self.query.optimize_pagination_with_id_set();
-        self
+        self.__synced()
     }
 
     pub fn optimize_pagination_with_id_set_config(
@@ -592,7 +673,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query = self
             .query
             .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
-        self
+        self.__synced()
     }
 
     /// Select bounded indexed probes for a per-parent Top-N relation only
@@ -600,7 +681,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     /// Passing zero explicitly selects the provider window plan.
     pub fn top_n_probe_parent_threshold(mut self, threshold: usize) -> Self {
         self.query = self.query.top_n_probe_parent_threshold(threshold);
-        self
+        self.__synced()
     }
 
     pub fn top(self, top_n: u64) -> Self {
@@ -613,7 +694,7 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn unlimited(mut self) -> Self {
         self.query.slice = None;
-        self
+        self.__synced()
     }
 
     pub fn page_number(self, page_number: u64, page_size: u64) -> Self {
@@ -660,12 +741,12 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query = self.query.project("update_time");
         self.query = self.query.project("version");
         self.query = self.query.project("type_platform_id");
-        self
+        self.__synced()
     }
 
     pub fn select_dynamic_fields_with(mut self, selection: teaql_core::dynamic_fields::DynamicFieldSelection) -> Self {
         self.query = self.query.select_dynamic_fields(selection);
-        self
+        self.__synced()
     }
 
     pub fn select_self_fields(self) -> Self {
@@ -692,7 +773,28 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn group_by(mut self, field: impl Into<String>) -> Self {
         self.query = self.query.group_by(field);
-        self
+        self.__synced()
+    }
+
+    /// Order a selected statistical alias or nested result path, matching Java.
+    pub fn add_order_by_ascending(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_asc(result_key);
+        self.__synced()
+    }
+
+    pub fn add_order_by_descending(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_desc(result_key);
+        self.__synced()
+    }
+
+    pub fn add_order_by_ascending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_gbk_asc(result_key);
+        self.__synced()
+    }
+
+    pub fn add_order_by_descending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_gbk_desc(result_key);
+        self.__synced()
     }
 
     pub fn count(mut self) -> Self {
@@ -708,12 +810,27 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn aggregate_count(mut self, alias: impl Into<String>) -> Self {
         self.query = self.query.count(alias);
-        self
+        self.__synced()
+    }
+    /// Java addAggregate(SimpleNamedExpression): bind a typed aggregate AST.
+    pub fn add_aggregate(mut self, aggregate: teaql_core::NamedExpr) -> Self {
+        self.query = self.query.aggregate_expression(aggregate);
+        self.__synced()
+    }
+
+    /// Filter selected statistical results. Repeated conditions compose with AND.
+    pub fn having(mut self, condition: Expr) -> Self {
+        let condition = match self.query.having.take() {
+            Some(previous) => Expr::and([previous, condition]),
+            None => condition,
+        };
+        self.query = self.query.having(condition);
+        self.__synced()
     }
 
     pub fn aggregate_count_field(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.count_field(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_with_function(
@@ -723,77 +840,77 @@ impl<R> ScalarTypeProbeRequest<R> {
         function: AggregateFunction,
     ) -> Self {
         self.query = self.query.aggregate(Aggregate::new(function, field, alias));
-        self
+        self.__synced()
     }
 
     pub fn aggregate_sum(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.sum(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_avg(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.avg(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_min(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.min(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_max(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.max(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_stddev(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_stddev_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev_pop(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_var_samp(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_samp(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_var_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_pop(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_bit_and(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_and(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_bit_or(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_or(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_bit_xor(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_xor(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn enable_aggregation_cache(mut self) -> Self {
         self.query = self.query.enable_aggregation_cache();
-        self
+        self.__synced()
     }
 
     pub fn enable_aggregation_cache_for(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.enable_aggregation_cache_for(cache_expired_millis);
-        self
+        self.__synced()
     }
 
     pub fn propagate_aggregation_cache(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.propagate_aggregation_cache(cache_expired_millis);
-        self
+        self.__synced()
     }
 
     pub fn group_by_id(self) -> Self {
@@ -801,21 +918,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("id");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("id"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("id"));
+        request.__synced()
     }
 
     pub fn group_by_id_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("id")
-            .aggregate_with_function("id", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("id")]));
+        request.__synced()
     }
 
     pub fn count_id(self) -> Self {
@@ -824,6 +940,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("id", alias)
+    }
+    pub fn count_distinct_id(self) -> Self {
+        self.count_distinct_id_as("id_distinct_count")
+    }
+
+    pub fn count_distinct_id_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("id", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_id(self) -> Self {
@@ -869,7 +992,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_id_criteria(
@@ -885,14 +1008,14 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("id", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("id", value));
-        self
+        self.__synced()
     }
 
     pub fn with_id_in(
@@ -903,7 +1026,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "id",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_id_not_in(
@@ -914,33 +1037,33 @@ impl<R> ScalarTypeProbeRequest<R> {
             "id",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_asc(mut self) -> Self {
         self.query = self.query.order_asc("id");
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
         self.query = self.query.order_desc("id");
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("id");
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("id");
-        self
+        self.__synced()
     }
 
 
     pub fn select_required_string(mut self) -> Self {
         self.query = self.query.project("required_string");
-        self
+        self.__synced()
     }
 
     pub fn project_required_string(self) -> Self {
@@ -955,7 +1078,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("required_string", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_required_string(self) -> Self {
@@ -963,21 +1086,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_required_string_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("required_string");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("required_string"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("required_string"));
+        request.__synced()
     }
 
     pub fn group_by_required_string_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("required_string")
-            .aggregate_with_function("required_string", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("required_string")]));
+        request.__synced()
     }
 
     pub fn count_required_string(self) -> Self {
@@ -986,6 +1108,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_required_string_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("required_string", alias)
+    }
+    pub fn count_distinct_required_string(self) -> Self {
+        self.count_distinct_required_string_as("required_string_distinct_count")
+    }
+
+    pub fn count_distinct_required_string_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("required_string", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_required_string(self) -> Self {
@@ -1023,7 +1152,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_required_string(mut self) -> Self {
         self.query.projection.retain(|field| field != "required_string");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "required_string");
-        self
+        self.__synced()
     }
 
 
@@ -1037,7 +1166,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_required_string_criteria(
@@ -1053,34 +1182,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_required_string_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("required_string", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_string_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_between(
@@ -1089,7 +1218,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("required_string", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1101,7 +1230,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_in(
@@ -1112,7 +1241,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_string",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_not_in(
@@ -1123,90 +1252,90 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_string",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_containing(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::contain("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_not_containing(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_contain("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::begin_with("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::end_with("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::sound_like("required_string", value));
-        self
+        self.__synced()
     }
     pub fn with_required_string_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_string_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("required_string"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_string_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("required_string"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_required_string_asc(mut self) -> Self {
         self.query = self.query.order_asc("required_string");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_string_desc(mut self) -> Self {
         self.query = self.query.order_desc("required_string");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_string_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("required_string");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_string_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("required_string");
-        self
+        self.__synced()
     }
 
 
     pub fn select_optional_string(mut self) -> Self {
         self.query = self.query.project("optional_string");
-        self
+        self.__synced()
     }
 
     pub fn project_optional_string(self) -> Self {
@@ -1221,7 +1350,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("optional_string", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_optional_string(self) -> Self {
@@ -1229,21 +1358,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_optional_string_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("optional_string");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("optional_string"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("optional_string"));
+        request.__synced()
     }
 
     pub fn group_by_optional_string_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("optional_string")
-            .aggregate_with_function("optional_string", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("optional_string")]));
+        request.__synced()
     }
 
     pub fn count_optional_string(self) -> Self {
@@ -1252,6 +1380,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_optional_string_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("optional_string", alias)
+    }
+    pub fn count_distinct_optional_string(self) -> Self {
+        self.count_distinct_optional_string_as("optional_string_distinct_count")
+    }
+
+    pub fn count_distinct_optional_string_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("optional_string", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_optional_string(self) -> Self {
@@ -1289,7 +1424,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_optional_string(mut self) -> Self {
         self.query.projection.retain(|field| field != "optional_string");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "optional_string");
-        self
+        self.__synced()
     }
 
 
@@ -1303,7 +1438,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_optional_string_criteria(
@@ -1319,34 +1454,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_optional_string_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("optional_string", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_string_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_between(
@@ -1355,7 +1490,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("optional_string", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1367,7 +1502,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_in(
@@ -1378,7 +1513,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_string",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_not_in(
@@ -1389,90 +1524,90 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_string",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_containing(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::contain("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_not_containing(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_contain("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::begin_with("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::end_with("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::sound_like("optional_string", value));
-        self
+        self.__synced()
     }
     pub fn with_optional_string_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_string", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_string_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("optional_string"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_string_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("optional_string"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_optional_string_asc(mut self) -> Self {
         self.query = self.query.order_asc("optional_string");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_string_desc(mut self) -> Self {
         self.query = self.query.order_desc("optional_string");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_string_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("optional_string");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_string_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("optional_string");
-        self
+        self.__synced()
     }
 
 
     pub fn select_large_text(mut self) -> Self {
         self.query = self.query.project("large_text");
-        self
+        self.__synced()
     }
 
     pub fn project_large_text(self) -> Self {
@@ -1487,7 +1622,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("large_text", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_large_text(self) -> Self {
@@ -1495,21 +1630,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_large_text_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("large_text");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("large_text"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("large_text"));
+        request.__synced()
     }
 
     pub fn group_by_large_text_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("large_text")
-            .aggregate_with_function("large_text", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("large_text")]));
+        request.__synced()
     }
 
     pub fn count_large_text(self) -> Self {
@@ -1518,6 +1652,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_large_text_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("large_text", alias)
+    }
+    pub fn count_distinct_large_text(self) -> Self {
+        self.count_distinct_large_text_as("large_text_distinct_count")
+    }
+
+    pub fn count_distinct_large_text_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("large_text", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_large_text(self) -> Self {
@@ -1555,7 +1696,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_large_text(mut self) -> Self {
         self.query.projection.retain(|field| field != "large_text");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "large_text");
-        self
+        self.__synced()
     }
 
 
@@ -1569,7 +1710,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_large_text_criteria(
@@ -1585,34 +1726,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_large_text_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("large_text", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_large_text_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("large_text", value));
-        self
+        self.__synced()
     }
 
     pub fn with_large_text_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("large_text", value));
-        self
+        self.__synced()
     }
 
     pub fn with_large_text_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("large_text", value));
-        self
+        self.__synced()
     }
 
     pub fn with_large_text_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("large_text", value));
-        self
+        self.__synced()
     }
 
     pub fn with_large_text_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("large_text", value));
-        self
+        self.__synced()
     }
 
     pub fn with_large_text_between(
@@ -1621,7 +1762,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("large_text", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_large_text_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1633,7 +1774,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_large_text_in(
@@ -1644,7 +1785,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "large_text",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_large_text_not_in(
@@ -1655,56 +1796,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "large_text",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_large_text_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("large_text", value));
-        self
+        self.__synced()
     }
 
     pub fn with_large_text_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("large_text", value));
-        self
+        self.__synced()
     }
 
     pub fn with_large_text_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("large_text"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_large_text_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("large_text"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_large_text_asc(mut self) -> Self {
         self.query = self.query.order_asc("large_text");
-        self
+        self.__synced()
     }
 
     pub fn order_by_large_text_desc(mut self) -> Self {
         self.query = self.query.order_desc("large_text");
-        self
+        self.__synced()
     }
 
     pub fn order_by_large_text_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("large_text");
-        self
+        self.__synced()
     }
 
     pub fn order_by_large_text_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("large_text");
-        self
+        self.__synced()
     }
 
 
     pub fn select_required_boolean(mut self) -> Self {
         self.query = self.query.project("required_boolean");
-        self
+        self.__synced()
     }
 
     pub fn project_required_boolean(self) -> Self {
@@ -1719,7 +1860,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("required_boolean", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_required_boolean(self) -> Self {
@@ -1727,21 +1868,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_required_boolean_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("required_boolean");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("required_boolean"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("required_boolean"));
+        request.__synced()
     }
 
     pub fn group_by_required_boolean_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("required_boolean")
-            .aggregate_with_function("required_boolean", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("required_boolean")]));
+        request.__synced()
     }
 
     pub fn count_required_boolean(self) -> Self {
@@ -1750,6 +1890,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_required_boolean_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("required_boolean", alias)
+    }
+    pub fn count_distinct_required_boolean(self) -> Self {
+        self.count_distinct_required_boolean_as("required_boolean_distinct_count")
+    }
+
+    pub fn count_distinct_required_boolean_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("required_boolean", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_required_boolean(self) -> Self {
@@ -1787,52 +1934,52 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_required_boolean(mut self) -> Self {
         self.query.projection.retain(|field| field != "required_boolean");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "required_boolean");
-        self
+        self.__synced()
     }
 
     pub fn which_are_required_boolean(mut self) -> Self {
         self.query = self.query.and_filter(Expr::eq("required_boolean", true));
-        self
+        self.__synced()
     }
 
     pub fn which_are_not_required_boolean(mut self) -> Self {
         self.query = self.query.and_filter(Expr::eq("required_boolean", false));
-        self
+        self.__synced()
     }
 
     pub fn with_required_boolean_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("required_boolean"));
-        self
+        self.__synced()
     }
 
     pub fn with_required_boolean_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("required_boolean"));
-        self
+        self.__synced()
     }
     pub fn order_by_required_boolean_asc(mut self) -> Self {
         self.query = self.query.order_asc("required_boolean");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_boolean_desc(mut self) -> Self {
         self.query = self.query.order_desc("required_boolean");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_boolean_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("required_boolean");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_boolean_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("required_boolean");
-        self
+        self.__synced()
     }
 
 
     pub fn select_optional_boolean(mut self) -> Self {
         self.query = self.query.project("optional_boolean");
-        self
+        self.__synced()
     }
 
     pub fn project_optional_boolean(self) -> Self {
@@ -1847,7 +1994,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("optional_boolean", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_optional_boolean(self) -> Self {
@@ -1855,21 +2002,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_optional_boolean_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("optional_boolean");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("optional_boolean"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("optional_boolean"));
+        request.__synced()
     }
 
     pub fn group_by_optional_boolean_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("optional_boolean")
-            .aggregate_with_function("optional_boolean", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("optional_boolean")]));
+        request.__synced()
     }
 
     pub fn count_optional_boolean(self) -> Self {
@@ -1878,6 +2024,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_optional_boolean_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("optional_boolean", alias)
+    }
+    pub fn count_distinct_optional_boolean(self) -> Self {
+        self.count_distinct_optional_boolean_as("optional_boolean_distinct_count")
+    }
+
+    pub fn count_distinct_optional_boolean_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("optional_boolean", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_optional_boolean(self) -> Self {
@@ -1915,52 +2068,52 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_optional_boolean(mut self) -> Self {
         self.query.projection.retain(|field| field != "optional_boolean");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "optional_boolean");
-        self
+        self.__synced()
     }
 
     pub fn which_are_optional_boolean(mut self) -> Self {
         self.query = self.query.and_filter(Expr::eq("optional_boolean", true));
-        self
+        self.__synced()
     }
 
     pub fn which_are_not_optional_boolean(mut self) -> Self {
         self.query = self.query.and_filter(Expr::eq("optional_boolean", false));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_boolean_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("optional_boolean"));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_boolean_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("optional_boolean"));
-        self
+        self.__synced()
     }
     pub fn order_by_optional_boolean_asc(mut self) -> Self {
         self.query = self.query.order_asc("optional_boolean");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_boolean_desc(mut self) -> Self {
         self.query = self.query.order_desc("optional_boolean");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_boolean_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("optional_boolean");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_boolean_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("optional_boolean");
-        self
+        self.__synced()
     }
 
 
     pub fn select_required_integer(mut self) -> Self {
         self.query = self.query.project("required_integer");
-        self
+        self.__synced()
     }
 
     pub fn project_required_integer(self) -> Self {
@@ -1975,7 +2128,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("required_integer", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn select_required_integer_with_function(self, function: AggregateFunction) -> Self {
@@ -1995,21 +2148,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_required_integer_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("required_integer");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("required_integer"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("required_integer"));
+        request.__synced()
     }
 
     pub fn group_by_required_integer_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("required_integer")
-            .aggregate_with_function("required_integer", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("required_integer")]));
+        request.__synced()
     }
 
     pub fn count_required_integer(self) -> Self {
@@ -2018,6 +2170,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_required_integer_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("required_integer", alias)
+    }
+    pub fn count_distinct_required_integer(self) -> Self {
+        self.count_distinct_required_integer_as("required_integer_distinct_count")
+    }
+
+    pub fn count_distinct_required_integer_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("required_integer", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_required_integer(self) -> Self {
@@ -2087,7 +2246,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_required_integer(mut self) -> Self {
         self.query.projection.retain(|field| field != "required_integer");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "required_integer");
-        self
+        self.__synced()
     }
 
 
@@ -2101,7 +2260,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_required_integer_criteria(
@@ -2117,34 +2276,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_required_integer_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("required_integer", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_integer_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("required_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_integer_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_integer_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("required_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_integer_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_integer_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("required_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_integer_between(
@@ -2153,7 +2312,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("required_integer", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_required_integer_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -2165,7 +2324,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_integer_in(
@@ -2176,7 +2335,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_integer",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_integer_not_in(
@@ -2187,56 +2346,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_integer",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_integer_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_integer_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_integer_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("required_integer"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_integer_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("required_integer"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_required_integer_asc(mut self) -> Self {
         self.query = self.query.order_asc("required_integer");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_integer_desc(mut self) -> Self {
         self.query = self.query.order_desc("required_integer");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_integer_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("required_integer");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_integer_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("required_integer");
-        self
+        self.__synced()
     }
 
 
     pub fn select_optional_integer(mut self) -> Self {
         self.query = self.query.project("optional_integer");
-        self
+        self.__synced()
     }
 
     pub fn project_optional_integer(self) -> Self {
@@ -2251,7 +2410,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("optional_integer", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn select_optional_integer_with_function(self, function: AggregateFunction) -> Self {
@@ -2271,21 +2430,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_optional_integer_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("optional_integer");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("optional_integer"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("optional_integer"));
+        request.__synced()
     }
 
     pub fn group_by_optional_integer_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("optional_integer")
-            .aggregate_with_function("optional_integer", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("optional_integer")]));
+        request.__synced()
     }
 
     pub fn count_optional_integer(self) -> Self {
@@ -2294,6 +2452,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_optional_integer_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("optional_integer", alias)
+    }
+    pub fn count_distinct_optional_integer(self) -> Self {
+        self.count_distinct_optional_integer_as("optional_integer_distinct_count")
+    }
+
+    pub fn count_distinct_optional_integer_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("optional_integer", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_optional_integer(self) -> Self {
@@ -2363,7 +2528,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_optional_integer(mut self) -> Self {
         self.query.projection.retain(|field| field != "optional_integer");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "optional_integer");
-        self
+        self.__synced()
     }
 
 
@@ -2377,7 +2542,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_optional_integer_criteria(
@@ -2393,34 +2558,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_optional_integer_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("optional_integer", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_integer_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("optional_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_integer_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_integer_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("optional_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_integer_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_integer_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("optional_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_integer_between(
@@ -2429,7 +2594,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("optional_integer", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_integer_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -2441,7 +2606,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_integer_in(
@@ -2452,7 +2617,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_integer",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_integer_not_in(
@@ -2463,56 +2628,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_integer",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_integer_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_integer_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_integer", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_integer_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("optional_integer"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_integer_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("optional_integer"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_optional_integer_asc(mut self) -> Self {
         self.query = self.query.order_asc("optional_integer");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_integer_desc(mut self) -> Self {
         self.query = self.query.order_desc("optional_integer");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_integer_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("optional_integer");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_integer_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("optional_integer");
-        self
+        self.__synced()
     }
 
 
     pub fn select_required_long(mut self) -> Self {
         self.query = self.query.project("required_long");
-        self
+        self.__synced()
     }
 
     pub fn project_required_long(self) -> Self {
@@ -2527,7 +2692,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("required_long", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn select_required_long_with_function(self, function: AggregateFunction) -> Self {
@@ -2547,21 +2712,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_required_long_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("required_long");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("required_long"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("required_long"));
+        request.__synced()
     }
 
     pub fn group_by_required_long_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("required_long")
-            .aggregate_with_function("required_long", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("required_long")]));
+        request.__synced()
     }
 
     pub fn count_required_long(self) -> Self {
@@ -2570,6 +2734,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_required_long_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("required_long", alias)
+    }
+    pub fn count_distinct_required_long(self) -> Self {
+        self.count_distinct_required_long_as("required_long_distinct_count")
+    }
+
+    pub fn count_distinct_required_long_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("required_long", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_required_long(self) -> Self {
@@ -2639,7 +2810,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_required_long(mut self) -> Self {
         self.query.projection.retain(|field| field != "required_long");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "required_long");
-        self
+        self.__synced()
     }
 
 
@@ -2653,7 +2824,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_required_long_criteria(
@@ -2669,34 +2840,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_required_long_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("required_long", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_long_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("required_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_long_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_long_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("required_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_long_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_long_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("required_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_long_between(
@@ -2705,7 +2876,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("required_long", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_required_long_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -2717,7 +2888,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_long_in(
@@ -2728,7 +2899,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_long",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_long_not_in(
@@ -2739,56 +2910,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_long",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_long_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_long_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_long_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("required_long"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_long_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("required_long"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_required_long_asc(mut self) -> Self {
         self.query = self.query.order_asc("required_long");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_long_desc(mut self) -> Self {
         self.query = self.query.order_desc("required_long");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_long_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("required_long");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_long_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("required_long");
-        self
+        self.__synced()
     }
 
 
     pub fn select_optional_long(mut self) -> Self {
         self.query = self.query.project("optional_long");
-        self
+        self.__synced()
     }
 
     pub fn project_optional_long(self) -> Self {
@@ -2803,7 +2974,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("optional_long", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn select_optional_long_with_function(self, function: AggregateFunction) -> Self {
@@ -2823,21 +2994,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_optional_long_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("optional_long");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("optional_long"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("optional_long"));
+        request.__synced()
     }
 
     pub fn group_by_optional_long_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("optional_long")
-            .aggregate_with_function("optional_long", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("optional_long")]));
+        request.__synced()
     }
 
     pub fn count_optional_long(self) -> Self {
@@ -2846,6 +3016,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_optional_long_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("optional_long", alias)
+    }
+    pub fn count_distinct_optional_long(self) -> Self {
+        self.count_distinct_optional_long_as("optional_long_distinct_count")
+    }
+
+    pub fn count_distinct_optional_long_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("optional_long", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_optional_long(self) -> Self {
@@ -2915,7 +3092,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_optional_long(mut self) -> Self {
         self.query.projection.retain(|field| field != "optional_long");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "optional_long");
-        self
+        self.__synced()
     }
 
 
@@ -2929,7 +3106,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_optional_long_criteria(
@@ -2945,34 +3122,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_optional_long_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("optional_long", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_long_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("optional_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_long_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_long_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("optional_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_long_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_long_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("optional_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_long_between(
@@ -2981,7 +3158,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("optional_long", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_long_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -2993,7 +3170,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_long_in(
@@ -3004,7 +3181,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_long",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_long_not_in(
@@ -3015,56 +3192,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_long",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_long_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_long_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_long", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_long_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("optional_long"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_long_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("optional_long"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_optional_long_asc(mut self) -> Self {
         self.query = self.query.order_asc("optional_long");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_long_desc(mut self) -> Self {
         self.query = self.query.order_desc("optional_long");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_long_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("optional_long");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_long_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("optional_long");
-        self
+        self.__synced()
     }
 
 
     pub fn select_required_decimal(mut self) -> Self {
         self.query = self.query.project("required_decimal");
-        self
+        self.__synced()
     }
 
     pub fn project_required_decimal(self) -> Self {
@@ -3079,7 +3256,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("required_decimal", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn select_required_decimal_with_function(self, function: AggregateFunction) -> Self {
@@ -3099,21 +3276,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_required_decimal_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("required_decimal");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("required_decimal"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("required_decimal"));
+        request.__synced()
     }
 
     pub fn group_by_required_decimal_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("required_decimal")
-            .aggregate_with_function("required_decimal", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("required_decimal")]));
+        request.__synced()
     }
 
     pub fn count_required_decimal(self) -> Self {
@@ -3122,6 +3298,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_required_decimal_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("required_decimal", alias)
+    }
+    pub fn count_distinct_required_decimal(self) -> Self {
+        self.count_distinct_required_decimal_as("required_decimal_distinct_count")
+    }
+
+    pub fn count_distinct_required_decimal_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("required_decimal", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_required_decimal(self) -> Self {
@@ -3191,7 +3374,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_required_decimal(mut self) -> Self {
         self.query.projection.retain(|field| field != "required_decimal");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "required_decimal");
-        self
+        self.__synced()
     }
 
 
@@ -3205,7 +3388,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_required_decimal_criteria(
@@ -3221,34 +3404,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_required_decimal_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("required_decimal", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_decimal_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("required_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_decimal_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_decimal_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("required_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_decimal_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_decimal_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("required_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_decimal_between(
@@ -3257,7 +3440,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("required_decimal", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_required_decimal_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -3269,7 +3452,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_decimal_in(
@@ -3280,7 +3463,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_decimal",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_decimal_not_in(
@@ -3291,56 +3474,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_decimal",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_decimal_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_decimal_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_decimal_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("required_decimal"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_decimal_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("required_decimal"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_required_decimal_asc(mut self) -> Self {
         self.query = self.query.order_asc("required_decimal");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_decimal_desc(mut self) -> Self {
         self.query = self.query.order_desc("required_decimal");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_decimal_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("required_decimal");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_decimal_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("required_decimal");
-        self
+        self.__synced()
     }
 
 
     pub fn select_optional_decimal(mut self) -> Self {
         self.query = self.query.project("optional_decimal");
-        self
+        self.__synced()
     }
 
     pub fn project_optional_decimal(self) -> Self {
@@ -3355,7 +3538,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("optional_decimal", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn select_optional_decimal_with_function(self, function: AggregateFunction) -> Self {
@@ -3375,21 +3558,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_optional_decimal_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("optional_decimal");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("optional_decimal"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("optional_decimal"));
+        request.__synced()
     }
 
     pub fn group_by_optional_decimal_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("optional_decimal")
-            .aggregate_with_function("optional_decimal", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("optional_decimal")]));
+        request.__synced()
     }
 
     pub fn count_optional_decimal(self) -> Self {
@@ -3398,6 +3580,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_optional_decimal_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("optional_decimal", alias)
+    }
+    pub fn count_distinct_optional_decimal(self) -> Self {
+        self.count_distinct_optional_decimal_as("optional_decimal_distinct_count")
+    }
+
+    pub fn count_distinct_optional_decimal_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("optional_decimal", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_optional_decimal(self) -> Self {
@@ -3467,7 +3656,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_optional_decimal(mut self) -> Self {
         self.query.projection.retain(|field| field != "optional_decimal");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "optional_decimal");
-        self
+        self.__synced()
     }
 
 
@@ -3481,7 +3670,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_optional_decimal_criteria(
@@ -3497,34 +3686,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_optional_decimal_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("optional_decimal", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_decimal_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("optional_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_decimal_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_decimal_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("optional_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_decimal_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_decimal_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("optional_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_decimal_between(
@@ -3533,7 +3722,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("optional_decimal", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_decimal_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -3545,7 +3734,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_decimal_in(
@@ -3556,7 +3745,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_decimal",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_decimal_not_in(
@@ -3567,56 +3756,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_decimal",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_decimal_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_decimal_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_decimal", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_decimal_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("optional_decimal"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_decimal_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("optional_decimal"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_optional_decimal_asc(mut self) -> Self {
         self.query = self.query.order_asc("optional_decimal");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_decimal_desc(mut self) -> Self {
         self.query = self.query.order_desc("optional_decimal");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_decimal_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("optional_decimal");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_decimal_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("optional_decimal");
-        self
+        self.__synced()
     }
 
 
     pub fn select_required_float(mut self) -> Self {
         self.query = self.query.project("required_float");
-        self
+        self.__synced()
     }
 
     pub fn project_required_float(self) -> Self {
@@ -3631,7 +3820,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("required_float", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn select_required_float_with_function(self, function: AggregateFunction) -> Self {
@@ -3651,21 +3840,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_required_float_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("required_float");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("required_float"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("required_float"));
+        request.__synced()
     }
 
     pub fn group_by_required_float_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("required_float")
-            .aggregate_with_function("required_float", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("required_float")]));
+        request.__synced()
     }
 
     pub fn count_required_float(self) -> Self {
@@ -3674,6 +3862,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_required_float_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("required_float", alias)
+    }
+    pub fn count_distinct_required_float(self) -> Self {
+        self.count_distinct_required_float_as("required_float_distinct_count")
+    }
+
+    pub fn count_distinct_required_float_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("required_float", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_required_float(self) -> Self {
@@ -3743,7 +3938,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_required_float(mut self) -> Self {
         self.query.projection.retain(|field| field != "required_float");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "required_float");
-        self
+        self.__synced()
     }
 
 
@@ -3757,7 +3952,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_required_float_criteria(
@@ -3773,34 +3968,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_required_float_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("required_float", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_float_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("required_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_float_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_float_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("required_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_float_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_float_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("required_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_float_between(
@@ -3809,7 +4004,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("required_float", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_required_float_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -3821,7 +4016,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_float_in(
@@ -3832,7 +4027,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_float",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_float_not_in(
@@ -3843,56 +4038,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_float",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_float_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_float_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_float_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("required_float"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_float_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("required_float"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_required_float_asc(mut self) -> Self {
         self.query = self.query.order_asc("required_float");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_float_desc(mut self) -> Self {
         self.query = self.query.order_desc("required_float");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_float_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("required_float");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_float_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("required_float");
-        self
+        self.__synced()
     }
 
 
     pub fn select_optional_float(mut self) -> Self {
         self.query = self.query.project("optional_float");
-        self
+        self.__synced()
     }
 
     pub fn project_optional_float(self) -> Self {
@@ -3907,7 +4102,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("optional_float", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn select_optional_float_with_function(self, function: AggregateFunction) -> Self {
@@ -3927,21 +4122,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_optional_float_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("optional_float");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("optional_float"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("optional_float"));
+        request.__synced()
     }
 
     pub fn group_by_optional_float_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("optional_float")
-            .aggregate_with_function("optional_float", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("optional_float")]));
+        request.__synced()
     }
 
     pub fn count_optional_float(self) -> Self {
@@ -3950,6 +4144,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_optional_float_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("optional_float", alias)
+    }
+    pub fn count_distinct_optional_float(self) -> Self {
+        self.count_distinct_optional_float_as("optional_float_distinct_count")
+    }
+
+    pub fn count_distinct_optional_float_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("optional_float", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_optional_float(self) -> Self {
@@ -4019,7 +4220,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_optional_float(mut self) -> Self {
         self.query.projection.retain(|field| field != "optional_float");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "optional_float");
-        self
+        self.__synced()
     }
 
 
@@ -4033,7 +4234,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_optional_float_criteria(
@@ -4049,34 +4250,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_optional_float_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("optional_float", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_float_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("optional_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_float_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_float_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("optional_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_float_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_float_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("optional_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_float_between(
@@ -4085,7 +4286,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("optional_float", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_float_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -4097,7 +4298,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_float_in(
@@ -4108,7 +4309,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_float",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_float_not_in(
@@ -4119,56 +4320,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_float",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_float_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_float_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_float", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_float_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("optional_float"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_float_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("optional_float"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_optional_float_asc(mut self) -> Self {
         self.query = self.query.order_asc("optional_float");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_float_desc(mut self) -> Self {
         self.query = self.query.order_desc("optional_float");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_float_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("optional_float");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_float_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("optional_float");
-        self
+        self.__synced()
     }
 
 
     pub fn select_required_double(mut self) -> Self {
         self.query = self.query.project("required_double");
-        self
+        self.__synced()
     }
 
     pub fn project_required_double(self) -> Self {
@@ -4183,7 +4384,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("required_double", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn select_required_double_with_function(self, function: AggregateFunction) -> Self {
@@ -4203,21 +4404,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_required_double_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("required_double");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("required_double"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("required_double"));
+        request.__synced()
     }
 
     pub fn group_by_required_double_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("required_double")
-            .aggregate_with_function("required_double", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("required_double")]));
+        request.__synced()
     }
 
     pub fn count_required_double(self) -> Self {
@@ -4226,6 +4426,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_required_double_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("required_double", alias)
+    }
+    pub fn count_distinct_required_double(self) -> Self {
+        self.count_distinct_required_double_as("required_double_distinct_count")
+    }
+
+    pub fn count_distinct_required_double_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("required_double", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_required_double(self) -> Self {
@@ -4295,7 +4502,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_required_double(mut self) -> Self {
         self.query.projection.retain(|field| field != "required_double");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "required_double");
-        self
+        self.__synced()
     }
 
 
@@ -4309,7 +4516,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_required_double_criteria(
@@ -4325,34 +4532,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_required_double_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("required_double", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_double_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("required_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_double_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_double_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("required_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_double_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_double_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("required_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_double_between(
@@ -4361,7 +4568,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("required_double", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_required_double_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -4373,7 +4580,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_double_in(
@@ -4384,7 +4591,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_double",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_double_not_in(
@@ -4395,56 +4602,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_double",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_double_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_double_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_double_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("required_double"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_double_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("required_double"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_required_double_asc(mut self) -> Self {
         self.query = self.query.order_asc("required_double");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_double_desc(mut self) -> Self {
         self.query = self.query.order_desc("required_double");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_double_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("required_double");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_double_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("required_double");
-        self
+        self.__synced()
     }
 
 
     pub fn select_optional_double(mut self) -> Self {
         self.query = self.query.project("optional_double");
-        self
+        self.__synced()
     }
 
     pub fn project_optional_double(self) -> Self {
@@ -4459,7 +4666,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("optional_double", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn select_optional_double_with_function(self, function: AggregateFunction) -> Self {
@@ -4479,21 +4686,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_optional_double_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("optional_double");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("optional_double"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("optional_double"));
+        request.__synced()
     }
 
     pub fn group_by_optional_double_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("optional_double")
-            .aggregate_with_function("optional_double", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("optional_double")]));
+        request.__synced()
     }
 
     pub fn count_optional_double(self) -> Self {
@@ -4502,6 +4708,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_optional_double_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("optional_double", alias)
+    }
+    pub fn count_distinct_optional_double(self) -> Self {
+        self.count_distinct_optional_double_as("optional_double_distinct_count")
+    }
+
+    pub fn count_distinct_optional_double_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("optional_double", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_optional_double(self) -> Self {
@@ -4571,7 +4784,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_optional_double(mut self) -> Self {
         self.query.projection.retain(|field| field != "optional_double");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "optional_double");
-        self
+        self.__synced()
     }
 
 
@@ -4585,7 +4798,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_optional_double_criteria(
@@ -4601,34 +4814,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_optional_double_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("optional_double", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_double_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("optional_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_double_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_double_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("optional_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_double_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_double_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("optional_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_double_between(
@@ -4637,7 +4850,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("optional_double", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_double_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -4649,7 +4862,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_double_in(
@@ -4660,7 +4873,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_double",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_double_not_in(
@@ -4671,56 +4884,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_double",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_double_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_double_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_double", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_double_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("optional_double"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_double_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("optional_double"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_optional_double_asc(mut self) -> Self {
         self.query = self.query.order_asc("optional_double");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_double_desc(mut self) -> Self {
         self.query = self.query.order_desc("optional_double");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_double_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("optional_double");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_double_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("optional_double");
-        self
+        self.__synced()
     }
 
 
     pub fn select_required_date(mut self) -> Self {
         self.query = self.query.project("required_date");
-        self
+        self.__synced()
     }
 
     pub fn project_required_date(self) -> Self {
@@ -4735,7 +4948,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("required_date", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_required_date(self) -> Self {
@@ -4743,21 +4956,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_required_date_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("required_date");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("required_date"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("required_date"));
+        request.__synced()
     }
 
     pub fn group_by_required_date_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("required_date")
-            .aggregate_with_function("required_date", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("required_date")]));
+        request.__synced()
     }
 
     pub fn count_required_date(self) -> Self {
@@ -4766,6 +4978,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_required_date_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("required_date", alias)
+    }
+    pub fn count_distinct_required_date(self) -> Self {
+        self.count_distinct_required_date_as("required_date_distinct_count")
+    }
+
+    pub fn count_distinct_required_date_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("required_date", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_required_date(self) -> Self {
@@ -4803,7 +5022,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_required_date(mut self) -> Self {
         self.query.projection.retain(|field| field != "required_date");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "required_date");
-        self
+        self.__synced()
     }
 
 
@@ -4817,7 +5036,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_required_date_criteria(
@@ -4833,34 +5052,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_required_date_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("required_date", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_date_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("required_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_date_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_date_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("required_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_date_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_date_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("required_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_date_between(
@@ -4869,7 +5088,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("required_date", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_required_date_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -4881,7 +5100,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_date_in(
@@ -4892,7 +5111,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_date",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_date_not_in(
@@ -4903,56 +5122,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_date",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_date_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_date_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_date_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("required_date"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_date_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("required_date"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_required_date_asc(mut self) -> Self {
         self.query = self.query.order_asc("required_date");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_date_desc(mut self) -> Self {
         self.query = self.query.order_desc("required_date");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_date_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("required_date");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_date_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("required_date");
-        self
+        self.__synced()
     }
 
 
     pub fn select_optional_date(mut self) -> Self {
         self.query = self.query.project("optional_date");
-        self
+        self.__synced()
     }
 
     pub fn project_optional_date(self) -> Self {
@@ -4967,7 +5186,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("optional_date", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_optional_date(self) -> Self {
@@ -4975,21 +5194,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_optional_date_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("optional_date");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("optional_date"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("optional_date"));
+        request.__synced()
     }
 
     pub fn group_by_optional_date_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("optional_date")
-            .aggregate_with_function("optional_date", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("optional_date")]));
+        request.__synced()
     }
 
     pub fn count_optional_date(self) -> Self {
@@ -4998,6 +5216,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_optional_date_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("optional_date", alias)
+    }
+    pub fn count_distinct_optional_date(self) -> Self {
+        self.count_distinct_optional_date_as("optional_date_distinct_count")
+    }
+
+    pub fn count_distinct_optional_date_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("optional_date", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_optional_date(self) -> Self {
@@ -5035,7 +5260,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_optional_date(mut self) -> Self {
         self.query.projection.retain(|field| field != "optional_date");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "optional_date");
-        self
+        self.__synced()
     }
 
 
@@ -5049,7 +5274,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_optional_date_criteria(
@@ -5065,34 +5290,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_optional_date_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("optional_date", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_date_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("optional_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_date_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_date_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("optional_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_date_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_date_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("optional_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_date_between(
@@ -5101,7 +5326,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("optional_date", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_date_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -5113,7 +5338,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_date_in(
@@ -5124,7 +5349,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_date",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_date_not_in(
@@ -5135,56 +5360,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_date",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_date_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_date_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_date", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_date_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("optional_date"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_date_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("optional_date"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_optional_date_asc(mut self) -> Self {
         self.query = self.query.order_asc("optional_date");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_date_desc(mut self) -> Self {
         self.query = self.query.order_desc("optional_date");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_date_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("optional_date");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_date_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("optional_date");
-        self
+        self.__synced()
     }
 
 
     pub fn select_required_time(mut self) -> Self {
         self.query = self.query.project("required_time");
-        self
+        self.__synced()
     }
 
     pub fn project_required_time(self) -> Self {
@@ -5199,7 +5424,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("required_time", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_required_time(self) -> Self {
@@ -5207,21 +5432,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_required_time_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("required_time");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("required_time"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("required_time"));
+        request.__synced()
     }
 
     pub fn group_by_required_time_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("required_time")
-            .aggregate_with_function("required_time", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("required_time")]));
+        request.__synced()
     }
 
     pub fn count_required_time(self) -> Self {
@@ -5230,6 +5454,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_required_time_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("required_time", alias)
+    }
+    pub fn count_distinct_required_time(self) -> Self {
+        self.count_distinct_required_time_as("required_time_distinct_count")
+    }
+
+    pub fn count_distinct_required_time_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("required_time", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_required_time(self) -> Self {
@@ -5267,7 +5498,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_required_time(mut self) -> Self {
         self.query.projection.retain(|field| field != "required_time");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "required_time");
-        self
+        self.__synced()
     }
 
 
@@ -5281,7 +5512,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_required_time_criteria(
@@ -5297,34 +5528,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_required_time_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("required_time", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_time_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("required_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_time_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("required_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_time_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("required_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_time_between(
@@ -5333,7 +5564,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("required_time", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_required_time_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -5345,7 +5576,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_time_in(
@@ -5356,7 +5587,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_time",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_time_not_in(
@@ -5367,56 +5598,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_time",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_time_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_time_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_time_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("required_time"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_time_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("required_time"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_required_time_asc(mut self) -> Self {
         self.query = self.query.order_asc("required_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_time_desc(mut self) -> Self {
         self.query = self.query.order_desc("required_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_time_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("required_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_time_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("required_time");
-        self
+        self.__synced()
     }
 
 
     pub fn select_optional_time(mut self) -> Self {
         self.query = self.query.project("optional_time");
-        self
+        self.__synced()
     }
 
     pub fn project_optional_time(self) -> Self {
@@ -5431,7 +5662,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("optional_time", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_optional_time(self) -> Self {
@@ -5439,21 +5670,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_optional_time_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("optional_time");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("optional_time"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("optional_time"));
+        request.__synced()
     }
 
     pub fn group_by_optional_time_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("optional_time")
-            .aggregate_with_function("optional_time", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("optional_time")]));
+        request.__synced()
     }
 
     pub fn count_optional_time(self) -> Self {
@@ -5462,6 +5692,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_optional_time_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("optional_time", alias)
+    }
+    pub fn count_distinct_optional_time(self) -> Self {
+        self.count_distinct_optional_time_as("optional_time_distinct_count")
+    }
+
+    pub fn count_distinct_optional_time_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("optional_time", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_optional_time(self) -> Self {
@@ -5499,7 +5736,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_optional_time(mut self) -> Self {
         self.query.projection.retain(|field| field != "optional_time");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "optional_time");
-        self
+        self.__synced()
     }
 
 
@@ -5513,7 +5750,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_optional_time_criteria(
@@ -5529,34 +5766,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_optional_time_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("optional_time", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_time_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("optional_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_time_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("optional_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_time_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("optional_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_time_between(
@@ -5565,7 +5802,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("optional_time", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_time_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -5577,7 +5814,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_time_in(
@@ -5588,7 +5825,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_time",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_time_not_in(
@@ -5599,56 +5836,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_time",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_time_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_time_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_time_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("optional_time"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_time_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("optional_time"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_optional_time_asc(mut self) -> Self {
         self.query = self.query.order_asc("optional_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_time_desc(mut self) -> Self {
         self.query = self.query.order_desc("optional_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_time_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("optional_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_time_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("optional_time");
-        self
+        self.__synced()
     }
 
 
     pub fn select_required_datetime(mut self) -> Self {
         self.query = self.query.project("required_datetime");
-        self
+        self.__synced()
     }
 
     pub fn project_required_datetime(self) -> Self {
@@ -5663,7 +5900,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("required_datetime", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_required_datetime(self) -> Self {
@@ -5671,21 +5908,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_required_datetime_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("required_datetime");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("required_datetime"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("required_datetime"));
+        request.__synced()
     }
 
     pub fn group_by_required_datetime_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("required_datetime")
-            .aggregate_with_function("required_datetime", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("required_datetime")]));
+        request.__synced()
     }
 
     pub fn count_required_datetime(self) -> Self {
@@ -5694,6 +5930,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_required_datetime_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("required_datetime", alias)
+    }
+    pub fn count_distinct_required_datetime(self) -> Self {
+        self.count_distinct_required_datetime_as("required_datetime_distinct_count")
+    }
+
+    pub fn count_distinct_required_datetime_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("required_datetime", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_required_datetime(self) -> Self {
@@ -5731,7 +5974,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_required_datetime(mut self) -> Self {
         self.query.projection.retain(|field| field != "required_datetime");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "required_datetime");
-        self
+        self.__synced()
     }
 
 
@@ -5745,7 +5988,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_required_datetime_criteria(
@@ -5761,34 +6004,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_required_datetime_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("required_datetime", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_datetime_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("required_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_datetime_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_datetime_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("required_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_datetime_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_datetime_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("required_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_datetime_between(
@@ -5797,7 +6040,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("required_datetime", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_required_datetime_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -5809,7 +6052,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_datetime_in(
@@ -5820,7 +6063,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_datetime",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_datetime_not_in(
@@ -5831,56 +6074,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "required_datetime",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_required_datetime_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("required_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_datetime_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("required_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_required_datetime_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("required_datetime"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_required_datetime_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("required_datetime"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_required_datetime_asc(mut self) -> Self {
         self.query = self.query.order_asc("required_datetime");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_datetime_desc(mut self) -> Self {
         self.query = self.query.order_desc("required_datetime");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_datetime_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("required_datetime");
-        self
+        self.__synced()
     }
 
     pub fn order_by_required_datetime_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("required_datetime");
-        self
+        self.__synced()
     }
 
 
     pub fn select_optional_datetime(mut self) -> Self {
         self.query = self.query.project("optional_datetime");
-        self
+        self.__synced()
     }
 
     pub fn project_optional_datetime(self) -> Self {
@@ -5895,7 +6138,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("optional_datetime", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_optional_datetime(self) -> Self {
@@ -5903,21 +6146,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_optional_datetime_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("optional_datetime");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("optional_datetime"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("optional_datetime"));
+        request.__synced()
     }
 
     pub fn group_by_optional_datetime_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("optional_datetime")
-            .aggregate_with_function("optional_datetime", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("optional_datetime")]));
+        request.__synced()
     }
 
     pub fn count_optional_datetime(self) -> Self {
@@ -5926,6 +6168,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_optional_datetime_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("optional_datetime", alias)
+    }
+    pub fn count_distinct_optional_datetime(self) -> Self {
+        self.count_distinct_optional_datetime_as("optional_datetime_distinct_count")
+    }
+
+    pub fn count_distinct_optional_datetime_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("optional_datetime", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_optional_datetime(self) -> Self {
@@ -5963,7 +6212,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_optional_datetime(mut self) -> Self {
         self.query.projection.retain(|field| field != "optional_datetime");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "optional_datetime");
-        self
+        self.__synced()
     }
 
 
@@ -5977,7 +6226,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_optional_datetime_criteria(
@@ -5993,34 +6242,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_optional_datetime_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("optional_datetime", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_datetime_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("optional_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_datetime_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_datetime_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("optional_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_datetime_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_datetime_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("optional_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_datetime_between(
@@ -6029,7 +6278,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("optional_datetime", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_datetime_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -6041,7 +6290,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_datetime_in(
@@ -6052,7 +6301,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_datetime",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_datetime_not_in(
@@ -6063,56 +6312,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "optional_datetime",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_datetime_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("optional_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_datetime_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("optional_datetime", value));
-        self
+        self.__synced()
     }
 
     pub fn with_optional_datetime_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("optional_datetime"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_optional_datetime_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("optional_datetime"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_optional_datetime_asc(mut self) -> Self {
         self.query = self.query.order_asc("optional_datetime");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_datetime_desc(mut self) -> Self {
         self.query = self.query.order_desc("optional_datetime");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_datetime_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("optional_datetime");
-        self
+        self.__synced()
     }
 
     pub fn order_by_optional_datetime_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("optional_datetime");
-        self
+        self.__synced()
     }
 
 
     pub fn select_create_time(mut self) -> Self {
         self.query = self.query.project("create_time");
-        self
+        self.__synced()
     }
 
     pub fn project_create_time(self) -> Self {
@@ -6127,7 +6376,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("create_time", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_create_time(self) -> Self {
@@ -6135,21 +6384,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_create_time_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("create_time");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("create_time"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("create_time"));
+        request.__synced()
     }
 
     pub fn group_by_create_time_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("create_time")
-            .aggregate_with_function("create_time", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("create_time")]));
+        request.__synced()
     }
 
     pub fn count_create_time(self) -> Self {
@@ -6158,6 +6406,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_create_time_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("create_time", alias)
+    }
+    pub fn count_distinct_create_time(self) -> Self {
+        self.count_distinct_create_time_as("create_time_distinct_count")
+    }
+
+    pub fn count_distinct_create_time_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("create_time", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_create_time(self) -> Self {
@@ -6195,7 +6450,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_create_time(mut self) -> Self {
         self.query.projection.retain(|field| field != "create_time");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "create_time");
-        self
+        self.__synced()
     }
 
 
@@ -6209,7 +6464,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_create_time_criteria(
@@ -6225,34 +6480,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_create_time_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("create_time", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_create_time_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("create_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_create_time_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("create_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_create_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("create_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_create_time_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("create_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_create_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("create_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_create_time_between(
@@ -6261,7 +6516,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("create_time", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_create_time_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -6273,7 +6528,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_create_time_in(
@@ -6284,7 +6539,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "create_time",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_create_time_not_in(
@@ -6295,56 +6550,56 @@ impl<R> ScalarTypeProbeRequest<R> {
             "create_time",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_create_time_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("create_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_create_time_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("create_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_create_time_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("create_time"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_create_time_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("create_time"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_create_time_asc(mut self) -> Self {
         self.query = self.query.order_asc("create_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_create_time_desc(mut self) -> Self {
         self.query = self.query.order_desc("create_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_create_time_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("create_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_create_time_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("create_time");
-        self
+        self.__synced()
     }
 
 
     pub fn select_update_time(mut self) -> Self {
         self.query = self.query.project("update_time");
-        self
+        self.__synced()
     }
 
     pub fn project_update_time(self) -> Self {
@@ -6359,7 +6614,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("update_time", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_update_time(self) -> Self {
@@ -6367,21 +6622,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_update_time_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("update_time");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("update_time"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("update_time"));
+        request.__synced()
     }
 
     pub fn group_by_update_time_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("update_time")
-            .aggregate_with_function("update_time", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("update_time")]));
+        request.__synced()
     }
 
     pub fn count_update_time(self) -> Self {
@@ -6390,6 +6644,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_update_time_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("update_time", alias)
+    }
+    pub fn count_distinct_update_time(self) -> Self {
+        self.count_distinct_update_time_as("update_time_distinct_count")
+    }
+
+    pub fn count_distinct_update_time_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("update_time", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_update_time(self) -> Self {
@@ -6427,7 +6688,7 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn unselect_update_time(mut self) -> Self {
         self.query.projection.retain(|field| field != "update_time");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "update_time");
-        self
+        self.__synced()
     }
 
 
@@ -6441,7 +6702,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_update_time_criteria(
@@ -6457,34 +6718,34 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn with_update_time_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("update_time", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_update_time_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("update_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_update_time_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("update_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_update_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("update_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_update_time_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("update_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_update_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("update_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_update_time_between(
@@ -6493,7 +6754,7 @@ impl<R> ScalarTypeProbeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("update_time", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_update_time_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -6505,7 +6766,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_update_time_in(
@@ -6516,7 +6777,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             "update_time",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_update_time_not_in(
@@ -6527,50 +6788,50 @@ impl<R> ScalarTypeProbeRequest<R> {
             "update_time",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_update_time_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("update_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_update_time_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("update_time", value));
-        self
+        self.__synced()
     }
 
     pub fn with_update_time_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("update_time"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_update_time_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("update_time"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_update_time_asc(mut self) -> Self {
         self.query = self.query.order_asc("update_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_update_time_desc(mut self) -> Self {
         self.query = self.query.order_desc("update_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_update_time_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("update_time");
-        self
+        self.__synced()
     }
 
     pub fn order_by_update_time_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("update_time");
-        self
+        self.__synced()
     }
 
     pub fn group_by_version(self) -> Self {
@@ -6578,21 +6839,20 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("version");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("version"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("version"));
+        request.__synced()
     }
 
     pub fn group_by_version_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("version")
-            .aggregate_with_function("version", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("version")]));
+        request.__synced()
     }
 
     pub fn count_version(self) -> Self {
@@ -6601,6 +6861,13 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("version", alias)
+    }
+    pub fn count_distinct_version(self) -> Self {
+        self.count_distinct_version_as("version_distinct_count")
+    }
+
+    pub fn count_distinct_version_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("version", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_version(self) -> Self {
@@ -6637,26 +6904,26 @@ impl<R> ScalarTypeProbeRequest<R> {
 
     pub fn order_by_version_asc(mut self) -> Self {
         self.query = self.query.order_asc("version");
-        self
+        self.__synced()
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
         self.query = self.query.order_desc("version");
-        self
+        self.__synced()
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("version");
-        self
+        self.__synced()
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("version");
-        self
+        self.__synced()
     }
     pub fn filter_by_type_platform(mut self, value: impl EntityReference) -> Self {
         self.query = self.query.and_filter(Expr::eq("type_platform_id", value.entity_id_value()));
-        self
+        self.__synced()
     }
 
     pub fn with_type_platform_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -6664,11 +6931,11 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "type_platform_id",
             <crate::TypePlatform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("type_platform", selection));
-        self
+        self.__synced()
     }
 
 
@@ -6677,22 +6944,32 @@ impl<R> ScalarTypeProbeRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "type_platform_id",
             <crate::TypePlatform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("type_platform", selection));
-        self
+        self.__synced()
     }
 
 
     pub fn have_type_platform(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("type_platform_id"));
-        self
+        self.__synced()
     }
 
     pub fn have_no_type_platform(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("type_platform_id"));
-        self
+        self.__synced()
+    }
+
+    pub fn order_by_type_platform_asc(mut self) -> Self {
+        self.query = self.query.order_asc("type_platform_id");
+        self.__synced()
+    }
+
+    pub fn order_by_type_platform_desc(mut self) -> Self {
+        self.query = self.query.order_desc("type_platform_id");
+        self.__synced()
     }
 
 
@@ -6701,50 +6978,80 @@ impl<R> ScalarTypeProbeRequest<R> {
     }
 
     pub fn group_by_type_platform_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("type_platform_id");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("type_platform_id"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("type_platform_id"));
+        request.__synced()
     }
 
     pub fn group_by_type_platform_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("type_platform_id")
-            .aggregate_with_function("type_platform_id", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("type_platform_id")]));
+        request.__synced()
     }
 
     pub fn group_by_type_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
+        self.__group_by_type_platform_with_operation(request, "group_by_type_platform_with")
+    }
+
+    fn __group_by_type_platform_with_operation(mut self, request: impl Into<QuerySelection>, method: &str) -> Self {
         self.query = self.query.group_by("type_platform_id");
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "type_platform",
             "type_platform_id",
             request,
-        ));
-        self
+        ).with_operation(
+            QueryOperation::new(QueryOperationKind::Aggregate, method)
+                .with_relation("type_platform")));
+        self.__synced()
     }
 
     pub fn group_by_type_platform_with_details(self) -> Self {
-        self.group_by_type_platform_with_details_from(crate::Q::type_platforms().unlimited())
+        self.__group_by_type_platform_with_operation(crate::Q::type_platforms().unlimited(), "group_by_type_platform_with_details")
     }
 
     pub fn group_by_type_platform_with_details_from(self, request: impl Into<QuerySelection>) -> Self {
-        self.group_by_type_platform_with(request)
+        self.__group_by_type_platform_with_operation(request, "group_by_type_platform_with_details_from")
     }
 
 
-    pub fn roll_up_to_type_platform(self) -> Self {
-        self.roll_up_to_type_platform_with(crate::Q::type_platforms().unlimited())
+    pub fn roll_up_to_type_platform(&mut self) -> crate::TypePlatformRequest {
+        self.__bind_roll_up_to_type_platform(crate::Q::type_platforms().unlimited(),
+            QueryOperation::new(QueryOperationKind::Aggregate, "roll_up_to_type_platform")
+                .with_relation("type_platform"))
     }
 
-    pub fn roll_up_to_type_platform_with(self, request: impl Into<QuerySelection>) -> Self {
-        let selection = request.into();
-        self.with_type_platform_matching(selection.clone())
-            .group_by_type_platform_with(selection)
+    pub fn roll_up_to_type_platform_with<T>(&mut self, request: crate::TypePlatformRequest<T>) -> crate::TypePlatformRequest<T> {
+        self.__bind_roll_up_to_type_platform(request,
+            QueryOperation::new(QueryOperationKind::Aggregate, "roll_up_to_type_platform_with")
+                .with_relation("type_platform"))
+    }
+
+    fn __bind_roll_up_to_type_platform<T>(&mut self, mut request: crate::TypePlatformRequest<T>, operation: QueryOperation) -> crate::TypePlatformRequest<T> {
+        let target = request.__roll_up_target();
+        if let Some(source) = &self.roll_up_publication {
+            assert!(!crate::rollup_support::reaches(&target, source).expect("invalid roll-up configuration"),
+                "cyclic roll-up configuration");
+        }
+        teaql_core::request::clear_rollup_navigation(&mut self.query,
+            "type_platform", "id").expect("invalid roll-up configuration");
+        self.roll_up_links.retain(|link| link.property != "type_platform");
+        self.roll_up_links.push(RollupLink {
+            property: "type_platform".into(),
+            storage: "type_platform_id".into(),
+            descriptor: <crate::TypePlatform as teaql_core::TeaqlEntity>::entity_descriptor(),
+            operation,
+            target,
+        });
+        if !self.query.group_by.iter().any(|field| field == "type_platform_id") {
+            self.query.group_by.push("type_platform_id".into());
+        }
+        self.__publish_roll_up();
+        request
     }
 
     pub fn count_type_platform(self) -> Self {
@@ -6754,23 +7061,30 @@ impl<R> ScalarTypeProbeRequest<R> {
     pub fn count_type_platform_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("type_platform_id", alias)
     }
+    pub fn count_distinct_type_platform(self) -> Self {
+        self.count_distinct_type_platform_as("type_platform_distinct_count")
+    }
+
+    pub fn count_distinct_type_platform_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("type_platform_id", alias, AggregateFunction::CountDistinct)
+    }
 
     pub fn unselect_type_platform(mut self) -> Self {
         self.query.projection.retain(|field| field != "type_platform_id");
         self.query.relations.retain(|relation| relation.name != "type_platform");
-        self
+        self.__synced()
     }
     pub fn select_type_platform(mut self) -> Self {
         self.query.relations.push(teaql_core::RelationLoad::new("type_platform")
             .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_type_platform").with_relation("type_platform")));
-        self
+        self.__synced()
     }
 
     pub fn select_type_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         self.query.relations.push(teaql_core::RelationLoad::with_query("type_platform", selection.into_query())
             .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_type_platform_with").with_relation("type_platform")));
-        self
+        self.__synced()
 }
 
     pub fn facet_by_type_platform_as(self, facet_name: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
@@ -6796,7 +7110,7 @@ impl<R> ScalarTypeProbeRequest<R> {
             request,
             include_all_facets,
         ).with_operation(operation));
-        self
+        self.__synced()
     }
 }
 
@@ -6813,7 +7127,8 @@ impl<R> From< ScalarTypeProbeRequest<R> > for SelectQuery {
 }
 
 impl<R> From< ScalarTypeProbeRequest<R> > for QuerySelection {
-    fn from(request: ScalarTypeProbeRequest<R>) -> Self {
+    fn from(mut request: ScalarTypeProbeRequest<R>) -> Self {
+        request.__resolve_roll_ups().expect("invalid roll-up configuration");
         Self {
             query: request.query,
             relation_selections: request.relation_selections,
@@ -6840,6 +7155,7 @@ where C: crate::TeaqlRuntime + ?Sized + 'a
 impl<R: teaql_core::Entity> crate::PurposedQuery<ScalarTypeProbeRequest<R>> {
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.inner.query_options.comment = Some(comment.into());
+        self.inner.__publish_roll_up();
         self
     }
 
@@ -6848,10 +7164,13 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<ScalarTypeProbeRequest<R>> {
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
+        let id = context.user_context().next_id(crate::ScalarTypeProbe::ENTITY_NAME)
+            .unwrap_or_else(|_| panic!(
+                "ENTITY_ID_RESERVATION_FAILED: cannot reserve identity for {}",
+                crate::ScalarTypeProbe::ENTITY_NAME,
+            ));
         let mut entity = crate::ScalarTypeProbe::runtime_new(context.user_context().entity_runtime_state());
-        if let Ok(id) = context.user_context().next_id(crate::ScalarTypeProbe::ENTITY_NAME) {
-            entity.update_id(id);
-        }
+        entity.update_id(id);
         teaql_core::Entity::mark_as_new(&mut entity);
         entity
     }
@@ -6864,6 +7183,7 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<ScalarTypeProbeRequest<R>> {
             None,
             self.purpose,
         ));
+        self.inner.__publish_roll_up();
         self.inner
     }
 

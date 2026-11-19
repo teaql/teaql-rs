@@ -26,17 +26,34 @@ pub struct CatalogRequest<R = crate::Catalog> {
     relation_filters: Vec<RelationFilter>,
     child_enhancements: Vec<QuerySelection>,
     query_options: QueryOptions,
+    roll_up_links: Vec<RollupLink>,
+    roll_up_publication: Option<RollupTarget>,
     marker: PhantomData<R>,
 }
 
 impl<R> Clone for CatalogRequest<R> {
     fn clone(&self) -> Self {
+        if !self.roll_up_links.is_empty() {
+            let snapshot = self.__resolved_roll_up_selection().expect("invalid roll-up configuration");
+            return Self {
+                query: snapshot.query,
+                relation_selections: snapshot.relation_selections,
+                relation_filters: snapshot.relation_filters,
+                child_enhancements: snapshot.child_enhancements,
+                query_options: snapshot.query_options,
+                roll_up_links: Vec::new(),
+                roll_up_publication: None,
+                marker: PhantomData,
+            };
+        }
         Self {
             query: self.query.clone(),
             relation_selections: self.relation_selections.clone(),
             relation_filters: self.relation_filters.clone(),
             child_enhancements: self.child_enhancements.clone(),
             query_options: self.query_options.clone(),
+            roll_up_links: Vec::new(),
+            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -52,6 +69,8 @@ impl<R> CatalogRequest<R> {
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
             query_options: QueryOptions::default(),
+            roll_up_links: Vec::new(),
+            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -63,6 +82,8 @@ impl<R> CatalogRequest<R> {
             relation_filters: self.relation_filters,
             child_enhancements: self.child_enhancements,
             query_options: self.query_options,
+            roll_up_links: self.roll_up_links,
+            roll_up_publication: self.roll_up_publication,
             marker: PhantomData,
         }
     }
@@ -88,7 +109,57 @@ impl<R> CatalogRequest<R> {
     }
 
     pub fn into_query(self) -> SelectQuery {
-        self.query
+        QuerySelection::from(self).into_query()
+    }
+
+    fn __base_roll_up_selection(&self) -> QuerySelection {
+        QuerySelection {
+            query: self.query.clone(),
+            relation_selections: self.relation_selections.clone(),
+            relation_filters: self.relation_filters.clone(),
+            child_enhancements: self.child_enhancements.clone(),
+            query_options: self.query_options.clone(),
+        }
+    }
+
+    fn __resolved_roll_up_selection(&self) -> Result<QuerySelection, RuntimeError> {
+        resolve_rollup_links(self.__base_roll_up_selection(), &self.roll_up_links)
+    }
+
+    fn __publish_roll_up(&self) {
+        if let Some(target) = &self.roll_up_publication {
+            *target.lock().expect("poisoned roll-up configuration") = RollupState {
+                selection: self.__base_roll_up_selection(),
+                links: self.roll_up_links.clone(),
+            };
+        }
+    }
+
+    fn __synced(self) -> Self {
+        self.__publish_roll_up();
+        self
+    }
+
+    pub(crate) fn __roll_up_target(&mut self) -> RollupTarget {
+        if self.roll_up_publication.is_none() {
+            self.roll_up_publication = Some(std::sync::Arc::new(std::sync::Mutex::new(RollupState {
+                selection: self.__base_roll_up_selection(), links: self.roll_up_links.clone(),
+            })));
+        }
+        self.__publish_roll_up();
+        self.roll_up_publication.as_ref().unwrap().clone()
+    }
+
+    fn __resolve_roll_ups(&mut self) -> Result<(), RuntimeError> {
+        if self.roll_up_links.is_empty() { return Ok(()); }
+        let selection = self.__resolved_roll_up_selection()?;
+        self.query = selection.query;
+        self.relation_selections = selection.relation_selections;
+        self.relation_filters = selection.relation_filters;
+        self.child_enhancements = selection.child_enhancements;
+        self.query_options = selection.query_options;
+        self.roll_up_links.clear();
+        Ok(())
     }
 
 
@@ -97,13 +168,14 @@ impl<R> CatalogRequest<R> {
     }
 
     pub(crate) async fn _execute_for_list<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<SmartList<R>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
     {
+        self.__resolve_roll_ups()?;
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
         let mut query = authorize_query(apply_runtime_metadata(
@@ -151,12 +223,13 @@ impl<R> CatalogRequest<R> {
     }
 
     pub(crate) async fn _execute_for_rows<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<SmartList<teaql_core::CompactRow>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
+        self.__resolve_roll_ups()?;
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &self.query_options,
@@ -166,13 +239,14 @@ impl<R> CatalogRequest<R> {
     }
 
     pub(crate) async fn _execute_for_stream<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<TeaqlEntityStream<'a, R, RuntimeError>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
     {
+        self.__resolve_roll_ups()?;
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &self.query_options,
@@ -212,12 +286,13 @@ impl<R> CatalogRequest<R> {
 
 
     pub(crate) async fn _execute_for_count<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<u64, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
+        self.__resolve_roll_ups()?;
         let query_options = self.query_options.clone();
         let query = apply_runtime_metadata(
             self.query,
@@ -237,12 +312,13 @@ impl<R> CatalogRequest<R> {
     }
 
     pub(crate) async fn _execute_for_exists<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<bool, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
+        self.__resolve_roll_ups()?;
         let mut query = apply_runtime_metadata(
             self.query,
             &self.query_options,
@@ -256,22 +332,22 @@ impl<R> CatalogRequest<R> {
 
     pub fn search_with_text(mut self, text: impl Into<String>) -> Self {
         self.query = self.query.search_with_text(text);
-        self
+        self.__synced()
     }
 
     pub fn filter(mut self, filter: Expr) -> Self {
         self.query = self.query.filter(filter);
-        self
+        self.__synced()
     }
 
     pub fn and_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.and_filter(filter);
-        self
+        self.__synced()
     }
 
     pub fn or_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.or_filter(filter);
-        self
+        self.__synced()
     }
 
     pub fn append_search_criteria(self, criteria: Expr) -> Self {
@@ -289,18 +365,18 @@ impl<R> CatalogRequest<R> {
             operator,
             property2.as_ref(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_deleted_rows(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self
+        self.__synced()
     }
 
     pub fn deleted_rows_only(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
         self.query = self.query.and_filter(Expr::lte("version", 0_i64));
-        self
+        self.__synced()
     }
 
     pub fn match_types(
@@ -308,29 +384,36 @@ impl<R> CatalogRequest<R> {
         types: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(TYPE_FIELD, types.into_iter().map(Into::into)));
-        self
+        self.__synced()
     }
 
 
     pub fn with_type_group(mut self) -> Self {
         self.query = self.query.project(TYPE_GROUP_FIELD);
-        self
+        self.__synced()
     }
 
-    pub fn matching_any_of(mut self, request: impl Into<QuerySelection>) -> Self {
-        let selection = request.into();
-        let entity = EntityDescriptor::new(selection.query.entity.clone());
-        self.query = self.query.and_filter(Expr::in_subquery("id", entity, selection.query.clone(), "id"));
-        self
+    pub fn matching_any_of<O>(mut self, request: CatalogRequest<O>) -> Self {
+        let filter = QuerySelection::from(request).into_query().filter;
+        if let Some(criteria) = crate::request_support::criteria_alternatives_excluding_version(filter) {
+            self.query = self.query.and_filter(criteria);
+        }
+        self.__synced()
     }
 
-    pub fn match_any_of(self, request: impl Into<QuerySelection>) -> Self {
+    pub fn match_any_of<O>(self, request: CatalogRequest<O>) -> Self {
         self.matching_any_of(request)
+    }
+
+    pub fn matching_ids_of<O>(mut self, request: CatalogRequest<O>) -> Self {
+        let entity = <crate::Catalog as teaql_core::TeaqlEntity>::entity_descriptor();
+        self.query = self.query.and_filter(Expr::in_subquery("id", entity, QuerySelection::from(request).into_query(), "id"));
+        self.__synced()
     }
 
     pub fn enhance_child(mut self, request: impl Into<QuerySelection>) -> Self {
         self.child_enhancements.push(request.into());
-        self
+        self.__synced()
     }
 
     pub fn enhance_children_if_needed(self) -> Self {
@@ -341,7 +424,7 @@ impl<R> CatalogRequest<R> {
 
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.query_options.comment = Some(comment.into());
-        self
+        self.__synced()
     }
 
     pub fn raw_sql(self, raw_sql: impl Into<String>) -> Self {
@@ -350,7 +433,7 @@ impl<R> CatalogRequest<R> {
 
     pub fn unsafe_raw_sql(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql = Some(raw_sql.into_sql());
-        self
+        self.__synced()
     }
 
     pub fn raw_sql_filter(self, raw_sql: impl Into<String>) -> Self {
@@ -359,7 +442,7 @@ impl<R> CatalogRequest<R> {
 
     pub fn unsafe_raw_sql_filter(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql_search_criteria.push(raw_sql.into_sql());
-        self
+        self.__synced()
     }
     pub fn filter_with_json(self, json_expr: impl Into<String>) -> Self {
         self.merge_dynamic_json_expr(json_expr.into())
@@ -405,7 +488,7 @@ impl<R> CatalogRequest<R> {
             }
         }
 
-        self
+        self.__synced()
     }
 
     pub(crate) fn apply_dynamic_json_filter(self, field: &str, value: &JsonValue) -> Self {
@@ -414,7 +497,7 @@ impl<R> CatalogRequest<R> {
         } else if let Some(storage_field) = Self::dynamic_json_self_field(field) {
             self.and_filter(dynamic_json_filter_expr(storage_field, value))
         } else {
-            self
+            self.__synced()
         }
     }
 
@@ -437,7 +520,7 @@ impl<R> CatalogRequest<R> {
             }
             _ => {}
         }
-        self
+        self.__synced()
     }
 
     fn apply_dynamic_json_single_order_by(
@@ -459,7 +542,7 @@ impl<R> CatalogRequest<R> {
         } else {
             self.query = self.query.order_desc(storage_field);
         }
-        self
+        self.__synced()
     }
 
     fn dynamic_json_self_field(field: &str) -> Option<&'static str> {
@@ -500,28 +583,28 @@ impl<R> CatalogRequest<R> {
         self.query_options
             .dynamic_properties
             .push(RawDynamicProperty::new(property_name, raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn limit(mut self, limit: u64) -> Self {
         self.query = self.query.limit(limit);
-        self
+        self.__synced()
     }
 
     pub fn stream(mut self, chunk_size: usize) -> Self {
         assert!(chunk_size > 0, "stream chunk size must be positive");
         self.query = self.query.stream(chunk_size);
-        self
+        self.__synced()
     }
 
     pub fn stream_default(mut self) -> Self {
         self.query = self.query.stream_default();
-        self
+        self.__synced()
     }
 
     pub fn skip(mut self, offset: u64) -> Self {
         self.query = self.query.offset(offset);
-        self
+        self.__synced()
     }
 
     pub fn offset_only(self, offset: u64) -> Self {
@@ -534,12 +617,12 @@ impl<R> CatalogRequest<R> {
 
     pub fn page_offset(mut self, offset: u64, limit: u64) -> Self {
         self.query = self.query.page(offset, limit);
-        self
+        self.__synced()
     }
 
     pub fn optimize_for_continuous_page_fetch(mut self) -> Self {
         self.query = self.query.optimize_for_continuous_page_fetch();
-        self
+        self.__synced()
     }
 
     pub fn optimize_for_continuous_page_fetch_with(
@@ -550,12 +633,12 @@ impl<R> CatalogRequest<R> {
         self.query = self
             .query
             .optimize_for_continuous_page_fetch_with(namespace, ttl_seconds);
-        self
+        self.__synced()
     }
 
     pub fn optimize_pagination_with_id_set(mut self) -> Self {
         self.query = self.query.optimize_pagination_with_id_set();
-        self
+        self.__synced()
     }
 
     pub fn optimize_pagination_with_id_set_config(
@@ -567,7 +650,7 @@ impl<R> CatalogRequest<R> {
         self.query = self
             .query
             .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
-        self
+        self.__synced()
     }
 
     /// Select bounded indexed probes for a per-parent Top-N relation only
@@ -575,7 +658,7 @@ impl<R> CatalogRequest<R> {
     /// Passing zero explicitly selects the provider window plan.
     pub fn top_n_probe_parent_threshold(mut self, threshold: usize) -> Self {
         self.query = self.query.top_n_probe_parent_threshold(threshold);
-        self
+        self.__synced()
     }
 
     pub fn top(self, top_n: u64) -> Self {
@@ -588,7 +671,7 @@ impl<R> CatalogRequest<R> {
 
     pub fn unlimited(mut self) -> Self {
         self.query.slice = None;
-        self
+        self.__synced()
     }
 
     pub fn page_number(self, page_number: u64, page_size: u64) -> Self {
@@ -612,12 +695,12 @@ impl<R> CatalogRequest<R> {
         self.query = self.query.project("id");
         self.query = self.query.project("name");
         self.query = self.query.project("version");
-        self
+        self.__synced()
     }
 
     pub fn select_dynamic_fields_with(mut self, selection: teaql_core::dynamic_fields::DynamicFieldSelection) -> Self {
         self.query = self.query.select_dynamic_fields(selection);
-        self
+        self.__synced()
     }
 
     pub fn select_self_fields(self) -> Self {
@@ -644,7 +727,28 @@ impl<R> CatalogRequest<R> {
 
     pub fn group_by(mut self, field: impl Into<String>) -> Self {
         self.query = self.query.group_by(field);
-        self
+        self.__synced()
+    }
+
+    /// Order a selected statistical alias or nested result path, matching Java.
+    pub fn add_order_by_ascending(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_asc(result_key);
+        self.__synced()
+    }
+
+    pub fn add_order_by_descending(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_desc(result_key);
+        self.__synced()
+    }
+
+    pub fn add_order_by_ascending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_gbk_asc(result_key);
+        self.__synced()
+    }
+
+    pub fn add_order_by_descending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_gbk_desc(result_key);
+        self.__synced()
     }
 
     pub fn count(mut self) -> Self {
@@ -660,12 +764,27 @@ impl<R> CatalogRequest<R> {
 
     pub fn aggregate_count(mut self, alias: impl Into<String>) -> Self {
         self.query = self.query.count(alias);
-        self
+        self.__synced()
+    }
+    /// Java addAggregate(SimpleNamedExpression): bind a typed aggregate AST.
+    pub fn add_aggregate(mut self, aggregate: teaql_core::NamedExpr) -> Self {
+        self.query = self.query.aggregate_expression(aggregate);
+        self.__synced()
+    }
+
+    /// Filter selected statistical results. Repeated conditions compose with AND.
+    pub fn having(mut self, condition: Expr) -> Self {
+        let condition = match self.query.having.take() {
+            Some(previous) => Expr::and([previous, condition]),
+            None => condition,
+        };
+        self.query = self.query.having(condition);
+        self.__synced()
     }
 
     pub fn aggregate_count_field(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.count_field(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_with_function(
@@ -675,77 +794,77 @@ impl<R> CatalogRequest<R> {
         function: AggregateFunction,
     ) -> Self {
         self.query = self.query.aggregate(Aggregate::new(function, field, alias));
-        self
+        self.__synced()
     }
 
     pub fn aggregate_sum(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.sum(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_avg(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.avg(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_min(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.min(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_max(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.max(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_stddev(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_stddev_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev_pop(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_var_samp(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_samp(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_var_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_pop(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_bit_and(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_and(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_bit_or(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_or(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_bit_xor(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_xor(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn enable_aggregation_cache(mut self) -> Self {
         self.query = self.query.enable_aggregation_cache();
-        self
+        self.__synced()
     }
 
     pub fn enable_aggregation_cache_for(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.enable_aggregation_cache_for(cache_expired_millis);
-        self
+        self.__synced()
     }
 
     pub fn propagate_aggregation_cache(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.propagate_aggregation_cache(cache_expired_millis);
-        self
+        self.__synced()
     }
 
     pub fn group_by_id(self) -> Self {
@@ -753,21 +872,20 @@ impl<R> CatalogRequest<R> {
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("id");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("id"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("id"));
+        request.__synced()
     }
 
     pub fn group_by_id_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("id")
-            .aggregate_with_function("id", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("id")]));
+        request.__synced()
     }
 
     pub fn count_id(self) -> Self {
@@ -776,6 +894,13 @@ impl<R> CatalogRequest<R> {
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("id", alias)
+    }
+    pub fn count_distinct_id(self) -> Self {
+        self.count_distinct_id_as("id_distinct_count")
+    }
+
+    pub fn count_distinct_id_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("id", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_id(self) -> Self {
@@ -821,7 +946,7 @@ impl<R> CatalogRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_id_criteria(
@@ -837,14 +962,14 @@ impl<R> CatalogRequest<R> {
 
     pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("id", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("id", value));
-        self
+        self.__synced()
     }
 
     pub fn with_id_in(
@@ -855,7 +980,7 @@ impl<R> CatalogRequest<R> {
             "id",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_id_not_in(
@@ -866,33 +991,33 @@ impl<R> CatalogRequest<R> {
             "id",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_asc(mut self) -> Self {
         self.query = self.query.order_asc("id");
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
         self.query = self.query.order_desc("id");
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("id");
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("id");
-        self
+        self.__synced()
     }
 
 
     pub fn select_name(mut self) -> Self {
         self.query = self.query.project("name");
-        self
+        self.__synced()
     }
 
     pub fn project_name(self) -> Self {
@@ -907,7 +1032,7 @@ impl<R> CatalogRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("name", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_name(self) -> Self {
@@ -915,21 +1040,20 @@ impl<R> CatalogRequest<R> {
     }
 
     pub fn group_by_name_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("name");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("name"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("name"));
+        request.__synced()
     }
 
     pub fn group_by_name_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("name")
-            .aggregate_with_function("name", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("name")]));
+        request.__synced()
     }
 
     pub fn count_name(self) -> Self {
@@ -938,6 +1062,13 @@ impl<R> CatalogRequest<R> {
 
     pub fn count_name_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("name", alias)
+    }
+    pub fn count_distinct_name(self) -> Self {
+        self.count_distinct_name_as("name_distinct_count")
+    }
+
+    pub fn count_distinct_name_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("name", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_name(self) -> Self {
@@ -975,7 +1106,7 @@ impl<R> CatalogRequest<R> {
     pub fn unselect_name(mut self) -> Self {
         self.query.projection.retain(|field| field != "name");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "name");
-        self
+        self.__synced()
     }
 
 
@@ -989,7 +1120,7 @@ impl<R> CatalogRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_name_criteria(
@@ -1005,34 +1136,34 @@ impl<R> CatalogRequest<R> {
 
     pub fn with_name_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("name", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_name_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_between(
@@ -1041,7 +1172,7 @@ impl<R> CatalogRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("name", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_name_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1053,7 +1184,7 @@ impl<R> CatalogRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_name_in(
@@ -1064,7 +1195,7 @@ impl<R> CatalogRequest<R> {
             "name",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_name_not_in(
@@ -1075,84 +1206,84 @@ impl<R> CatalogRequest<R> {
             "name",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_name_containing(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::contain("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_not_containing(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_contain("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::begin_with("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::end_with("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::sound_like("name", value));
-        self
+        self.__synced()
     }
     pub fn with_name_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("name"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_name_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("name"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_name_asc(mut self) -> Self {
         self.query = self.query.order_asc("name");
-        self
+        self.__synced()
     }
 
     pub fn order_by_name_desc(mut self) -> Self {
         self.query = self.query.order_desc("name");
-        self
+        self.__synced()
     }
 
     pub fn order_by_name_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("name");
-        self
+        self.__synced()
     }
 
     pub fn order_by_name_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("name");
-        self
+        self.__synced()
     }
 
     pub fn group_by_version(self) -> Self {
@@ -1160,21 +1291,20 @@ impl<R> CatalogRequest<R> {
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("version");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("version"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("version"));
+        request.__synced()
     }
 
     pub fn group_by_version_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("version")
-            .aggregate_with_function("version", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("version")]));
+        request.__synced()
     }
 
     pub fn count_version(self) -> Self {
@@ -1183,6 +1313,13 @@ impl<R> CatalogRequest<R> {
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("version", alias)
+    }
+    pub fn count_distinct_version(self) -> Self {
+        self.count_distinct_version_as("version_distinct_count")
+    }
+
+    pub fn count_distinct_version_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("version", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_version(self) -> Self {
@@ -1219,22 +1356,22 @@ impl<R> CatalogRequest<R> {
 
     pub fn order_by_version_asc(mut self) -> Self {
         self.query = self.query.order_asc("version");
-        self
+        self.__synced()
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
         self.query = self.query.order_desc("version");
-        self
+        self.__synced()
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("version");
-        self
+        self.__synced()
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("version");
-        self
+        self.__synced()
     }
     pub fn with_name_is_catalog(self) -> Self {
         self.with_name_is("Catalog")
@@ -1262,11 +1399,11 @@ impl<R> CatalogRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "id",
             <crate::Entry as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "catalog_id",
         ));
         self.relation_filters.push(RelationFilter::new("entry_list", selection));
-        self
+        self.__synced()
     }
 
     pub fn without_entry_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -1274,24 +1411,24 @@ impl<R> CatalogRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "id",
             <crate::Entry as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "catalog_id",
         ));
         self.relation_filters.push(RelationFilter::new("entry_list", selection));
-        self
+        self.__synced()
     }
 
     pub fn select_entry_list(mut self) -> Self {
         self.query.relations.push(teaql_core::RelationLoad::new("entry_list")
             .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_entry_list").with_relation("entry_list")));
-        self
+        self.__synced()
     }
 
     pub fn select_entry_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         self.query.relations.push(teaql_core::RelationLoad::with_query("entry_list", selection.into_query())
             .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_entry_list_with").with_relation("entry_list")));
-        self
+        self.__synced()
 }
     pub fn count_entries(self) -> Self {
         let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_entries");
@@ -1318,7 +1455,7 @@ impl<R> CatalogRequest<R> {
             selection,
             true,
         ).with_operation(operation.with_relation("entry_list")));
-        self
+        self.__synced()
     }
 
     pub fn stats_from_entries(self, request: impl Into<QuerySelection>) -> Self {
@@ -1336,7 +1473,7 @@ impl<R> CatalogRequest<R> {
             selection,
             false,
         ).with_operation(operation));
-        self
+        self.__synced()
     }
 
     fn scalar_from_entries_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
@@ -1347,7 +1484,7 @@ impl<R> CatalogRequest<R> {
             selection,
             true,
         ).with_operation(operation.with_relation("entry_list")));
-        self
+        self.__synced()
     }
 
     pub fn group_by_entries_with_details(self, request: impl Into<QuerySelection>) -> Self {
@@ -1414,7 +1551,8 @@ impl<R> From< CatalogRequest<R> > for SelectQuery {
 }
 
 impl<R> From< CatalogRequest<R> > for QuerySelection {
-    fn from(request: CatalogRequest<R>) -> Self {
+    fn from(mut request: CatalogRequest<R>) -> Self {
+        request.__resolve_roll_ups().expect("invalid roll-up configuration");
         Self {
             query: request.query,
             relation_selections: request.relation_selections,
@@ -1441,6 +1579,7 @@ where C: crate::TeaqlRuntime + ?Sized + 'a
 impl<R: teaql_core::Entity> crate::PurposedQuery<CatalogRequest<R>> {
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.inner.query_options.comment = Some(comment.into());
+        self.inner.__publish_roll_up();
         self
     }
 
@@ -1468,6 +1607,7 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<CatalogRequest<R>> {
             None,
             self.purpose,
         ));
+        self.inner.__publish_roll_up();
         self.inner
     }
 

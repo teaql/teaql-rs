@@ -20,7 +20,7 @@ pub struct Platform {
 #[teaql(id)]
     id: u64,
 
-// @source model.xml:5
+// @source model.xml:4
 #[teaql(max_length = 100)]
     name: String,
 #[teaql(version)]

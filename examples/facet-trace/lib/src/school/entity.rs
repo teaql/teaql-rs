@@ -4,6 +4,9 @@ use std::collections::BTreeMap;
 
 use teaql_macros::{teaql_entity, TeaqlEntity};
 
+// Fail to compile against a runtime without modeled Integer-width support.
+const _: fn(teaql_core::PropertyDescriptor) -> teaql_core::PropertyDescriptor = teaql_core::PropertyDescriptor::int32;
+
 
 /// [TEAQL AI WARNING]
 /// TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
@@ -13,47 +16,49 @@ use teaql_macros::{teaql_entity, TeaqlEntity};
 /// Read the method signatures in this file before proceeding.
 #[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
+#[teaql(indexed_layout)]
 #[teaql(entity = "School", table = "school_data", data_service = "sqlite", audit_mask_fields = "name")]
 pub struct School {
 #[teaql(id)]
     id: u64,
 
-// @source main.xml:41
+// @source model.xml:41
 #[teaql(max_length = 100)]
     name: String,
 
-// @source main.xml:41
+// @source model.xml:41
 #[teaql(max_length = 100)]
     address: String,
 
-// @source main.xml:41
+// @source model.xml:41
     established_date: chrono::NaiveDate,
 
-// @source main.xml:41
+// @source model.xml:41
+#[teaql(integer32)]
     student_capacity: i64,
 
-// @source main.xml:41
+// @source model.xml:41
     active: bool,
 
-// @source main.xml:41
+// @source model.xml:41
     create_time: teaql_core::time::Timestamp,
 
-// @source main.xml:41
+// @source model.xml:41
     update_time: teaql_core::time::Timestamp,
 #[teaql(version)]
     version: i64,
-// @source main.xml:41
+// @source model.xml:41
 #[teaql(column = "platform")]
     platform_id: u64,
 
-// @source main.xml:41
+// @source model.xml:41
 #[teaql(column = "school_type")]
     school_type_id: u64,
-// @source main.xml:41
+// @source model.xml:41
 #[teaql(relation(target = "Platform", local_key = "platform_id", foreign_key = "id"))]
     platform: Option<Box<crate::Platform>>,
 
-// @source main.xml:41
+// @source model.xml:41
 #[teaql(relation(target = "SchoolType", local_key = "school_type_id", foreign_key = "id"))]
     school_type: Option<Box<crate::SchoolType>>,
     #[teaql(dynamic)]
@@ -64,6 +69,35 @@ pub struct School {
 
 impl School {
     pub const ENTITY_NAME: &'static str = "School";
+
+    // Framework metadata: complete fixed layout, including overflow slots.
+    pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "14b4bfbb4cda258779665e3bc38ab991040fe75793a416d29eddd06f8fa8f586";
+    pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
+        ("id", 0),
+        ("platform", 1),
+        ("school_type", 2),
+        ("name", 3),
+        ("address", 4),
+        ("established_date", 5),
+        ("student_capacity", 6),
+        ("active", 7),
+        ("create_time", 8),
+        ("update_time", 9),
+        ("version", 10),
+    ];
+    pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
+        ("id", "id", "id"),
+        ("platform", "platform_id", "platform"),
+        ("school_type", "school_type_id", "school_type"),
+        ("name", "name", "name"),
+        ("address", "address", "address"),
+        ("established_date", "established_date", "established_date"),
+        ("student_capacity", "student_capacity", "student_capacity"),
+        ("active", "active", "active"),
+        ("create_time", "create_time", "create_time"),
+        ("update_time", "update_time", "update_time"),
+        ("version", "version", "version"),
+    ];
 
     pub fn with_id(id: u64) -> teaql_core::Value {
         teaql_core::Value::U64(id)
@@ -77,8 +111,8 @@ impl School {
             established_date: chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
             student_capacity: 0_i64,
             active: false,
-            create_time: teaql_core::time::Timestamp::now(),
-            update_time: teaql_core::time::Timestamp::now(),
+            create_time: Default::default(),
+            update_time: Default::default(),
             version: 0_i64,
             platform_id: 0_u64,
             school_type_id: 0_u64,
@@ -86,7 +120,9 @@ impl School {
             school_type: None,
             dynamic: BTreeMap::new(),
             __teaql_runtime_state: root,
-            __load_state: teaql_core::eval::LoadState::FullyLoaded,
+            __load_state: teaql_core::eval::LoadState::NotLoaded.into_indexed(
+                <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
+            ).expect("new entity load state"),
         }
     }
 
@@ -106,7 +142,9 @@ impl School {
     }
 
     pub fn set_load_state(&mut self, state: teaql_core::eval::LoadState) {
-        self.__load_state = state;
+        self.__load_state = state.into_indexed(
+            <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
+        ).expect("compatible entity load state");
     }
 
     pub fn id(&self) -> u64 {
@@ -117,6 +155,7 @@ impl School {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "id", value);
+        self.__load_state.mark_loaded("id").expect("generated field layout");
         self
     }
 
@@ -140,6 +179,7 @@ impl School {
         let value = value.into();
         self.name = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.name.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "name", value);
+        self.__load_state.mark_loaded("name").expect("generated field layout");
         self
     }
 
@@ -163,6 +203,7 @@ impl School {
         let value = value.into();
         self.address = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.address.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "address", value);
+        self.__load_state.mark_loaded("address").expect("generated field layout");
         self
     }
 
@@ -186,6 +227,7 @@ impl School {
         let value = value.into();
         self.established_date = value.try_date().unwrap_or(self.established_date.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "established_date", value);
+        self.__load_state.mark_loaded("established_date").expect("generated field layout");
         self
     }
 
@@ -209,6 +251,7 @@ impl School {
         let value = value.into();
         self.student_capacity = value.try_i64().map(|value| value as i64).unwrap_or(self.student_capacity.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "student_capacity", value);
+        self.__load_state.mark_loaded("student_capacity").expect("generated field layout");
         self
     }
 
@@ -232,6 +275,7 @@ impl School {
         let value = value.into();
         self.active = value.try_bool().unwrap_or(self.active.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "active", value);
+        self.__load_state.mark_loaded("active").expect("generated field layout");
         self
     }
 
@@ -255,6 +299,7 @@ impl School {
         self.create_time = value;
         let value = teaql_core::Value::from(value);
         self.__teaql_runtime_state().set(self.entity_key(), "create_time", value);
+        self.__load_state.mark_loaded("create_time").expect("generated field layout");
         self
     }
     pub fn changed_create_time(&self) -> Option<teaql_core::Value> {
@@ -277,6 +322,7 @@ impl School {
         self.update_time = value;
         let value = teaql_core::Value::from(value);
         self.__teaql_runtime_state().set(self.entity_key(), "update_time", value);
+        self.__load_state.mark_loaded("update_time").expect("generated field layout");
         self
     }
     pub fn changed_update_time(&self) -> Option<teaql_core::Value> {
@@ -299,6 +345,7 @@ impl School {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "version", value);
+        self.__load_state.mark_loaded("version").expect("generated field layout");
         self
     }
 
@@ -320,12 +367,13 @@ impl School {
     pub fn update_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.platform_id = value.try_u64().unwrap_or(self.platform_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "platform_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "platform", value);
+        self.__load_state.mark_loaded("platform_id").expect("generated field layout");
         self
     }
 
     pub fn changed_platform_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "platform_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "platform")
     }
 
     pub fn eval_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -342,12 +390,13 @@ impl School {
     pub(crate) fn update_school_type_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.school_type_id = value.try_u64().unwrap_or(self.school_type_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "school_type_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "school_type", value);
+        self.__load_state.mark_loaded("school_type_id").expect("generated field layout");
         self
     }
 
     pub fn changed_school_type_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "school_type_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "school_type")
     }
 
     pub fn eval_school_type_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -371,6 +420,15 @@ impl School {
         self.school_type_id() == 1002_u64
     }
     pub fn platform(&self) -> Option<&crate::Platform> {
+        if self.changed_platform_id().is_some()
+            || !self.is_loaded("platform") {
+            return None;
+        }
+        if let Some(edge) = self.__teaql_runtime_state().resolve_relation_option::<crate::Platform>(
+            <Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "platform",
+        ) {
+            return edge.as_ref();
+        }
         self.platform.as_deref().or_else(|| {
             self.__teaql_runtime_state().resolve_entity(self.platform_id())})
     }
@@ -378,12 +436,20 @@ impl School {
     pub fn eval_platform(&self) -> teaql_core::eval::EvalResult<&crate::Platform> {
         match self.platform() {
             Some(v) => teaql_core::eval::EvalResult::Value(v),
-            None if self.is_loaded("platform") => teaql_core::eval::EvalResult::Null,
             None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "platform".to_string(), attempted_path: "platform".to_string() },
         }
     }
 
     pub fn school_type(&self) -> Option<&crate::SchoolType> {
+        if self.changed_school_type_id().is_some()
+            || !self.is_loaded("school_type") {
+            return None;
+        }
+        if let Some(edge) = self.__teaql_runtime_state().resolve_relation_option::<crate::SchoolType>(
+            <Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "school_type",
+        ) {
+            return edge.as_ref();
+        }
         self.school_type.as_deref().or_else(|| {
             self.__teaql_runtime_state().resolve_entity(self.school_type_id())})
     }
@@ -391,7 +457,6 @@ impl School {
     pub fn eval_school_type(&self) -> teaql_core::eval::EvalResult<&crate::SchoolType> {
         match self.school_type() {
             Some(v) => teaql_core::eval::EvalResult::Value(v),
-            None if self.is_loaded("school_type") => teaql_core::eval::EvalResult::Null,
             None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "school_type".to_string(), attempted_path: "school_type".to_string() },
         }
     }

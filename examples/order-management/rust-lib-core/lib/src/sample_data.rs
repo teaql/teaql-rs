@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use crate::TeaqlRuntime;
 use crate::Q;
 use teaql_core::Entity as _;
-use crate::request_support::TeaqlUserContextExt as _;
 use crate::request_support::AuditedSave as _;
 
 pub trait IntoU64 {
@@ -149,7 +148,7 @@ pub async fn generate_sample_data<C>(
     plan: SampleDataPlan,
 ) -> Result<SampleDataReport, SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
     log::info!("Starting sample data generation. Scale: {:?}, Seed: {}", plan.scale, plan.seed);
     let mut state = SampleDataState::new(plan);
@@ -158,35 +157,15 @@ where
 
     load_constant_order_statuses(context, &mut state).await?;
 
-    context.user_context().transaction_data(|| async {
-        Box::pin(generate_customers(context, &mut state)).await.map_err(|e| {
-            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e.to_string()))
-        })
-    }).await.map_err(SampleDataError::from_display)?;
+    generate_customers(context, &mut state).await?;
 
-    context.user_context().transaction_data(|| async {
-        Box::pin(generate_order_search_presets(context, &mut state)).await.map_err(|e| {
-            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e.to_string()))
-        })
-    }).await.map_err(SampleDataError::from_display)?;
+    generate_order_search_presets(context, &mut state).await?;
 
-    context.user_context().transaction_data(|| async {
-        Box::pin(generate_products(context, &mut state)).await.map_err(|e| {
-            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e.to_string()))
-        })
-    }).await.map_err(SampleDataError::from_display)?;
+    generate_products(context, &mut state).await?;
 
-    context.user_context().transaction_data(|| async {
-        Box::pin(generate_customer_orders(context, &mut state)).await.map_err(|e| {
-            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e.to_string()))
-        })
-    }).await.map_err(SampleDataError::from_display)?;
+    generate_customer_orders(context, &mut state).await?;
 
-    context.user_context().transaction_data(|| async {
-        Box::pin(generate_order_lines(context, &mut state)).await.map_err(|e| {
-            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e.to_string()))
-        })
-    }).await.map_err(SampleDataError::from_display)?;
+    generate_order_lines(context, &mut state).await?;
 
 
     let report = state.into_report();
@@ -199,7 +178,7 @@ async fn load_root_commerce_platforms<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
     let list = Q::commerce_platforms().comment("what: inspect existing entities before sample-data initialization").purpose("why: avoid duplicate sample records").execute_for_list(context).await.unwrap_or_default();
     for item in list {
@@ -213,7 +192,7 @@ async fn load_constant_order_statuses<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
     let list = Q::order_statuses().comment("what: inspect existing entities before sample-data initialization").purpose("why: avoid duplicate sample records").execute_for_list(context).await.unwrap_or_default();
     for item in list {
@@ -227,7 +206,7 @@ async fn generate_customers<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
         if state.ids("commerce_platform").is_empty() {
             state.record_skipped(crate::Customer::ENTITY_NAME, "Required dependency commerce_platform is missing in reference pool".to_string());
@@ -249,7 +228,7 @@ where
 
     for i in 0..fanout {
         let mut entity = Q::customers().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
-        let mut used_refs = std::collections::HashSet::new();
+        let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("commerce_platform", i as usize, &used_refs) {
                     entity.update_commerce_platform_id(ref_id);
@@ -296,7 +275,7 @@ async fn generate_order_search_presets<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
         if state.ids("commerce_platform").is_empty() {
             state.record_skipped(crate::OrderSearchPreset::ENTITY_NAME, "Required dependency commerce_platform is missing in reference pool".to_string());
@@ -318,7 +297,7 @@ where
 
     for i in 0..fanout {
         let mut entity = Q::order_search_presets().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
-        let mut used_refs = std::collections::HashSet::new();
+        let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("commerce_platform", i as usize, &used_refs) {
                     entity.update_commerce_platform_id(ref_id);
@@ -368,7 +347,7 @@ async fn generate_products<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
         if state.ids("commerce_platform").is_empty() {
             state.record_skipped(crate::Product::ENTITY_NAME, "Required dependency commerce_platform is missing in reference pool".to_string());
@@ -390,7 +369,7 @@ where
 
     for i in 0..fanout {
         let mut entity = Q::products().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
-        let mut used_refs = std::collections::HashSet::new();
+        let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("commerce_platform", i as usize, &used_refs) {
                     entity.update_commerce_platform_id(ref_id);
@@ -439,7 +418,7 @@ async fn generate_customer_orders<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
         if state.ids("order_status").is_empty() {
             state.record_skipped(crate::CustomerOrder::ENTITY_NAME, "Required dependency order_status is missing in reference pool".to_string());
@@ -473,7 +452,7 @@ where
 
     for i in 0..fanout {
         let mut entity = Q::customer_orders().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
-        let mut used_refs = std::collections::HashSet::new();
+        let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("order_status", i as usize, &used_refs) {
                     entity.update_status_id(ref_id);
@@ -542,7 +521,7 @@ async fn generate_order_lines<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
+    C: TeaqlRuntime + ?Sized,
 {
         if state.ids("customer_order").is_empty() {
             state.record_skipped(crate::OrderLine::ENTITY_NAME, "Required dependency customer_order is missing in reference pool".to_string());
@@ -576,7 +555,7 @@ where
 
     for i in 0..fanout {
         let mut entity = Q::order_lines().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
-        let mut used_refs = std::collections::HashSet::new();
+        let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("customer_order", i as usize, &used_refs) {
                     entity.update_customer_order_id(ref_id);

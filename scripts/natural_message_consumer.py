@@ -26,7 +26,7 @@ def fixture_hashes():
     root = EXAMPLE / "automatic-fixture"
     manifest = json.loads((root / "generated-files.json").read_text())
     assists = json.loads((root / "assist-files.json").read_text())
-    assert len(manifest) == 21 and len(assists) == 5
+    assert len(manifest) == 22 and len(assists) == 5
     expected = set(manifest) | set(assists) | {"model.xml", "evaluation.json", "generated-files.json", "assist-files.json", "generation.json"}
     actual = set()
     for file in root.rglob("*"):

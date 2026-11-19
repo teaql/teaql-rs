@@ -13,6 +13,7 @@
 pub mod e;
 pub mod q;
 pub mod request_support;
+mod rollup_support;
 pub mod runtime;
 pub mod sample_data;
 pub mod platform;

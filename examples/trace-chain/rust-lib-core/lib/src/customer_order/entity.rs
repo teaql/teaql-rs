@@ -22,19 +22,19 @@ pub struct CustomerOrder {
 #[teaql(id)]
     id: u64,
 
-// @source model.xml:8
+// @source model.xml:7
 #[teaql(max_length = 100)]
     order_number: String,
 
-// @source model.xml:8
+// @source model.xml:7
 #[teaql(max_length = 100)]
     description: String,
 #[teaql(version)]
     version: i64,
-// @source model.xml:8
+// @source model.xml:7
 #[teaql(column = "platform")]
     platform_id: u64,
-// @source model.xml:8
+// @source model.xml:7
 #[teaql(relation(target = "Platform", local_key = "platform_id", foreign_key = "id"))]
     platform: Option<Box<crate::Platform>>,
     #[teaql(dynamic)]

@@ -2,6 +2,8 @@
 use teaql_runtime::{CheckObjectStatus, CheckResults, ObjectLocation, TypedChecker, UserContext};
 
 pub trait WorkItemCheckerLogic: Send + Sync {
+    /// Trusted application-owned declarations, never accepted from mutation JSON.
+    fn custom_context_fields(&self) -> &'static [&'static str] { &[] }
     fn check_and_fix_work_item(
         &self,
         _context: &UserContext,
@@ -11,6 +13,20 @@ pub trait WorkItemCheckerLogic: Send + Sync {
         _results: &mut CheckResults,
     ) {
     }
+
+    /// Context/state defaults run only for create or an independent business mutation.
+    fn fix_work_item(
+        &self, context: &UserContext, entity: &mut crate::WorkItem,
+        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults,
+    ) {
+        self.check_and_fix_work_item(context, entity, status, location, results);
+    }
+
+    /// Readonly validation is independent of automatic Context eligibility.
+    fn check_work_item(
+        &self, _context: &UserContext, _entity: &crate::WorkItem,
+        _status: CheckObjectStatus, _location: &ObjectLocation, _results: &mut CheckResults,
+    ) {}
 
     fn required(
         &self,
@@ -114,7 +130,15 @@ impl<L> TypedChecker<crate::WorkItem> for WorkItemChecker<L>
 where
     L: WorkItemCheckerLogic,
 {
-    fn check_and_fix_typed(
+    fn separate_fix_and_check(&self) -> bool { true }
+
+    fn managed_context_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn custom_context_fields(&self) -> &'static [&'static str] { self.logic.custom_context_fields() }
+
+    fn fix_typed(
         &self,
         context: &UserContext,
         entity: &mut crate::WorkItem,
@@ -122,6 +146,14 @@ where
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
+        self.logic.fix_work_item(context, entity, status, location, results);
+    }
+
+    fn check_typed(
+        &self, context: &UserContext, entity: &crate::WorkItem,
+        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults, has_mutation: bool,
+    ) {
+        if has_mutation {
         if status.is_update() && !entity.is_loaded("id") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -131,6 +163,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("title") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -140,6 +173,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("description") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -149,6 +183,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("platform_id") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -158,6 +193,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
+
         if status.is_update() && !entity.is_loaded("version") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -167,7 +203,47 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
-        self.logic
-            .check_and_fix_work_item(context, entity, status, location, results);
+
+        }
+        self.logic.check_work_item(context, entity, status, location, results);
+    }
+
+    fn check_and_fix_typed(
+        &self, context: &UserContext, entity: &mut crate::WorkItem,
+        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults,
+    ) {
+        let eligible = status.is_create() || teaql_core::Entity::dirty_fields(entity).is_some_and(|fields|
+            fields.iter().any(|field| !field.starts_with('_') && field != "id" && field != "version"
+                && !self.managed_context_fields().contains(&field.as_str())));
+        if eligible { self.fix_typed(context, entity, status, location, results); }
+        self.check_typed(context, entity, status, location, results, eligible);
+    }
+
+    fn check_fixed_values(
+        &self,
+        _context: &UserContext,
+        values: &teaql_runtime::EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+    ) {
+        if let Some(teaql_core::Value::Text(value)) = values.get("title") {
+            let length = value.chars().count() as u64;
+            if length < 1_u64 {
+                results.push(teaql_runtime::CheckResult::min_str(location.clone().member("title"), 1_u64, value.clone()));
+            }
+            if length > 80_u64 {
+                results.push(teaql_runtime::CheckResult::max_str(location.clone().member("title"), 80_u64, value.clone()));
+            }
+        }
+
+        if let Some(teaql_core::Value::Text(value)) = values.get("description") {
+            let length = value.chars().count() as u64;
+            if length > 100_u64 {
+                results.push(teaql_runtime::CheckResult::max_str(location.clone().member("description"), 100_u64, value.clone()));
+            }
+        }
+
+
+
     }
 }

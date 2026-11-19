@@ -2,6 +2,8 @@
 use teaql_runtime::{CheckObjectStatus, CheckResults, ObjectLocation, TypedChecker, UserContext};
 
 pub trait ShipmentCheckerLogic: Send + Sync {
+    /// Trusted application-owned declarations, never accepted from mutation JSON.
+    fn custom_context_fields(&self) -> &'static [&'static str] { &[] }
     fn check_and_fix_shipment(
         &self,
         _context: &UserContext,
@@ -11,6 +13,20 @@ pub trait ShipmentCheckerLogic: Send + Sync {
         _results: &mut CheckResults,
     ) {
     }
+
+    /// Context/state defaults run only for create or an independent business mutation.
+    fn fix_shipment(
+        &self, context: &UserContext, entity: &mut crate::Shipment,
+        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults,
+    ) {
+        self.check_and_fix_shipment(context, entity, status, location, results);
+    }
+
+    /// Readonly validation is independent of automatic Context eligibility.
+    fn check_shipment(
+        &self, _context: &UserContext, _entity: &crate::Shipment,
+        _status: CheckObjectStatus, _location: &ObjectLocation, _results: &mut CheckResults,
+    ) {}
 
     fn required(
         &self,
@@ -114,7 +130,15 @@ impl<L> TypedChecker<crate::Shipment> for ShipmentChecker<L>
 where
     L: ShipmentCheckerLogic,
 {
-    fn check_and_fix_typed(
+    fn separate_fix_and_check(&self) -> bool { true }
+
+    fn managed_context_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn custom_context_fields(&self) -> &'static [&'static str] { self.logic.custom_context_fields() }
+
+    fn fix_typed(
         &self,
         context: &UserContext,
         entity: &mut crate::Shipment,
@@ -122,6 +146,14 @@ where
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
+        self.logic.fix_shipment(context, entity, status, location, results);
+    }
+
+    fn check_typed(
+        &self, context: &UserContext, entity: &crate::Shipment,
+        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults, has_mutation: bool,
+    ) {
+        if has_mutation {
         if status.is_update() && !entity.is_loaded("id") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -162,8 +194,19 @@ where
             );
         }
 
-        self.logic
-            .check_and_fix_shipment(context, entity, status, location, results);
+        }
+        self.logic.check_shipment(context, entity, status, location, results);
+    }
+
+    fn check_and_fix_typed(
+        &self, context: &UserContext, entity: &mut crate::Shipment,
+        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults,
+    ) {
+        let eligible = status.is_create() || teaql_core::Entity::dirty_fields(entity).is_some_and(|fields|
+            fields.iter().any(|field| !field.starts_with('_') && field != "id" && field != "version"
+                && !self.managed_context_fields().contains(&field.as_str())));
+        if eligible { self.fix_typed(context, entity, status, location, results); }
+        self.check_typed(context, entity, status, location, results, eligible);
     }
 
     fn check_fixed_values(

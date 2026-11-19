@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use teaql_macros::{teaql_entity, TeaqlEntity};
 
+
 /// [TEAQL AI WARNING]
 /// TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
 /// DO NOT GUESS METHOD NAMES!
@@ -12,18 +13,20 @@ use teaql_macros::{teaql_entity, TeaqlEntity};
 /// Read the method signatures in this file before proceeding.
 #[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
-#[teaql(reverse_relation(name = "customer_list", target = "Customer", local_key = "id", foreign_key = "commerce_platform_id", many))]
-#[teaql(reverse_relation(name = "order_status_list", target = "OrderStatus", local_key = "id", foreign_key = "commerce_platform_id", many))]
-#[teaql(reverse_relation(name = "customer_order_list", target = "CustomerOrder", local_key = "id", foreign_key = "commerce_platform_id", many))]
-#[teaql(reverse_relation(name = "product_list", target = "Product", local_key = "id", foreign_key = "commerce_platform_id", many))]
-#[teaql(reverse_relation(name = "order_line_list", target = "OrderLine", local_key = "id", foreign_key = "commerce_platform_id", many))]
-#[teaql(reverse_relation(name = "order_search_preset_list", target = "OrderSearchPreset", local_key = "id", foreign_key = "commerce_platform_id", many))]
-#[teaql(entity = "CommercePlatform", table = "commerce_platform_data", data_service = "sqlite")]
+#[teaql(indexed_layout)]
+#[teaql(reverse_relation(name = "customer_list", target = "Customer", json_type = "crate::Customer", local_key = "id", foreign_key = "commerce_platform_id", many))]
+#[teaql(reverse_relation(name = "order_status_list", target = "OrderStatus", json_type = "crate::OrderStatus", local_key = "id", foreign_key = "commerce_platform_id", many))]
+#[teaql(reverse_relation(name = "customer_order_list", target = "CustomerOrder", json_type = "crate::CustomerOrder", local_key = "id", foreign_key = "commerce_platform_id", many))]
+#[teaql(reverse_relation(name = "product_list", target = "Product", json_type = "crate::Product", local_key = "id", foreign_key = "commerce_platform_id", many))]
+#[teaql(reverse_relation(name = "order_line_list", target = "OrderLine", json_type = "crate::OrderLine", local_key = "id", foreign_key = "commerce_platform_id", many))]
+#[teaql(reverse_relation(name = "order_search_preset_list", target = "OrderSearchPreset", json_type = "crate::OrderSearchPreset", local_key = "id", foreign_key = "commerce_platform_id", many))]
+#[teaql(entity = "CommercePlatform", table = "commerce_platform_data", data_service = "sqlite", audit_mask_fields = "")]
 pub struct CommercePlatform {
 #[teaql(id)]
     id: u64,
 
 // @source order-management-model.xml:3
+#[teaql(max_length = 100)]
     name: String,
 
 // @source order-management-model.xml:3
@@ -42,6 +45,23 @@ pub struct CommercePlatform {
 impl CommercePlatform {
     pub const ENTITY_NAME: &'static str = "commerce_platform";
 
+    // Framework metadata: complete fixed layout, including overflow slots.
+    pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "67294964fa1d025f37e472895a7b4548e18b1d34e91dd854877dbc11d0367f28";
+    pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
+        ("id", 0),
+        ("name", 1),
+        ("create_time", 2),
+        ("update_time", 3),
+        ("version", 4),
+    ];
+    pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
+        ("id", "id", "id"),
+        ("name", "name", "name"),
+        ("create_time", "create_time", "create_time"),
+        ("update_time", "update_time", "update_time"),
+        ("version", "version", "version"),
+    ];
+
     pub fn with_id(id: u64) -> teaql_core::Value {
         teaql_core::Value::U64(id)
     }
@@ -50,12 +70,14 @@ impl CommercePlatform {
         Self {
             id: 0_u64,
             name: String::new(),
-            create_time: teaql_core::time::Timestamp::now(),
-            update_time: teaql_core::time::Timestamp::now(),
+            create_time: Default::default(),
+            update_time: Default::default(),
             version: 0_i64,
             dynamic: BTreeMap::new(),
             __teaql_runtime_state: root,
-            __load_state: teaql_core::eval::LoadState::FullyLoaded,
+            __load_state: teaql_core::eval::LoadState::NotLoaded.into_indexed(
+                <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
+            ).expect("new entity load state"),
         }
     }
 
@@ -69,7 +91,9 @@ impl CommercePlatform {
     }
 
     pub fn set_load_state(&mut self, state: teaql_core::eval::LoadState) {
-        self.__load_state = state;
+        self.__load_state = state.into_indexed(
+            <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
+        ).expect("compatible entity load state");
     }
 
     pub fn id(&self) -> u64 {
@@ -80,6 +104,7 @@ impl CommercePlatform {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "id", value);
+        self.__load_state.mark_loaded("id").expect("generated field layout");
         self
     }
 
@@ -94,6 +119,7 @@ impl CommercePlatform {
                     teaql_core::eval::EvalResult::Value(self.id())
                 }}
 
+
     pub fn name(&self) -> String {
         self.changed_name().and_then(|value| value.try_text().map(|value| value.to_owned())).unwrap_or_else(|| self.name.clone())
     }
@@ -102,6 +128,7 @@ impl CommercePlatform {
         let value = value.into();
         self.name = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.name.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "name", value);
+        self.__load_state.mark_loaded("name").expect("generated field layout");
         self
     }
 
@@ -116,6 +143,7 @@ impl CommercePlatform {
                     teaql_core::eval::EvalResult::Value(self.name())
                 }}
 
+
     pub fn create_time(&self) -> teaql_core::time::Timestamp {
         self.changed_create_time().and_then(|value| value.try_timestamp()).unwrap_or(self.create_time)
     }
@@ -124,6 +152,7 @@ impl CommercePlatform {
         self.create_time = value;
         let value = teaql_core::Value::from(value);
         self.__teaql_runtime_state().set(self.entity_key(), "create_time", value);
+        self.__load_state.mark_loaded("create_time").expect("generated field layout");
         self
     }
     pub fn changed_create_time(&self) -> Option<teaql_core::Value> {
@@ -137,6 +166,7 @@ impl CommercePlatform {
                     teaql_core::eval::EvalResult::Value(self.create_time())
                 }}
 
+
     pub fn update_time(&self) -> teaql_core::time::Timestamp {
         self.changed_update_time().and_then(|value| value.try_timestamp()).unwrap_or(self.update_time)
     }
@@ -145,6 +175,7 @@ impl CommercePlatform {
         self.update_time = value;
         let value = teaql_core::Value::from(value);
         self.__teaql_runtime_state().set(self.entity_key(), "update_time", value);
+        self.__load_state.mark_loaded("update_time").expect("generated field layout");
         self
     }
     pub fn changed_update_time(&self) -> Option<teaql_core::Value> {
@@ -158,6 +189,7 @@ impl CommercePlatform {
                     teaql_core::eval::EvalResult::Value(self.update_time())
                 }}
 
+
     pub fn version(&self) -> i64 {
         self.changed_version().and_then(|value| value.try_i64()).unwrap_or(self.version)
     }
@@ -166,6 +198,7 @@ impl CommercePlatform {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
         self.__teaql_runtime_state().set(self.entity_key(), "version", value);
+        self.__load_state.mark_loaded("version").expect("generated field layout");
         self
     }
 
@@ -179,6 +212,7 @@ impl CommercePlatform {
                 } else {
                     teaql_core::eval::EvalResult::Value(self.version())
                 }}
+
     /// Returns the relation view installed by the query that loaded this entity.
     /// This method never performs an implicit database query.
     pub fn customer_list(&self) -> teaql_runtime::RelationHandle<'_, teaql_core::SmartList<crate::Customer>> {
@@ -288,3 +322,4 @@ impl CommercePlatform {
     }
 
 }
+

@@ -26,17 +26,34 @@ pub struct SchoolTypeRequest<R = crate::SchoolType> {
     relation_filters: Vec<RelationFilter>,
     child_enhancements: Vec<QuerySelection>,
     query_options: QueryOptions,
+    roll_up_links: Vec<RollupLink>,
+    roll_up_publication: Option<RollupTarget>,
     marker: PhantomData<R>,
 }
 
 impl<R> Clone for SchoolTypeRequest<R> {
     fn clone(&self) -> Self {
+        if !self.roll_up_links.is_empty() {
+            let snapshot = self.__resolved_roll_up_selection().expect("invalid roll-up configuration");
+            return Self {
+                query: snapshot.query,
+                relation_selections: snapshot.relation_selections,
+                relation_filters: snapshot.relation_filters,
+                child_enhancements: snapshot.child_enhancements,
+                query_options: snapshot.query_options,
+                roll_up_links: Vec::new(),
+                roll_up_publication: None,
+                marker: PhantomData,
+            };
+        }
         Self {
             query: self.query.clone(),
             relation_selections: self.relation_selections.clone(),
             relation_filters: self.relation_filters.clone(),
             child_enhancements: self.child_enhancements.clone(),
             query_options: self.query_options.clone(),
+            roll_up_links: Vec::new(),
+            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -52,6 +69,8 @@ impl<R> SchoolTypeRequest<R> {
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
             query_options: QueryOptions::default(),
+            roll_up_links: Vec::new(),
+            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -63,6 +82,8 @@ impl<R> SchoolTypeRequest<R> {
             relation_filters: self.relation_filters,
             child_enhancements: self.child_enhancements,
             query_options: self.query_options,
+            roll_up_links: self.roll_up_links,
+            roll_up_publication: self.roll_up_publication,
             marker: PhantomData,
         }
     }
@@ -88,7 +109,57 @@ impl<R> SchoolTypeRequest<R> {
     }
 
     pub fn into_query(self) -> SelectQuery {
-        self.query
+        QuerySelection::from(self).into_query()
+    }
+
+    fn __base_roll_up_selection(&self) -> QuerySelection {
+        QuerySelection {
+            query: self.query.clone(),
+            relation_selections: self.relation_selections.clone(),
+            relation_filters: self.relation_filters.clone(),
+            child_enhancements: self.child_enhancements.clone(),
+            query_options: self.query_options.clone(),
+        }
+    }
+
+    fn __resolved_roll_up_selection(&self) -> Result<QuerySelection, RuntimeError> {
+        resolve_rollup_links(self.__base_roll_up_selection(), &self.roll_up_links)
+    }
+
+    fn __publish_roll_up(&self) {
+        if let Some(target) = &self.roll_up_publication {
+            *target.lock().expect("poisoned roll-up configuration") = RollupState {
+                selection: self.__base_roll_up_selection(),
+                links: self.roll_up_links.clone(),
+            };
+        }
+    }
+
+    fn __synced(self) -> Self {
+        self.__publish_roll_up();
+        self
+    }
+
+    pub(crate) fn __roll_up_target(&mut self) -> RollupTarget {
+        if self.roll_up_publication.is_none() {
+            self.roll_up_publication = Some(std::sync::Arc::new(std::sync::Mutex::new(RollupState {
+                selection: self.__base_roll_up_selection(), links: self.roll_up_links.clone(),
+            })));
+        }
+        self.__publish_roll_up();
+        self.roll_up_publication.as_ref().unwrap().clone()
+    }
+
+    fn __resolve_roll_ups(&mut self) -> Result<(), RuntimeError> {
+        if self.roll_up_links.is_empty() { return Ok(()); }
+        let selection = self.__resolved_roll_up_selection()?;
+        self.query = selection.query;
+        self.relation_selections = selection.relation_selections;
+        self.relation_filters = selection.relation_filters;
+        self.child_enhancements = selection.child_enhancements;
+        self.query_options = selection.query_options;
+        self.roll_up_links.clear();
+        Ok(())
     }
 
 
@@ -97,48 +168,68 @@ impl<R> SchoolTypeRequest<R> {
     }
 
     pub(crate) async fn _execute_for_list<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<SmartList<R>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
     {
+        self.__resolve_roll_ups()?;
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
-        let query = authorize_query(apply_runtime_metadata(
+        let mut query = authorize_query(apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
-        ))?.with_facet_diagnostics(&query_options);
-        let (mut rows, facets) = if query_options.facets.is_empty() {
-            let rows = context.fetch_entity_smart_list::<R>(
-                "SchoolType",
-                query,
-                relation_aggregates,
-            ).await?;
-            (rows, std::collections::BTreeMap::new())
+        ))?;
+        let requested_count = query.take_requested_list_count(&query_options);
+        let use_id_set = query.as_query().id_set_pagination.is_some();
+        context.user_context().observe_generated_list("SchoolType", async {
+        let mut total = None;
+        if !use_id_set {
+            if let Some((alias, count_query)) = &requested_count {
+                let count_rows = context.fetch_compact_rows("SchoolType", count_query).await?;
+                total = Some(exact_list_count(&count_rows, alias)?);
+            }
+        }
+        if !query.as_query().group_by.is_empty() || !query.as_query().object_group_bys.is_empty() {
+            return Err(RuntimeError::Graph("grouped projections require execute_for_rows".into()));
+        }
+        let mut rows = if !query.as_query().aggregates.is_empty() {
+            let records = context.fetch_compact_rows("SchoolType", &query).await?;
+            let mut rows = SmartList::new(Vec::new());
+            if let Some(record) = records.into_iter().next() { rows.aggregations = record.into_map(); }
+            rows
         } else {
-            let rows = context.fetch_entity_smart_list::<R>(
-                "SchoolType",
-                query.clone(),
-                relation_aggregates,
-            ).await?;
-            let facets = execute_facets(context, query.as_query(), &query_options)
-                .await?;
-            (rows, facets)
+            context.fetch_entity_smart_list::<R>(
+                "SchoolType", query.clone(), relation_aggregates,
+            ).await?
         };
+        let facets = if query_options.facets.is_empty() { std::collections::BTreeMap::new() }
+            else { execute_facets(context, query.as_query(), &query_options).await? };
+        if let Some((alias, count_query)) = requested_count {
+            if total.is_none() { total = rows.total_count; }
+            if total.is_none() {
+                let count_rows = context.fetch_compact_rows("SchoolType", &count_query).await?;
+                total = Some(exact_list_count(&count_rows, &alias)?);
+            }
+            rows.total_count = total;
+            rows.aggregations.insert(alias, teaql_core::Value::U64(total.expect("requested count resolved")));
+        }
         attach_facets(&mut rows, facets);
         Ok(rows)
+        }).await
     }
 
     pub(crate) async fn _execute_for_rows<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<SmartList<teaql_core::CompactRow>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
+        self.__resolve_roll_ups()?;
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &self.query_options,
@@ -148,19 +239,26 @@ impl<R> SchoolTypeRequest<R> {
     }
 
     pub(crate) async fn _execute_for_stream<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<TeaqlEntityStream<'a, R, RuntimeError>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
     {
+        self.__resolve_roll_ups()?;
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?.with_facet_diagnostics(&self.query_options);
-        Ok(context.fetch_entity_stream("SchoolType", query))
+        ))?;
+        let shape = query.as_query();
+        if !shape.aggregates.is_empty() || !shape.group_by.is_empty() || !shape.object_group_bys.is_empty() {
+            return Err(RuntimeError::Graph("Entity streams require entity rows; use a record or aggregation query".to_owned()));
+        }
+        Ok(context.user_context().observe_generated_stream(
+            "SchoolType", context.fetch_entity_stream("SchoolType", query),
+        ))
     }
 
     pub(crate) async fn _execute_for_first<'a, C>(
@@ -187,62 +285,40 @@ impl<R> SchoolTypeRequest<R> {
     }
 
 
-    pub(crate) async fn _execute_for_page<'a, C>(
-        self,
-        context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<SmartList<R>, RuntimeError>
-    where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        if self.query.id_set_pagination.is_some() {
-            let mut rows = self
-                .clone()
-                .page_offset(offset, limit)
-                ._execute_for_list(context)
-                .await?;
-            if rows.total_count.is_none() {
-                rows.total_count = Some(self._execute_for_count(context).await?);
-            }
-            return Ok(rows);
-        }
-        let total_count = self.clone()._execute_for_count(context).await?;
-        let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
-        rows.total_count = Some(total_count);
-        Ok(rows)
-    }
-
     pub(crate) async fn _execute_for_count<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<u64, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
+        self.__resolve_roll_ups()?;
         let query_options = self.query_options.clone();
         let query = apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
         );
-        let query = authorize_query(query)?.for_exact_count(COUNT_ALIAS)
-            .with_facet_diagnostics(&query_options);
+        let operation = query_options.page_count_operation.clone().unwrap_or_else(||
+            QueryOperation::new(QueryOperationKind::NamedCount, "execute_for_count"));
+        let alias = operation.alias().unwrap_or(COUNT_ALIAS).to_owned();
+        let query = authorize_query(query)?.with_facet_diagnostics(&query_options)
+            .for_exact_count_with_operation(&alias, operation);
         let rows = context.fetch_compact_rows("SchoolType", &query).await?;
         rows.first()
-            .and_then(|row| row.get(COUNT_ALIAS))
+            .and_then(|row| row.get(&alias))
             .and_then(teaql_core::Value::try_u64)
             .ok_or_else(|| RuntimeError::Graph(format!("count result for SchoolType is missing or not numeric")))
     }
 
     pub(crate) async fn _execute_for_exists<'a, C>(
-        self,
+        mut self,
         context: &'a C,
     ) -> Result<bool, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
+        self.__resolve_roll_ups()?;
         let mut query = apply_runtime_metadata(
             self.query,
             &self.query_options,
@@ -256,22 +332,22 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn search_with_text(mut self, text: impl Into<String>) -> Self {
         self.query = self.query.search_with_text(text);
-        self
+        self.__synced()
     }
 
     pub fn filter(mut self, filter: Expr) -> Self {
         self.query = self.query.filter(filter);
-        self
+        self.__synced()
     }
 
     pub fn and_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.and_filter(filter);
-        self
+        self.__synced()
     }
 
     pub fn or_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.or_filter(filter);
-        self
+        self.__synced()
     }
 
     pub fn append_search_criteria(self, criteria: Expr) -> Self {
@@ -289,18 +365,18 @@ impl<R> SchoolTypeRequest<R> {
             operator,
             property2.as_ref(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_deleted_rows(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self
+        self.__synced()
     }
 
     pub fn deleted_rows_only(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
         self.query = self.query.and_filter(Expr::lte("version", 0_i64));
-        self
+        self.__synced()
     }
 
     pub fn match_types(
@@ -308,29 +384,36 @@ impl<R> SchoolTypeRequest<R> {
         types: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(TYPE_FIELD, types.into_iter().map(Into::into)));
-        self
+        self.__synced()
     }
 
 
     pub fn with_type_group(mut self) -> Self {
         self.query = self.query.project(TYPE_GROUP_FIELD);
-        self
+        self.__synced()
     }
 
-    pub fn matching_any_of(mut self, request: impl Into<QuerySelection>) -> Self {
-        let selection = request.into();
-        let entity = EntityDescriptor::new(selection.query.entity.clone());
-        self.query = self.query.and_filter(Expr::in_subquery("id", entity, selection.query.clone(), "id"));
-        self
+    pub fn matching_any_of<O>(mut self, request: SchoolTypeRequest<O>) -> Self {
+        let filter = QuerySelection::from(request).into_query().filter;
+        if let Some(criteria) = crate::request_support::criteria_alternatives_excluding_version(filter) {
+            self.query = self.query.and_filter(criteria);
+        }
+        self.__synced()
     }
 
-    pub fn match_any_of(self, request: impl Into<QuerySelection>) -> Self {
+    pub fn match_any_of<O>(self, request: SchoolTypeRequest<O>) -> Self {
         self.matching_any_of(request)
+    }
+
+    pub fn matching_ids_of<O>(mut self, request: SchoolTypeRequest<O>) -> Self {
+        let entity = <crate::SchoolType as teaql_core::TeaqlEntity>::entity_descriptor();
+        self.query = self.query.and_filter(Expr::in_subquery("id", entity, QuerySelection::from(request).into_query(), "id"));
+        self.__synced()
     }
 
     pub fn enhance_child(mut self, request: impl Into<QuerySelection>) -> Self {
         self.child_enhancements.push(request.into());
-        self
+        self.__synced()
     }
 
     pub fn enhance_children_if_needed(self) -> Self {
@@ -341,7 +424,7 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.query_options.comment = Some(comment.into());
-        self
+        self.__synced()
     }
 
     pub fn raw_sql(self, raw_sql: impl Into<String>) -> Self {
@@ -350,7 +433,7 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn unsafe_raw_sql(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql = Some(raw_sql.into_sql());
-        self
+        self.__synced()
     }
 
     pub fn raw_sql_filter(self, raw_sql: impl Into<String>) -> Self {
@@ -359,7 +442,7 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn unsafe_raw_sql_filter(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql_search_criteria.push(raw_sql.into_sql());
-        self
+        self.__synced()
     }
     pub fn filter_with_json(self, json_expr: impl Into<String>) -> Self {
         self.merge_dynamic_json_expr(json_expr.into())
@@ -405,7 +488,7 @@ impl<R> SchoolTypeRequest<R> {
             }
         }
 
-        self
+        self.__synced()
     }
 
     pub(crate) fn apply_dynamic_json_filter(self, field: &str, value: &JsonValue) -> Self {
@@ -414,7 +497,7 @@ impl<R> SchoolTypeRequest<R> {
         } else if let Some(storage_field) = Self::dynamic_json_self_field(field) {
             self.and_filter(dynamic_json_filter_expr(storage_field, value))
         } else {
-            self
+            self.__synced()
         }
     }
 
@@ -437,7 +520,7 @@ impl<R> SchoolTypeRequest<R> {
             }
             _ => {}
         }
-        self
+        self.__synced()
     }
 
     fn apply_dynamic_json_single_order_by(
@@ -459,7 +542,7 @@ impl<R> SchoolTypeRequest<R> {
         } else {
             self.query = self.query.order_desc(storage_field);
         }
-        self
+        self.__synced()
     }
 
     fn dynamic_json_self_field(field: &str) -> Option<&'static str> {
@@ -509,28 +592,28 @@ impl<R> SchoolTypeRequest<R> {
         self.query_options
             .dynamic_properties
             .push(RawDynamicProperty::new(property_name, raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn limit(mut self, limit: u64) -> Self {
         self.query = self.query.limit(limit);
-        self
+        self.__synced()
     }
 
     pub fn stream(mut self, chunk_size: usize) -> Self {
         assert!(chunk_size > 0, "stream chunk size must be positive");
         self.query = self.query.stream(chunk_size);
-        self
+        self.__synced()
     }
 
     pub fn stream_default(mut self) -> Self {
         self.query = self.query.stream_default();
-        self
+        self.__synced()
     }
 
     pub fn skip(mut self, offset: u64) -> Self {
         self.query = self.query.offset(offset);
-        self
+        self.__synced()
     }
 
     pub fn offset_only(self, offset: u64) -> Self {
@@ -543,12 +626,12 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn page_offset(mut self, offset: u64, limit: u64) -> Self {
         self.query = self.query.page(offset, limit);
-        self
+        self.__synced()
     }
 
     pub fn optimize_for_continuous_page_fetch(mut self) -> Self {
         self.query = self.query.optimize_for_continuous_page_fetch();
-        self
+        self.__synced()
     }
 
     pub fn optimize_for_continuous_page_fetch_with(
@@ -559,12 +642,12 @@ impl<R> SchoolTypeRequest<R> {
         self.query = self
             .query
             .optimize_for_continuous_page_fetch_with(namespace, ttl_seconds);
-        self
+        self.__synced()
     }
 
     pub fn optimize_pagination_with_id_set(mut self) -> Self {
         self.query = self.query.optimize_pagination_with_id_set();
-        self
+        self.__synced()
     }
 
     pub fn optimize_pagination_with_id_set_config(
@@ -576,7 +659,7 @@ impl<R> SchoolTypeRequest<R> {
         self.query = self
             .query
             .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
-        self
+        self.__synced()
     }
 
     /// Select bounded indexed probes for a per-parent Top-N relation only
@@ -584,7 +667,7 @@ impl<R> SchoolTypeRequest<R> {
     /// Passing zero explicitly selects the provider window plan.
     pub fn top_n_probe_parent_threshold(mut self, threshold: usize) -> Self {
         self.query = self.query.top_n_probe_parent_threshold(threshold);
-        self
+        self.__synced()
     }
 
     pub fn top(self, top_n: u64) -> Self {
@@ -597,7 +680,7 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn unlimited(mut self) -> Self {
         self.query.slice = None;
-        self
+        self.__synced()
     }
 
     pub fn page_number(self, page_number: u64, page_size: u64) -> Self {
@@ -624,7 +707,12 @@ impl<R> SchoolTypeRequest<R> {
         self.query = self.query.project("display_order");
         self.query = self.query.project("version");
         self.query = self.query.project("platform_id");
-        self
+        self.__synced()
+    }
+
+    pub fn select_dynamic_fields_with(mut self, selection: teaql_core::dynamic_fields::DynamicFieldSelection) -> Self {
+        self.query = self.query.select_dynamic_fields(selection);
+        self.__synced()
     }
 
     pub fn select_self_fields(self) -> Self {
@@ -653,25 +741,64 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn group_by(mut self, field: impl Into<String>) -> Self {
         self.query = self.query.group_by(field);
-        self
+        self.__synced()
     }
 
-    pub fn count(self) -> Self {
-        self.count_as("count")
+    /// Order a selected statistical alias or nested result path, matching Java.
+    pub fn add_order_by_ascending(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_asc(result_key);
+        self.__synced()
     }
 
-    pub fn count_as(self, alias: impl Into<String>) -> Self {
+    pub fn add_order_by_descending(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_desc(result_key);
+        self.__synced()
+    }
+
+    pub fn add_order_by_ascending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_gbk_asc(result_key);
+        self.__synced()
+    }
+
+    pub fn add_order_by_descending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
+        self.query = self.query.order_gbk_desc(result_key);
+        self.__synced()
+    }
+
+    pub fn count(mut self) -> Self {
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count"));
+        self.aggregate_count("count")
+    }
+
+    pub fn count_as(mut self, alias: impl Into<String>) -> Self {
+        let alias = alias.into();
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count_as").with_alias(&alias));
         self.aggregate_count(alias)
     }
 
     pub fn aggregate_count(mut self, alias: impl Into<String>) -> Self {
         self.query = self.query.count(alias);
-        self
+        self.__synced()
+    }
+    /// Java addAggregate(SimpleNamedExpression): bind a typed aggregate AST.
+    pub fn add_aggregate(mut self, aggregate: teaql_core::NamedExpr) -> Self {
+        self.query = self.query.aggregate_expression(aggregate);
+        self.__synced()
+    }
+
+    /// Filter selected statistical results. Repeated conditions compose with AND.
+    pub fn having(mut self, condition: Expr) -> Self {
+        let condition = match self.query.having.take() {
+            Some(previous) => Expr::and([previous, condition]),
+            None => condition,
+        };
+        self.query = self.query.having(condition);
+        self.__synced()
     }
 
     pub fn aggregate_count_field(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.count_field(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_with_function(
@@ -681,77 +808,77 @@ impl<R> SchoolTypeRequest<R> {
         function: AggregateFunction,
     ) -> Self {
         self.query = self.query.aggregate(Aggregate::new(function, field, alias));
-        self
+        self.__synced()
     }
 
     pub fn aggregate_sum(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.sum(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_avg(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.avg(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_min(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.min(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_max(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.max(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_stddev(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_stddev_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev_pop(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_var_samp(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_samp(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_var_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_pop(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_bit_and(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_and(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_bit_or(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_or(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn aggregate_bit_xor(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_xor(field, alias);
-        self
+        self.__synced()
     }
 
     pub fn enable_aggregation_cache(mut self) -> Self {
         self.query = self.query.enable_aggregation_cache();
-        self
+        self.__synced()
     }
 
     pub fn enable_aggregation_cache_for(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.enable_aggregation_cache_for(cache_expired_millis);
-        self
+        self.__synced()
     }
 
     pub fn propagate_aggregation_cache(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.propagate_aggregation_cache(cache_expired_millis);
-        self
+        self.__synced()
     }
 
     pub fn group_by_id(self) -> Self {
@@ -759,21 +886,20 @@ impl<R> SchoolTypeRequest<R> {
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("id");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("id"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("id"));
+        request.__synced()
     }
 
     pub fn group_by_id_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("id")
-            .aggregate_with_function("id", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("id")]));
+        request.__synced()
     }
 
     pub fn count_id(self) -> Self {
@@ -782,6 +908,13 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("id", alias)
+    }
+    pub fn count_distinct_id(self) -> Self {
+        self.count_distinct_id_as("id_distinct_count")
+    }
+
+    pub fn count_distinct_id_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("id", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_id(self) -> Self {
@@ -827,7 +960,7 @@ impl<R> SchoolTypeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_id_criteria(
@@ -843,14 +976,14 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("id", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("id", value));
-        self
+        self.__synced()
     }
 
     pub fn with_id_in(
@@ -861,7 +994,7 @@ impl<R> SchoolTypeRequest<R> {
             "id",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_id_not_in(
@@ -872,33 +1005,33 @@ impl<R> SchoolTypeRequest<R> {
             "id",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_asc(mut self) -> Self {
         self.query = self.query.order_asc("id");
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
         self.query = self.query.order_desc("id");
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("id");
-        self
+        self.__synced()
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("id");
-        self
+        self.__synced()
     }
 
 
     pub fn select_name(mut self) -> Self {
         self.query = self.query.project("name");
-        self
+        self.__synced()
     }
 
     pub fn project_name(self) -> Self {
@@ -913,7 +1046,7 @@ impl<R> SchoolTypeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("name", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_name(self) -> Self {
@@ -921,21 +1054,20 @@ impl<R> SchoolTypeRequest<R> {
     }
 
     pub fn group_by_name_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("name");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("name"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("name"));
+        request.__synced()
     }
 
     pub fn group_by_name_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("name")
-            .aggregate_with_function("name", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("name")]));
+        request.__synced()
     }
 
     pub fn count_name(self) -> Self {
@@ -944,6 +1076,13 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn count_name_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("name", alias)
+    }
+    pub fn count_distinct_name(self) -> Self {
+        self.count_distinct_name_as("name_distinct_count")
+    }
+
+    pub fn count_distinct_name_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("name", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_name(self) -> Self {
@@ -981,7 +1120,7 @@ impl<R> SchoolTypeRequest<R> {
     pub fn unselect_name(mut self) -> Self {
         self.query.projection.retain(|field| field != "name");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "name");
-        self
+        self.__synced()
     }
 
 
@@ -995,7 +1134,7 @@ impl<R> SchoolTypeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_name_criteria(
@@ -1011,34 +1150,34 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn with_name_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("name", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_name_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_between(
@@ -1047,7 +1186,7 @@ impl<R> SchoolTypeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("name", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_name_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1059,7 +1198,7 @@ impl<R> SchoolTypeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_name_in(
@@ -1070,7 +1209,7 @@ impl<R> SchoolTypeRequest<R> {
             "name",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_name_not_in(
@@ -1081,90 +1220,90 @@ impl<R> SchoolTypeRequest<R> {
             "name",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_name_containing(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::contain("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_not_containing(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_contain("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::begin_with("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::end_with("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::sound_like("name", value));
-        self
+        self.__synced()
     }
     pub fn with_name_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("name", value));
-        self
+        self.__synced()
     }
 
     pub fn with_name_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("name"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_name_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("name"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_name_asc(mut self) -> Self {
         self.query = self.query.order_asc("name");
-        self
+        self.__synced()
     }
 
     pub fn order_by_name_desc(mut self) -> Self {
         self.query = self.query.order_desc("name");
-        self
+        self.__synced()
     }
 
     pub fn order_by_name_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("name");
-        self
+        self.__synced()
     }
 
     pub fn order_by_name_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("name");
-        self
+        self.__synced()
     }
 
 
     pub fn select_code(mut self) -> Self {
         self.query = self.query.project("code");
-        self
+        self.__synced()
     }
 
     pub fn project_code(self) -> Self {
@@ -1179,7 +1318,7 @@ impl<R> SchoolTypeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("code", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn group_by_code(self) -> Self {
@@ -1187,21 +1326,20 @@ impl<R> SchoolTypeRequest<R> {
     }
 
     pub fn group_by_code_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("code");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("code"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("code"));
+        request.__synced()
     }
 
     pub fn group_by_code_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("code")
-            .aggregate_with_function("code", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("code")]));
+        request.__synced()
     }
 
     pub fn count_code(self) -> Self {
@@ -1210,6 +1348,13 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn count_code_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("code", alias)
+    }
+    pub fn count_distinct_code(self) -> Self {
+        self.count_distinct_code_as("code_distinct_count")
+    }
+
+    pub fn count_distinct_code_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("code", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_code(self) -> Self {
@@ -1247,7 +1392,7 @@ impl<R> SchoolTypeRequest<R> {
     pub fn unselect_code(mut self) -> Self {
         self.query.projection.retain(|field| field != "code");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "code");
-        self
+        self.__synced()
     }
 
 
@@ -1261,7 +1406,7 @@ impl<R> SchoolTypeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_code_criteria(
@@ -1277,34 +1422,34 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn with_code_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("code", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_code_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_between(
@@ -1313,7 +1458,7 @@ impl<R> SchoolTypeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("code", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_code_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1325,7 +1470,7 @@ impl<R> SchoolTypeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_code_in(
@@ -1336,7 +1481,7 @@ impl<R> SchoolTypeRequest<R> {
             "code",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_code_not_in(
@@ -1347,90 +1492,90 @@ impl<R> SchoolTypeRequest<R> {
             "code",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_code_containing(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::contain("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_not_containing(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_contain("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::begin_with("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::end_with("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::sound_like("code", value));
-        self
+        self.__synced()
     }
     pub fn with_code_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("code", value));
-        self
+        self.__synced()
     }
 
     pub fn with_code_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("code"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_code_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("code"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_code_asc(mut self) -> Self {
         self.query = self.query.order_asc("code");
-        self
+        self.__synced()
     }
 
     pub fn order_by_code_desc(mut self) -> Self {
         self.query = self.query.order_desc("code");
-        self
+        self.__synced()
     }
 
     pub fn order_by_code_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("code");
-        self
+        self.__synced()
     }
 
     pub fn order_by_code_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("code");
-        self
+        self.__synced()
     }
 
 
     pub fn select_display_order(mut self) -> Self {
         self.query = self.query.project("display_order");
-        self
+        self.__synced()
     }
 
     pub fn project_display_order(self) -> Self {
@@ -1445,7 +1590,7 @@ impl<R> SchoolTypeRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("display_order", raw_sql_segment));
-        self
+        self.__synced()
     }
 
     pub fn select_display_order_with_function(self, function: AggregateFunction) -> Self {
@@ -1465,21 +1610,20 @@ impl<R> SchoolTypeRequest<R> {
     }
 
     pub fn group_by_display_order_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("display_order");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("display_order"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("display_order"));
+        request.__synced()
     }
 
     pub fn group_by_display_order_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("display_order")
-            .aggregate_with_function("display_order", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("display_order")]));
+        request.__synced()
     }
 
     pub fn count_display_order(self) -> Self {
@@ -1488,6 +1632,13 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn count_display_order_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("display_order", alias)
+    }
+    pub fn count_distinct_display_order(self) -> Self {
+        self.count_distinct_display_order_as("display_order_distinct_count")
+    }
+
+    pub fn count_distinct_display_order_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("display_order", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_display_order(self) -> Self {
@@ -1557,7 +1708,7 @@ impl<R> SchoolTypeRequest<R> {
     pub fn unselect_display_order(mut self) -> Self {
         self.query.projection.retain(|field| field != "display_order");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "display_order");
-        self
+        self.__synced()
     }
 
 
@@ -1571,7 +1722,7 @@ impl<R> SchoolTypeRequest<R> {
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self
+        self.__synced()
     }
 
     pub fn create_display_order_criteria(
@@ -1587,34 +1738,34 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn with_display_order_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::eq("display_order", value));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_display_order_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::ne("display_order", value));
-        self
+        self.__synced()
     }
 
     pub fn with_display_order_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("display_order", value));
-        self
+        self.__synced()
     }
 
     pub fn with_display_order_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gte("display_order", value));
-        self
+        self.__synced()
     }
 
     pub fn with_display_order_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("display_order", value));
-        self
+        self.__synced()
     }
 
     pub fn with_display_order_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lte("display_order", value));
-        self
+        self.__synced()
     }
 
     pub fn with_display_order_between(
@@ -1623,7 +1774,7 @@ impl<R> SchoolTypeRequest<R> {
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::between("display_order", lower, upper));
-        self
+        self.__synced()
     }
 
     pub fn with_display_order_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1635,7 +1786,7 @@ impl<R> SchoolTypeRequest<R> {
             range.start,
             range.end,
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_display_order_in(
@@ -1646,7 +1797,7 @@ impl<R> SchoolTypeRequest<R> {
             "display_order",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_display_order_not_in(
@@ -1657,50 +1808,50 @@ impl<R> SchoolTypeRequest<R> {
             "display_order",
             values.into_iter().map(Into::into),
         ));
-        self
+        self.__synced()
     }
 
     pub fn with_display_order_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::lt("display_order", value));
-        self
+        self.__synced()
     }
 
     pub fn with_display_order_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
         self.query = self.query.and_filter(Expr::gt("display_order", value));
-        self
+        self.__synced()
     }
 
     pub fn with_display_order_is_unknown(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("display_order"));
-        self
+        self.__synced()
     }
 
 
 
     pub fn with_display_order_is_known(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("display_order"));
-        self
+        self.__synced()
     }
 
 
     pub fn order_by_display_order_asc(mut self) -> Self {
         self.query = self.query.order_asc("display_order");
-        self
+        self.__synced()
     }
 
     pub fn order_by_display_order_desc(mut self) -> Self {
         self.query = self.query.order_desc("display_order");
-        self
+        self.__synced()
     }
 
     pub fn order_by_display_order_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("display_order");
-        self
+        self.__synced()
     }
 
     pub fn order_by_display_order_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("display_order");
-        self
+        self.__synced()
     }
 
     pub fn group_by_version(self) -> Self {
@@ -1708,21 +1859,20 @@ impl<R> SchoolTypeRequest<R> {
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("version");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("version"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("version"));
+        request.__synced()
     }
 
     pub fn group_by_version_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("version")
-            .aggregate_with_function("version", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("version")]));
+        request.__synced()
     }
 
     pub fn count_version(self) -> Self {
@@ -1731,6 +1881,13 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("version", alias)
+    }
+    pub fn count_distinct_version(self) -> Self {
+        self.count_distinct_version_as("version_distinct_count")
+    }
+
+    pub fn count_distinct_version_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("version", alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_version(self) -> Self {
@@ -1767,22 +1924,22 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn order_by_version_asc(mut self) -> Self {
         self.query = self.query.order_asc("version");
-        self
+        self.__synced()
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
         self.query = self.query.order_desc("version");
-        self
+        self.__synced()
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_asc("version");
-        self
+        self.__synced()
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
         self.query = self.query.order_gbk_desc("version");
-        self
+        self.__synced()
     }
     pub fn with_id_is_value_1001(self) -> Self {
         self.with_id_is("1001")
@@ -1879,7 +2036,7 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn filter_by_platform(mut self, value: impl EntityReference) -> Self {
         self.query = self.query.and_filter(Expr::eq("platform_id", value.entity_id_value()));
-        self
+        self.__synced()
     }
 
     pub fn with_platform_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -1887,11 +2044,11 @@ impl<R> SchoolTypeRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "platform_id",
             <crate::Platform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("platform", selection));
-        self
+        self.__synced()
     }
 
 
@@ -1900,22 +2057,32 @@ impl<R> SchoolTypeRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "platform_id",
             <crate::Platform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("platform", selection));
-        self
+        self.__synced()
     }
 
 
     pub fn have_platform(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_not_null("platform_id"));
-        self
+        self.__synced()
     }
 
     pub fn have_no_platform(mut self) -> Self {
         self.query = self.query.and_filter(Expr::is_null("platform_id"));
-        self
+        self.__synced()
+    }
+
+    pub fn order_by_platform_asc(mut self) -> Self {
+        self.query = self.query.order_asc("platform_id");
+        self.__synced()
+    }
+
+    pub fn order_by_platform_desc(mut self) -> Self {
+        self.query = self.query.order_desc("platform_id");
+        self.__synced()
     }
 
 
@@ -1924,50 +2091,80 @@ impl<R> SchoolTypeRequest<R> {
     }
 
     pub fn group_by_platform_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let mut request = self.group_by("platform_id");
-        request.query = request
-            .query
-            .project_expr(alias, Expr::column("platform_id"));
-        request
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias, Expr::column("platform_id"));
+        request.__synced()
     }
 
     pub fn group_by_platform_with_function(
         self,
         alias: impl Into<String>,
-        function: AggregateFunction,
+        function: teaql_core::ExprFunction,
     ) -> Self {
-        self.group_by("platform_id")
-            .aggregate_with_function("platform_id", alias, function)
+        let mut request = self;
+        request.query = request.query.group_by_expr(alias,
+            Expr::function(function, vec![Expr::column("platform_id")]));
+        request.__synced()
     }
 
     pub fn group_by_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
+        self.__group_by_platform_with_operation(request, "group_by_platform_with")
+    }
+
+    fn __group_by_platform_with_operation(mut self, request: impl Into<QuerySelection>, method: &str) -> Self {
         self.query = self.query.group_by("platform_id");
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "platform",
             "platform_id",
             request,
-        ));
-        self
+        ).with_operation(
+            QueryOperation::new(QueryOperationKind::Aggregate, method)
+                .with_relation("platform")));
+        self.__synced()
     }
 
     pub fn group_by_platform_with_details(self) -> Self {
-        self.group_by_platform_with_details_from(crate::Q::platforms().unlimited())
+        self.__group_by_platform_with_operation(crate::Q::platforms().unlimited(), "group_by_platform_with_details")
     }
 
     pub fn group_by_platform_with_details_from(self, request: impl Into<QuerySelection>) -> Self {
-        self.group_by_platform_with(request)
+        self.__group_by_platform_with_operation(request, "group_by_platform_with_details_from")
     }
 
 
-    pub fn roll_up_to_platform(self) -> Self {
-        self.roll_up_to_platform_with(crate::Q::platforms().unlimited())
+    pub fn roll_up_to_platform(&mut self) -> crate::PlatformRequest {
+        self.__bind_roll_up_to_platform(crate::Q::platforms().unlimited(),
+            QueryOperation::new(QueryOperationKind::Aggregate, "roll_up_to_platform")
+                .with_relation("platform"))
     }
 
-    pub fn roll_up_to_platform_with(self, request: impl Into<QuerySelection>) -> Self {
-        let selection = request.into();
-        self.with_platform_matching(selection.clone())
-            .group_by_platform_with(selection)
+    pub fn roll_up_to_platform_with<T>(&mut self, request: crate::PlatformRequest<T>) -> crate::PlatformRequest<T> {
+        self.__bind_roll_up_to_platform(request,
+            QueryOperation::new(QueryOperationKind::Aggregate, "roll_up_to_platform_with")
+                .with_relation("platform"))
+    }
+
+    fn __bind_roll_up_to_platform<T>(&mut self, mut request: crate::PlatformRequest<T>, operation: QueryOperation) -> crate::PlatformRequest<T> {
+        let target = request.__roll_up_target();
+        if let Some(source) = &self.roll_up_publication {
+            assert!(!crate::rollup_support::reaches(&target, source).expect("invalid roll-up configuration"),
+                "cyclic roll-up configuration");
+        }
+        teaql_core::request::clear_rollup_navigation(&mut self.query,
+            "platform", "id").expect("invalid roll-up configuration");
+        self.roll_up_links.retain(|link| link.property != "platform");
+        self.roll_up_links.push(RollupLink {
+            property: "platform".into(),
+            storage: "platform_id".into(),
+            descriptor: <crate::Platform as teaql_core::TeaqlEntity>::entity_descriptor(),
+            operation,
+            target,
+        });
+        if !self.query.group_by.iter().any(|field| field == "platform_id") {
+            self.query.group_by.push("platform_id".into());
+        }
+        self.__publish_roll_up();
+        request
     }
 
     pub fn count_platform(self) -> Self {
@@ -1977,40 +2174,56 @@ impl<R> SchoolTypeRequest<R> {
     pub fn count_platform_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count_field("platform_id", alias)
     }
+    pub fn count_distinct_platform(self) -> Self {
+        self.count_distinct_platform_as("platform_distinct_count")
+    }
+
+    pub fn count_distinct_platform_as(self, alias: impl Into<String>) -> Self {
+        self.aggregate_with_function("platform_id", alias, AggregateFunction::CountDistinct)
+    }
 
     pub fn unselect_platform(mut self) -> Self {
         self.query.projection.retain(|field| field != "platform_id");
         self.query.relations.retain(|relation| relation.name != "platform");
-        self
+        self.__synced()
     }
     pub fn select_platform(mut self) -> Self {
-        self.query = self.query.relation("platform");
-        self
+        self.query.relations.push(teaql_core::RelationLoad::new("platform")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_platform").with_relation("platform")));
+        self.__synced()
     }
 
     pub fn select_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("platform", selection.into_query());
-        self
+        self.query.relations.push(teaql_core::RelationLoad::with_query("platform", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_platform_with").with_relation("platform")));
+        self.__synced()
 }
 
     pub fn facet_by_platform_as(self, facet_name: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.facet_by_platform_as_with_options(facet_name, request, true)
+        self.facet_by_platform_internal(facet_name, request, true, "facet_by_platform_as")
     }
 
     pub fn facet_by_platform_as_with_options(
-        mut self,
+        self,
         facet_name: impl Into<String>,
         request: impl Into<QuerySelection>,
         include_all_facets: bool,
     ) -> Self {
+        self.facet_by_platform_internal(facet_name, request, include_all_facets, "facet_by_platform_as_with_options")
+    }
+
+    fn facet_by_platform_internal(mut self, facet_name: impl Into<String>, request: impl Into<QuerySelection>, include_all_facets: bool, method: &'static str) -> Self {
+        let facet_name = facet_name.into();
+        let operation = QueryOperation::new(QueryOperationKind::Facet, method)
+            .with_alias(&facet_name).with_relation("platform");
         self.query_options.facets.push(FacetRequest::new(
             facet_name,
             "platform",
             request,
             include_all_facets,
-        ));
-        self
+        ).with_operation(operation));
+        self.__synced()
     }
     pub fn have_schools(self) -> Self {
         self.with_school_list_matching(crate::Q::schools_minimal())
@@ -2025,11 +2238,11 @@ impl<R> SchoolTypeRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "id",
             <crate::School as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "school_type_id",
         ));
         self.relation_filters.push(RelationFilter::new("school_list", selection));
-        self
+        self.__synced()
     }
 
     pub fn without_school_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -2037,40 +2250,51 @@ impl<R> SchoolTypeRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "id",
             <crate::School as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.query.clone(),
+            selection.clone().into_query(),
             "school_type_id",
         ));
         self.relation_filters.push(RelationFilter::new("school_list", selection));
-        self
+        self.__synced()
     }
 
     pub fn select_school_list(mut self) -> Self {
-        self.query = self.query.relation("school_list");
-        self
+        self.query.relations.push(teaql_core::RelationLoad::new("school_list")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_list").with_relation("school_list")));
+        self.__synced()
     }
 
     pub fn select_school_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("school_list", selection.into_query());
-        self
+        self.query.relations.push(teaql_core::RelationLoad::with_query("school_list", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_list_with").with_relation("school_list")));
+        self.__synced()
 }
     pub fn count_schools(self) -> Self {
-        self.count_schools_as("count_schools")
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_schools");
+        self.count_schools_internal("count_schools".to_owned(), crate::Q::schools().unlimited(), operation)
     }
 
     pub fn count_schools_as(self, alias: impl Into<String>) -> Self {
-        self.count_schools_with(alias, crate::Q::schools().unlimited())
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_schools_as").with_alias(&alias);
+        self.count_schools_internal(alias, crate::Q::schools().unlimited(), operation)
     }
 
-    pub fn count_schools_with(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    pub fn count_schools_with(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_schools_with").with_alias(&alias);
+        self.count_schools_internal(alias, request, operation)
+    }
+
+    fn count_schools_internal(mut self, alias: String, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_list",
             alias,
             selection,
             true,
-        ));
-        self
+        ).with_operation(operation.with_relation("school_list")));
+        self.__synced()
     }
 
     pub fn stats_from_schools(self, request: impl Into<QuerySelection>) -> Self {
@@ -2079,24 +2303,27 @@ impl<R> SchoolTypeRequest<R> {
 
     pub fn stats_from_schools_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "stats_from_schools_as")
+            .with_alias(&alias).with_relation("school_list");
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_list",
             alias,
             selection,
             false,
-        ));
-        self
+        ).with_operation(operation));
+        self.__synced()
     }
 
-    fn scalar_from_schools_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    fn scalar_from_schools_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "school_list",
             alias,
             selection,
             true,
-        ));
-        self
+        ).with_operation(operation.with_relation("school_list")));
+        self.__synced()
     }
 
     pub fn group_by_schools_with_details(self, request: impl Into<QuerySelection>) -> Self {
@@ -2105,102 +2332,158 @@ impl<R> SchoolTypeRequest<R> {
 
 
     pub fn min_established_date_of_schools(self) -> Self {
-        self.min_established_date_of_schools_as("min_established_date_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_established_date_of_schools");
+        self.scalar_from_schools_as("min_established_date_of_schools", crate::Q::schools().unlimited().into_query().min("established_date", "min_established_date_of_schools"), operation)
     }
 
     pub fn min_established_date_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().min("established_date", "min_established_date"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_established_date_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().min("established_date", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn max_established_date_of_schools(self) -> Self {
-        self.max_established_date_of_schools_as("max_established_date_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_established_date_of_schools");
+        self.scalar_from_schools_as("max_established_date_of_schools", crate::Q::schools().unlimited().into_query().max("established_date", "max_established_date_of_schools"), operation)
     }
 
     pub fn max_established_date_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().max("established_date", "max_established_date"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_established_date_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().max("established_date", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn sum_student_capacity_of_schools(self) -> Self {
-        self.sum_student_capacity_of_schools_as("sum_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_student_capacity_of_schools");
+        self.scalar_from_schools_as("sum_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().sum("student_capacity", "sum_student_capacity_of_schools"), operation)
     }
 
     pub fn sum_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().sum("student_capacity", "sum_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().sum("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn min_student_capacity_of_schools(self) -> Self {
-        self.min_student_capacity_of_schools_as("min_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_student_capacity_of_schools");
+        self.scalar_from_schools_as("min_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().min("student_capacity", "min_student_capacity_of_schools"), operation)
     }
 
     pub fn min_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().min("student_capacity", "min_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().min("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn max_student_capacity_of_schools(self) -> Self {
-        self.max_student_capacity_of_schools_as("max_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_student_capacity_of_schools");
+        self.scalar_from_schools_as("max_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().max("student_capacity", "max_student_capacity_of_schools"), operation)
     }
 
     pub fn max_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().max("student_capacity", "max_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().max("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn avg_student_capacity_of_schools(self) -> Self {
-        self.avg_student_capacity_of_schools_as("avg_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_student_capacity_of_schools");
+        self.scalar_from_schools_as("avg_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().avg("student_capacity", "avg_student_capacity_of_schools"), operation)
     }
 
     pub fn avg_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().avg("student_capacity", "avg_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().avg("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn standard_deviation_student_capacity_of_schools(self) -> Self {
-        self.standard_deviation_student_capacity_of_schools_as("standard_deviation_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_student_capacity_of_schools");
+        self.scalar_from_schools_as("standard_deviation_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().stddev("student_capacity", "standard_deviation_student_capacity_of_schools"), operation)
     }
 
     pub fn standard_deviation_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().stddev("student_capacity", "stdDev_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().stddev("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn square_root_of_population_standard_deviation_student_capacity_of_schools(self) -> Self {
-        self.square_root_of_population_standard_deviation_student_capacity_of_schools_as("square_root_of_population_standard_deviation_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_student_capacity_of_schools");
+        self.scalar_from_schools_as("square_root_of_population_standard_deviation_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().stddev_pop("student_capacity", "square_root_of_population_standard_deviation_student_capacity_of_schools"), operation)
     }
 
     pub fn square_root_of_population_standard_deviation_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().stddev_pop("student_capacity", "stdDevPop_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().stddev_pop("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn sample_variance_student_capacity_of_schools(self) -> Self {
-        self.sample_variance_student_capacity_of_schools_as("sample_variance_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_student_capacity_of_schools");
+        self.scalar_from_schools_as("sample_variance_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().var_samp("student_capacity", "sample_variance_student_capacity_of_schools"), operation)
     }
 
     pub fn sample_variance_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().var_samp("student_capacity", "varSamp_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().var_samp("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn sample_population_variance_student_capacity_of_schools(self) -> Self {
-        self.sample_population_variance_student_capacity_of_schools_as("sample_population_variance_student_capacity_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_student_capacity_of_schools");
+        self.scalar_from_schools_as("sample_population_variance_student_capacity_of_schools", crate::Q::schools().unlimited().into_query().var_pop("student_capacity", "sample_population_variance_student_capacity_of_schools"), operation)
     }
 
     pub fn sample_population_variance_student_capacity_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().var_pop("student_capacity", "varPop_student_capacity"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_student_capacity_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().var_pop("student_capacity", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn min_create_time_of_schools(self) -> Self {
-        self.min_create_time_of_schools_as("min_create_time_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_create_time_of_schools");
+        self.scalar_from_schools_as("min_create_time_of_schools", crate::Q::schools().unlimited().into_query().min("create_time", "min_create_time_of_schools"), operation)
     }
 
     pub fn min_create_time_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().min("create_time", "min_create_time"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_create_time_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().min("create_time", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn max_create_time_of_schools(self) -> Self {
-        self.max_create_time_of_schools_as("max_create_time_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_create_time_of_schools");
+        self.scalar_from_schools_as("max_create_time_of_schools", crate::Q::schools().unlimited().into_query().max("create_time", "max_create_time_of_schools"), operation)
     }
 
     pub fn max_create_time_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().max("create_time", "max_create_time"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_create_time_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().max("create_time", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn min_update_time_of_schools(self) -> Self {
-        self.min_update_time_of_schools_as("min_update_time_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_update_time_of_schools");
+        self.scalar_from_schools_as("min_update_time_of_schools", crate::Q::schools().unlimited().into_query().min("update_time", "min_update_time_of_schools"), operation)
     }
 
     pub fn min_update_time_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().min("update_time", "min_update_time"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_update_time_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().min("update_time", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
     pub fn max_update_time_of_schools(self) -> Self {
-        self.max_update_time_of_schools_as("max_update_time_of_schools", crate::Q::schools().unlimited())
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_update_time_of_schools");
+        self.scalar_from_schools_as("max_update_time_of_schools", crate::Q::schools().unlimited().into_query().max("update_time", "max_update_time_of_schools"), operation)
     }
 
     pub fn max_update_time_of_schools_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.scalar_from_schools_as(alias, request.into().into_query().max("update_time", "max_update_time"))
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_update_time_of_schools_as").with_alias(&alias);
+        let selection = request.into().into_query().max("update_time", alias.clone());
+        self.scalar_from_schools_as(alias, selection, operation)
     }
 }
 
@@ -2217,7 +2500,8 @@ impl<R> From< SchoolTypeRequest<R> > for SelectQuery {
 }
 
 impl<R> From< SchoolTypeRequest<R> > for QuerySelection {
-    fn from(request: SchoolTypeRequest<R>) -> Self {
+    fn from(mut request: SchoolTypeRequest<R>) -> Self {
+        request.__resolve_roll_ups().expect("invalid roll-up configuration");
         Self {
             query: request.query,
             relation_selections: request.relation_selections,
@@ -2244,6 +2528,7 @@ where C: crate::TeaqlRuntime + ?Sized + 'a
 impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolTypeRequest<R>> {
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.inner.query_options.comment = Some(comment.into());
+        self.inner.__publish_roll_up();
         self
     }
 
@@ -2252,10 +2537,13 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolTypeRequest<R>> {
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
+        let id = context.user_context().next_id(crate::SchoolType::ENTITY_NAME)
+            .unwrap_or_else(|_| panic!(
+                "ENTITY_ID_RESERVATION_FAILED: cannot reserve identity for {}",
+                crate::SchoolType::ENTITY_NAME,
+            ));
         let mut entity = crate::SchoolType::runtime_new(context.user_context().entity_runtime_state());
-        if let Ok(id) = context.user_context().next_id(crate::SchoolType::ENTITY_NAME) {
-            entity.update_id(id);
-        }
+        entity.update_id(id);
         teaql_core::Entity::mark_as_new(&mut entity);
         entity
     }
@@ -2268,6 +2556,7 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolTypeRequest<R>> {
             None,
             self.purpose,
         ));
+        self.inner.__publish_roll_up();
         self.inner
     }
 
@@ -2280,19 +2569,6 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolTypeRequest<R>> {
                 .is_some_and(|comment| !comment.trim().is_empty()),
             "query comment must not be empty"
         );
-    }
-
-    pub async fn execute_for_page<'a, C>(
-        self,
-        context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
-    where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        self.into_inner_with_trace()._execute_for_page(context, offset, limit).await
     }
 
     pub async fn execute_for_exists<'a, C>(

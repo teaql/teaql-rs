@@ -33,6 +33,7 @@ pub enum ServiceRuntimeError {
         source: std::env::VarError,
     },
     ConnectionError(String),
+    Configuration(String),
     Rusqlite(rusqlite::Error),
     Runtime(teaql_runtime::RuntimeError),
 }
@@ -44,6 +45,7 @@ impl std::fmt::Display for ServiceRuntimeError {
                 write!(f, "missing environment variable {name}: {source}")
             }
             ServiceRuntimeError::ConnectionError(err) => write!(f, "connection error: {err}"),
+            ServiceRuntimeError::Configuration(err) => write!(f, "configuration error: {err}"),
             ServiceRuntimeError::Rusqlite(err) => write!(f, "rusqlite error: {err}"),
             ServiceRuntimeError::Runtime(err) => write!(f, "runtime error: {err}"),
         }
@@ -55,6 +57,7 @@ impl std::error::Error for ServiceRuntimeError {
         match self {
             ServiceRuntimeError::MissingEnv { source, .. } => Some(source),
             ServiceRuntimeError::ConnectionError(_) => None,
+            ServiceRuntimeError::Configuration(_) => None,
             ServiceRuntimeError::Rusqlite(err) => Some(err),
             ServiceRuntimeError::Runtime(err) => Some(err),
         }
@@ -92,6 +95,7 @@ pub struct ServiceRuntimeExecutor {
         DataServiceMutationExecutor,
         LocalSchemaProvider
     >,
+    query_metadata_observer: Option<std::sync::Arc<dyn Fn(&teaql_data_service::ExecutionMetadata) + Send + Sync>>,
 }
 
 impl ServiceRuntimeExecutor {
@@ -102,6 +106,37 @@ impl ServiceRuntimeExecutor {
                 inner,
                 LocalSchemaProvider
             ),
+            query_metadata_observer: None,
+        }
+    }
+
+    /// Trusted provider/test SPI, disabled by default. Metadata can contain raw
+    /// binds: never send it to operator logs or an untrusted transport. Normal
+    /// SQL/audit sinks retain their runtime-owned safe projections.
+    #[doc(hidden)]
+    pub fn with_query_metadata_observer(mut self, observer: std::sync::Arc<dyn Fn(&teaql_data_service::ExecutionMetadata) + Send + Sync>) -> Self {
+        self.query_metadata_observer = Some(observer);
+        self
+    }
+
+    fn notify_query_metadata(&self, metadata: &teaql_data_service::ExecutionMetadata) {
+        if let Some(observer) = &self.query_metadata_observer {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(metadata)));
+        }
+    }
+
+    fn query_metadata_observer<'a>(
+        &self, upstream: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> Option<teaql_data_service::ExecutionObserver<'a>> {
+        match &self.query_metadata_observer {
+            Some(callback) => {
+                let callback = callback.clone();
+                Some(std::sync::Arc::new(move |metadata| {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(&metadata)));
+                    if let Some(upstream) = &upstream { upstream(metadata); }
+                }))
+            }
+            None => upstream,
         }
     }
 
@@ -115,14 +150,62 @@ impl teaql_data_service::DataServiceExecutor for ServiceRuntimeExecutor {
 }
 
 impl teaql_data_service::QueryExecutor for ServiceRuntimeExecutor {
+    fn query_log_intent(&self, query: &teaql_core::SelectQuery) -> teaql_data_service::SqlIntentRedactions {
+        teaql_data_service::QueryExecutor::query_log_intent(&self.inner, query)
+    }
+
+    fn dynamic_field_store(&self) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        teaql_data_service::QueryExecutor::dynamic_field_store(&self.inner)
+    }
+
     async fn query(&self, request: teaql_data_service::QueryRequest) -> Result<teaql_data_service::QueryResult, Self::Error> {
-        teaql_data_service::QueryExecutor::query(&self.inner, request).await
+        teaql_data_service::QueryExecutor::query_observed(self, request, None).await
+    }
+
+    fn query_observed<'a>(
+        &'a self,
+        request: teaql_data_service::QueryRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> impl std::future::Future<Output = Result<teaql_data_service::QueryResult, Self::Error>> + Send + 'a {
+        async move {
+        let observer = self.query_metadata_observer(observer);
+        let result = teaql_data_service::QueryExecutor::query_observed(&self.inner, request, observer).await?;
+        self.notify_query_metadata(&result.metadata);
+        Ok(result)
+        }
     }
 }
 
 impl teaql_data_service::StreamQueryExecutor for ServiceRuntimeExecutor {
+    fn query_stream_with_dynamic_fields<'a>(
+        &'a self,
+        request: teaql_data_service::QueryRequest,
+        chunk_size: usize,
+        plan: teaql_data_service::dynamic_fields::DynamicFieldStreamPlan,
+        observer: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> Result<teaql_data_service::QueryStream<'a, Self::Error>, teaql_core::dynamic_fields::DynamicFieldError> {
+        let observer = self.query_metadata_observer(observer);
+        teaql_data_service::StreamQueryExecutor::query_stream_with_dynamic_fields(
+            &self.inner, request, chunk_size, plan, observer,
+        )
+    }
+
+    fn query_stream_observed<'a>(
+        &'a self,
+        request: teaql_data_service::QueryRequest,
+        chunk_size: usize,
+        observer: teaql_data_service::ExecutionObserver<'a>,
+    ) -> teaql_data_service::QueryStream<'a, Self::Error> {
+        let observer = self.query_metadata_observer(Some(observer)).expect("caller supplied stream observer");
+        teaql_data_service::StreamQueryExecutor::query_stream_observed(&self.inner, request, chunk_size, observer)
+    }
+
     fn query_stream(&self, request: teaql_data_service::QueryRequest, chunk_size: usize) -> teaql_data_service::QueryStream<'_, Self::Error> {
-        teaql_data_service::StreamQueryExecutor::query_stream(&self.inner, request, chunk_size)
+        if let Some(observer) = self.query_metadata_observer(None) {
+            teaql_data_service::StreamQueryExecutor::query_stream_observed(&self.inner, request, chunk_size, observer)
+        } else {
+            teaql_data_service::StreamQueryExecutor::query_stream(&self.inner, request, chunk_size)
+        }
     }
 }
 
@@ -158,12 +241,9 @@ pub async fn service_runtime_from_pool(pool: DataServicePool) -> Result<ServiceR
     context.register_executor(executor.clone());
     context.insert_resource(executor);
 
-    // Load runtime configuration only. Schema installation is an explicit application action.
-    let env_config = teaql_tool_core::audit_config_from_env(&[
-        "platform_data", "work_item_data"
-    ]);
-    context.insert_resource(env_config.config.clone());
-    context.insert_resource(env_config);
+    // SQL logging is owned by teaql-runtime. The legacy teaql-tool-core
+    // environment whitelist rejects runtime logging variables and must not
+    // gate generated application startup. Schema remains explicit.
 
     Ok(context)
 }
@@ -201,8 +281,28 @@ pub fn checker_registry() -> teaql_runtime::InMemoryCheckerRegistry {
         .with_checker(teaql_runtime::TypedEntityChecker::<WorkItem, _>::new(WorkItemChecker::default()))
 }
 
+fn is_generated_bootstrap_retryable_conflict(error: &teaql_runtime::RuntimeError) -> bool {
+    if matches!(error, teaql_runtime::RuntimeError::OptimisticLockConflict { .. }) { return true }
+    let teaql_runtime::RuntimeError::Graph(message) = error else { return false };
+    (message.contains("UNIQUE constraint failed:") && message.contains("_data.id"))
+        || (message.contains("duplicate key value violates unique constraint") && message.contains("_data_pkey"))
+        || (message.contains("Duplicate entry") && message.contains("PRIMARY"))
+}
+
 fn ensure_generated_bootstrap<'a>(context: &'a teaql_runtime::UserContext) -> teaql_runtime::GeneratedSchemaBootstrapFuture<'a> {
     Box::pin(async move {
+        for attempt in 0..5 {
+            match ensure_generated_bootstrap_once(context).await {
+                Ok(()) => return Ok(()),
+                Err(error) if attempt < 4 && is_generated_bootstrap_retryable_conflict(&error) => tokio::task::yield_now().await,
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("bootstrap attempts always return or fail")
+    })
+}
+
+async fn ensure_generated_bootstrap_once(context: &teaql_runtime::UserContext) -> Result<(), teaql_runtime::RuntimeError> {
         use teaql_core::Entity as _;
         let root_rows = crate::Q::platforms().select_self_fields().with_id_is(1_u64).comment("what: locate generated Domain Root").purpose("why: idempotent runtime bootstrap").execute_for_list(context).await.map_err(|e| teaql_runtime::RuntimeError::Graph(e.to_string()))?;
         let domain_root = if let Some(entity) = root_rows.data.into_iter().next() { entity } else {
@@ -214,19 +314,77 @@ fn ensure_generated_bootstrap<'a>(context: &'a teaql_runtime::UserContext) -> te
         };
         context.set_generated_bootstrap_active_root(Platform::ENTITY_NAME, domain_root.id())?;
         Ok(())
-    })
 }
 
 
+/// Canonical KSML field to selected JSON wire name, consumed by HTTP/TFP adapters.
+pub fn generated_wire_field_mappings() -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> {
+    std::collections::BTreeMap::from([
+        ("Platform".to_owned(), std::collections::BTreeMap::from([
+            ("id".to_owned(), "id".to_owned()),
+            ("name".to_owned(), "name".to_owned()),
+            ("version".to_owned(), "version".to_owned())
+        ])),
+        ("WorkItem".to_owned(), std::collections::BTreeMap::from([
+            ("id".to_owned(), "id".to_owned()),
+            ("title".to_owned(), "title".to_owned()),
+            ("description".to_owned(), "description".to_owned()),
+            ("platform".to_owned(), "platform".to_owned()),
+            ("version".to_owned(), "version".to_owned())
+        ]))
+    ])
+}
+
+/// Accepted legacy aliases; empty until explicitly declared by the model.
+pub fn generated_wire_field_aliases() -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> {
+    std::collections::BTreeMap::new()
+}
+
+/// One immutable model schema shared across contexts, never across row values.
+pub fn generated_entity_json_model() -> &'static teaql_runtime::entity_json::Model {
+    use teaql_runtime::entity_json::{Definition, Field, Kind};
+    static MODEL: std::sync::OnceLock<teaql_runtime::entity_json::Model> = std::sync::OnceLock::new();
+    MODEL.get_or_init(|| teaql_runtime::entity_json::Model::new(vec![
+        Definition::new("Platform", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("name", "name", Kind::Text).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+            Field::new("work_item_list", "work_item_list", Kind::Many { target: "WorkItem".to_owned() }),
+        ]),
+        Definition::new("WorkItem", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("title", "title", Kind::Text).nullable(false),
+            Field::new("description", "description", Kind::Text).nullable(true),
+            Field::new("platform", "platform_id", Kind::Reference { target: "Platform".to_owned(), detail_key: "platform".to_owned() }).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+        ])
+    ]).expect("invalid generated entity JSON metadata"))
+}
+
+pub fn generated_json_field_naming_profile() -> teaql_runtime::JsonFieldNamingProfile {
+    teaql_runtime::JsonFieldNamingProfile::CamelCase
+}
+
+fn generated_checker_presentation() -> std::sync::Arc<teaql_runtime::checker_messages::CheckerPresentationModel> {
+    static MODEL: std::sync::OnceLock<std::sync::Arc<teaql_runtime::checker_messages::CheckerPresentationModel>> = std::sync::OnceLock::new();
+    MODEL.get_or_init(|| std::sync::Arc::new(
+        teaql_runtime::checker_messages::CheckerPresentationModel::from_json("{\"schema\":\"teaql.checker-model/v1\",\"revision\":\"sha256:f026153870cc54db18171cbbe02db1db174f3dea513e9d21e0ffe8af787ebaed\",\"entities\":{\"Platform\":{\"labels\":{\"en\":\"Platform\"},\"fields\":[{\"name\":\"id\",\"labels\":{\"en\":\"id\"},\"aliases\":[\"Id\"]},{\"name\":\"name\",\"labels\":{\"en\":\"name\"},\"aliases\":[\"Name\"]},{\"name\":\"version\",\"labels\":{\"en\":\"version\"},\"aliases\":[\"Version\"]},{\"name\":\"work_item_list\",\"targetType\":\"WorkItem\",\"labels\":{\"en\":\"Work Item\"},\"aliases\":[\"WorkItemList\",\"workItemList\"]}]},\"WorkItem\":{\"labels\":{\"en\":\"Work Item\"},\"fields\":[{\"name\":\"description\",\"labels\":{\"en\":\"description\"},\"aliases\":[\"Description\"]},{\"name\":\"id\",\"labels\":{\"en\":\"id\"},\"aliases\":[\"Id\"]},{\"name\":\"platform\",\"targetType\":\"Platform\",\"labels\":{\"en\":\"Platform\"},\"aliases\":[\"Platform\"]},{\"name\":\"title\",\"labels\":{\"en\":\"title\"},\"aliases\":[\"Title\"]},{\"name\":\"version\",\"labels\":{\"en\":\"version\"},\"aliases\":[\"Version\"]}]}}}")
+            .expect("Invalid generated Checker presentation metadata")
+    )).clone()
+}
+
 pub fn module() -> teaql_runtime::RuntimeModule {
     teaql_runtime::RuntimeModule::new()
-        .entity::<Platform>()
+        .entity_json_model(generated_entity_json_model().clone())
+        .checker_presentation_model(generated_checker_presentation())        .entity::<Platform>()
         .entity::<WorkItem>()
         .generated_schema_bootstrap(ensure_generated_bootstrap)
 }
 
 pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone())
+        .checker_presentation_model(generated_checker_presentation());
     module = module.entity::<Platform>();
     module = module.checker(teaql_runtime::TypedEntityChecker::<Platform, _>::new(PlatformChecker::default()));
     module = module.entity::<WorkItem>();
@@ -236,7 +394,9 @@ pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone())
+        .checker_presentation_model(generated_checker_presentation());
     module = module.entity_with_behavior::<Platform, _>(PlatformBehavior::default());
     module = module.entity_with_behavior::<WorkItem, _>(WorkItemBehavior::default());
     module = module.generated_schema_bootstrap(ensure_generated_bootstrap);
@@ -244,7 +404,9 @@ pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_behaviors_and_checkers() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone())
+        .checker_presentation_model(generated_checker_presentation());
     module = module.entity_with_behavior::<Platform, _>(PlatformBehavior::default());
     module = module.checker(teaql_runtime::TypedEntityChecker::<Platform, _>::new(PlatformChecker::default()));
     module = module.entity_with_behavior::<WorkItem, _>(WorkItemBehavior::default());

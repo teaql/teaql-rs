@@ -41,7 +41,6 @@ pub struct Academy {
 
 // @source model.xml:15
 #[teaql(max_length = 100)]
-#[teaql(column = "Legacy Campus Code")]
     campus_code: String,
 // @source model.xml:13
 #[teaql(column = "platform")]
@@ -67,7 +66,7 @@ impl Academy {
     pub const ENTITY_NAME: &'static str = "Academy";
 
     // Framework metadata: complete fixed layout, including overflow slots.
-    pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "cd7f0bf3e8a453342d310c02c751feb21ed2383f4c58932743069e1be291b526";
+    pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "042b18ec3ea3b22c05808e3810639d71dca129f54216d83d86b7b5b85841cc0f";
     pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
         ("id", 0),
         ("platform", 1),
@@ -84,7 +83,7 @@ impl Academy {
         ("name", "name", "name"),
         ("student_capacity", "student_capacity", "student_capacity"),
         ("version", "version", "version"),
-        ("campus_code", "campus_code", "Legacy Campus Code"),
+        ("campus_code", "campus_code", "campus_code"),
     ];
 
     pub fn with_id(id: u64) -> teaql_core::Value {

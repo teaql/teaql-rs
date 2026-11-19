@@ -21,18 +21,18 @@ pub struct Platform {
 #[teaql(id)]
     id: u64,
 
-// @source school-model.xml:14
+// @source school-model.xml:13
 #[teaql(max_length = 100)]
     name: String,
 
-// @source school-model.xml:14
+// @source school-model.xml:13
 #[teaql(max_length = 100)]
     base_url: String,
 
-// @source school-model.xml:14
+// @source school-model.xml:13
     create_time: teaql_core::time::Timestamp,
 
-// @source school-model.xml:14
+// @source school-model.xml:13
     update_time: teaql_core::time::Timestamp,
 #[teaql(version)]
     version: i64,

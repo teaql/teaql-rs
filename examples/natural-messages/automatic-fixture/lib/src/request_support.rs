@@ -10,6 +10,7 @@ use teaql_core::{
 };
 pub use teaql_core::{QueryOperation, QueryOperationKind};
 use teaql_runtime::{ContextError, GraphNode, EntityDataServiceBehavior, DataServiceError, PurposedSelectQuery, RuntimeError, UserContext};
+pub(crate) use crate::rollup_support::{RollupLink, RollupState, RollupTarget, resolve_rollup_links};
 
 pub type TeaqlEntityStream<'a, T, E> = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<T, E>> + 'a>>;
 
@@ -32,6 +33,7 @@ pub use teaql_core::request::{
 };
 
 
+pub(crate) use teaql_core::request::criteria_alternatives_excluding_version;
 pub trait TeaqlQueryRepository {
     type Error: std::error::Error + Send + Sync + 'static;
 

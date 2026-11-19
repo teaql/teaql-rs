@@ -19,15 +19,15 @@ pub struct PaymentAttempt {
 #[teaql(id)]
     id: u64,
 
-// @source model.xml:15
+// @source model.xml:14
 #[teaql(max_length = 100)]
     reference_code: String,
 #[teaql(version)]
     version: i64,
-// @source model.xml:15
+// @source model.xml:14
 #[teaql(column = "payment")]
     payment_id: u64,
-// @source model.xml:15
+// @source model.xml:14
 #[teaql(relation(target = "Payment", local_key = "payment_id", foreign_key = "id"))]
     payment: Option<Box<crate::Payment>>,
     #[teaql(dynamic)]

@@ -1,13 +1,36 @@
 {
-  "schema": "teaql.generated-example-provenance/v1",
-  "generatorCommit": "dd1534b6bbc20e3beeabb48021e0f84893a72d24",
-  "upstreamTest": "com.skynet.codegenerator.RustNaturalMessagesGenerationTest",
-  "fixtureOutputProperty": "teaql.rust.natural.fixture.output",
-  "scope": "rust-lib-core",
-  "runtimeDependency": "local repository source",
-  "modelSha256": "07c2b5b72abc3e2ed691677c1e0843b7eb49a881bf0f697bce58d1b22ed01f39",
-  "generationReceipt": "teaql-conformance/evidence/2026-11-12-natural-checker-rust-generation-abi-qualified/receipt.json",
-  "generationReceiptSha256": "52fdfd1bb120a90e6c58fd5165cd7b657c8a1091c56411307d41f263338209db",
+  "evaluatedScope": "rust-lib-core",
+  "evaluationErrors": 0,
+  "evaluationWarnings": 2,
+  "generatedManifestSha256": "16bc908e2e0e513f017b7bba0a45b24288918f39fbe2ef68860873a1a90704c0",
+  "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-catalog/rust/natural-messages/automatic-fixture/model/receipt.json",
+  "generationReceiptSha256": "a22bc63a984b7d8803d60e503148a13189b91922b887d51042895896bceb3eb1",
+  "generatorCommit": "97830096360553381a3221ad5bdbe9837c68a9b4",
+  "generatorJarSHA256": "a22cfb9d9442958404cfb0d8e085af2c223c618018bbeb5e42a78765c23c4dd6",
+  "generatorRelease": "v4.2.0",
   "implementationHandEdited": false,
-  "publicPublication": false
+  "modelSha256": "4c69fcaa275d1f7d255f325305cc0c6c5071154d278f9f4af7775ae0758144a6",
+  "previousGeneration": {
+    "fixtureOutputProperty": "teaql.rust.natural.fixture.output",
+    "generationReceipt": "teaql-conformance/evidence/2026-11-12-natural-checker-rust-generation-abi-qualified/receipt.json",
+    "generationReceiptSha256": "52fdfd1bb120a90e6c58fd5165cd7b657c8a1091c56411307d41f263338209db",
+    "generatorCommit": "dd1534b6bbc20e3beeabb48021e0f84893a72d24",
+    "implementationHandEdited": false,
+    "modelSha256": "07c2b5b72abc3e2ed691677c1e0843b7eb49a881bf0f697bce58d1b22ed01f39",
+    "publicPublication": false,
+    "runtimeDependency": "local repository source",
+    "schema": "teaql.generated-example-provenance/v1",
+    "scope": "rust-lib-core",
+    "upstreamTest": "com.skynet.codegenerator.RustNaturalMessagesGenerationTest"
+  },
+  "producerReceiptSha256": "a22bc63a984b7d8803d60e503148a13189b91922b887d51042895896bceb3eb1",
+  "producerSource": {
+    "commit": "97830096360553381a3221ad5bdbe9837c68a9b4",
+    "jarSHA256": "a22cfb9d9442958404cfb0d8e085af2c223c618018bbeb5e42a78765c23c4dd6",
+    "release": "v4.2.0"
+  },
+  "publicPublication": false,
+  "runtimeDependency": "local repository source",
+  "schema": "teaql.generated-example-provenance/v1",
+  "scope": "rust-lib-core"
 }

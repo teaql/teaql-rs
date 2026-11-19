@@ -26,35 +26,35 @@ pub struct OrderItem {
 #[teaql(id)]
     id: u64,
 
-// @source main.xml:16
+// @source model.xml:16
 #[teaql(max_length = 80)]
     product_name: String,
 
-// @source main.xml:16
+// @source model.xml:16
 #[teaql(numeric_precision = 19)]
 #[teaql(numeric_scale = 7)]
     unit_price: rust_decimal::Decimal,
 
-// @source main.xml:16
+// @source model.xml:16
     create_time: teaql_core::time::Timestamp,
 
-// @source main.xml:16
+// @source model.xml:16
     update_time: teaql_core::time::Timestamp,
 #[teaql(version)]
     version: i64,
-// @source main.xml:16
+// @source model.xml:16
 #[teaql(column = "purchase_order")]
     purchase_order_id: u64,
 
-// @source main.xml:16
+// @source model.xml:16
 #[teaql(column = "tenant")]
     #[teaql(context_root = "Tenant")]
     tenant_id: u64,
-// @source main.xml:16
+// @source model.xml:16
 #[teaql(relation(target = "PurchaseOrder", local_key = "purchase_order_id", foreign_key = "id"))]
     purchase_order: Option<Box<crate::PurchaseOrder>>,
 
-// @source main.xml:16
+// @source model.xml:16
 #[teaql(relation(target = "Tenant", local_key = "tenant_id", foreign_key = "id"))]
     tenant: Option<Box<crate::Tenant>>,
     #[teaql(dynamic)]
@@ -98,8 +98,8 @@ impl OrderItem {
             id: 0_u64,
             product_name: String::new(),
             unit_price: rust_decimal::Decimal::ZERO,
-            create_time: teaql_core::time::Timestamp::now(),
-            update_time: teaql_core::time::Timestamp::now(),
+            create_time: Default::default(),
+            update_time: Default::default(),
             version: 0_i64,
             purchase_order_id: 0_u64,
             tenant_id: 0_u64,
