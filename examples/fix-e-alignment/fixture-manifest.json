@@ -34,18 +34,18 @@
     "teaql/model-provenance.json": "0bff6edd658290902abc7b5222bd00c580955ac31540c3633f9e97dc15bf348d"
   },
   "generatedManifestSha256": "9024e60b80517bd11368b4979f29eabfbe027c286336c4bf614921e06a31202d",
-  "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-rust-current-source-followup/rust/fix-e-alignment/model/receipt.json",
+  "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-current-source/rust/fix-e-alignment/model/receipt.json",
   "generatorCommit": "19feda8a0608d7c7e0d64c7d9ec371c9021000fd",
   "generatorJarSHA256": "dc6e26b561f618e1f9574c5c3b4c03b7a21da9ca630cc73a78ae8ccd0d89bd7e",
   "generatorRelease": "unreleased-source-19feda8a",
   "language": "rust",
   "modelSha256": "a2cf4c907cb084cb0946e993eeba586c8c0701a89fdc4a849808aa743be033b7",
-  "previousFixtureManifestSha256": "777cf436fd4796d09b1fe3f92290ffd28aa03708d085175386b6d6fff062957c",
+  "previousFixtureManifestSha256": "a2055c5ebc3a8698811572ee55067a59d165d43c7d8d4dff30432531f2c71564",
   "previousOrigin": {
-    "commit": "dd62d055c73fcfb788d2b9ad44ea3805b33707b5",
+    "commit": "1a999d1baa071561bffc1ed0f47a688e0e57c32b",
     "path": "examples/fix-e-alignment/fixture-manifest.json"
   },
-  "producerReceiptSha256": "3d6fa1a6215e74fb5a52314de10fb93e237db981f08b9c279bdf1e25edcda354",
+  "producerReceiptSha256": "46e2e6c3111d7eb620d929bc54c7f6cbd934d4482d200a02e86063ba9d70c126",
   "producerSource": {
     "commit": "19feda8a0608d7c7e0d64c7d9ec371c9021000fd",
     "jarSHA256": "dc6e26b561f618e1f9574c5c3b4c03b7a21da9ca630cc73a78ae8ccd0d89bd7e",

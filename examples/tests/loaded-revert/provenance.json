@@ -50,15 +50,15 @@
     "subreaper.cjs": "b7717db9e2d4069cf7a9b208f45ded606183aa34adc4e44d0bbd2bb679c03126"
   },
   "generatedManifestSha256": "4e69318db13003533f7a2f496641892d285e733738f5fc36ed1c6d97a9774d16",
-  "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-rust-current-source-followup/rust/tests/loaded-revert/model/receipt.json",
+  "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-current-source/rust/tests/loaded-revert/model/receipt.json",
   "generatorCommit": "19feda8a0608d7c7e0d64c7d9ec371c9021000fd",
   "generatorJarSHA256": "dc6e26b561f618e1f9574c5c3b4c03b7a21da9ca630cc73a78ae8ccd0d89bd7e",
   "generatorRelease": "unreleased-source-19feda8a",
   "language": "rust",
   "modelSha256": "8d3017392ffd00abbc06be2555ced27ac6360e2d05fabc4299e27a5ef8f1c762",
-  "previousFixtureManifestSha256": "ea65a3323753b50187b90c071bd743c454bf7b074d0e4643088882966270eee3",
+  "previousFixtureManifestSha256": "1782306c38ca23a61ef9b5e7005391269c4f852619d851f6deb245b9f2be14f2",
   "previousOrigin": {
-    "commit": "dd62d055c73fcfb788d2b9ad44ea3805b33707b5",
+    "commit": "1a999d1baa071561bffc1ed0f47a688e0e57c32b",
     "path": "examples/tests/loaded-revert/provenance.json"
   },
   "producerReceiptSha256": "4bf07c193057490c8f4ce48c613cb5308f075099247cc07c7fa0583afee52eef",
