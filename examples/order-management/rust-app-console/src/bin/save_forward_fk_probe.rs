@@ -73,7 +73,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .or_else(|| panic_payload.downcast_ref::<&str>().copied())
         .expect("NotLoaded must produce a textual diagnostic");
     assert!(
-        diagnostic.contains("customer") && diagnostic.contains("select_customer"),
+        diagnostic.contains("TeaQLNotLoadedError: access_path=customer break_point=customer")
+            && diagnostic.contains("select the missing field or relation")
+            && diagnostic.contains("expression=E::customer_order(<root>).get_customer()<broken>.eval()"),
         "expected a Customer NotLoaded diagnostic, got: {diagnostic}"
     );
     println!("SAVE_FORWARD_FK_NOT_LOADED_EXPECTED order_id={order_id}");
