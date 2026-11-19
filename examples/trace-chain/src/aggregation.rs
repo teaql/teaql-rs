@@ -277,7 +277,7 @@ pub async fn verify(
                 .group_by_id()
                 .count_as("groupCount")
                 .limit(1);
-            let grouped = if nested {
+            let grouped_count = if nested {
                 let payment = Q::payments_minimal()
                     .with_id_is(payment_id)
                     .limit(1)
@@ -287,21 +287,25 @@ pub async fn verify(
                     .execute_for_one(context)
                     .await?
                     .ok_or("payment")?;
-                E::payment(&payment)
+                let grouped = E::payment(&payment)
                     .get_customer_order()
                     .eval()
                     .ok_or("numeric order")?
-                    .clone()
+                    .clone();
+                count(&grouped, "groupCount")
             } else {
-                numeric
+                let rows = numeric
                     .comment(COMMENT)
                     .purpose("numeric grouping has no edge")
-                    .execute_for_one(context)
-                    .await?
+                    .execute_for_rows(context)
+                    .await?;
+                rows.first()
                     .ok_or("numeric order")?
+                    .get("groupCount")
+                    .and_then(Value::try_i64)
             };
             assert_eq!(
-                count(&grouped, "groupCount"),
+                grouped_count,
                 Some(1),
                 "numeric grouped count must exist"
             );
