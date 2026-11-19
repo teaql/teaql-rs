@@ -19,7 +19,7 @@ pub(crate) fn prepared(context: &UserContext, name: &str) -> ScalarTypeProbe {
     let mut entity = Q::scalar_type_probes()
         .comment("prepare exact integral regression")
         .purpose("validate generated audited save before provider entry")
-        .new_entity(context);
+        .new_entity(context).expect("reserve the generated scalar fixture identity");
     entity.update_type_platform_id(1);
     entity.update_required_string(name.to_owned());
     entity.update_optional_string(String::new());
