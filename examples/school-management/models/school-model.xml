@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<root name="school-management-service"
+<root teaql_rs_version="8.1.0" name="school-management-service"
       cfg_mask_china_mobile="false"
       data_service="sqlite"
       org="example"
