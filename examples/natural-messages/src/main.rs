@@ -120,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut entry = Q::entries()
             .comment("Prepare a validation example row")
             .purpose("Create a complete typed example graph")
-            .new_entity(&context);
+            .new_entity(&context)?;
         entry.update_catalog_id(root_id).update_name(name);
         entry
             .audit_as("Create an entry through the generated audited mutation API")
