@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut replacement = Q::customers()
         .comment("what: create a replacement Customer for the order")
         .purpose("why: exercise a real FK mutation, not a scalar-only Save")
-        .new_entity(&context);
+        .new_entity(&context)?;
     let replacement_id = replacement.id();
     replacement
         .update_name("Forward FK replacement customer")

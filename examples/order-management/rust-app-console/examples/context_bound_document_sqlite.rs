@@ -471,7 +471,7 @@ async fn seed(context: &UserContext) -> Result<SeededIds, Box<dyn std::error::Er
     let mut customer = Q::customers()
         .comment("what: construct the document owner")
         .purpose("why: seed the generated SQLite document fixture")
-        .new_entity(context);
+        .new_entity(context)?;
     customer
         .update_name("Context document customer")
         .update_email("context-document@example.test")
@@ -485,7 +485,7 @@ async fn seed(context: &UserContext) -> Result<SeededIds, Box<dyn std::error::Er
     let mut product = Q::products()
         .comment("what: construct the document product")
         .purpose("why: seed generated OrderLine relations")
-        .new_entity(context);
+        .new_entity(context)?;
     product
         .update_name("Context document product")
         .update_sku("DOC-SQLITE-SKU")
@@ -499,7 +499,7 @@ async fn seed(context: &UserContext) -> Result<SeededIds, Box<dyn std::error::Er
     let mut order = Q::customer_orders()
         .comment("what: construct the editable generated Order")
         .purpose("why: seed the SQLite context-bound aggregate")
-        .new_entity(context);
+        .new_entity(context)?;
     order
         .update_order_number(ORDER_NUMBER)
         .update_order_date(NaiveDate::from_ymd_opt(2026, 10, 1).unwrap())
@@ -516,7 +516,7 @@ async fn seed(context: &UserContext) -> Result<SeededIds, Box<dyn std::error::Er
     let mut first = Q::order_lines()
         .comment("what: construct the first editable generated OrderLine")
         .purpose("why: seed the context-bound item projection")
-        .new_entity(context);
+        .new_entity(context)?;
     first
         .update_customer_order_id(order_id)
         .update_product_id(product_id)
@@ -533,7 +533,7 @@ async fn seed(context: &UserContext) -> Result<SeededIds, Box<dyn std::error::Er
     let mut second = Q::order_lines()
         .comment("what: construct the second editable generated OrderLine")
         .purpose("why: prove omission differs from explicit removal")
-        .new_entity(context);
+        .new_entity(context)?;
     second
         .update_customer_order_id(order_id)
         .update_product_id(product_id)

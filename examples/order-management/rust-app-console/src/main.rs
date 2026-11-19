@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let request = Q::commerce_platforms()
             .comment("Construct the quick-start platform")
             .purpose(PURPOSE);
-        let mut platform = request.new_entity(&context);
+        let mut platform = request.new_entity(&context)?;
         platform.update_name("Northwind Demo");
         let platform_id = platform.id();
         platform.audit_as("Create quick-start commerce platform").save(&context).await?;
@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute_for_list(&context).await?;
     if seeded_orders.is_empty() {
         let request = Q::customers().comment("Construct the quick-start customer").purpose(PURPOSE);
-        let mut customer = request.new_entity(&context);
+        let mut customer = request.new_entity(&context)?;
         customer.update_name("Acme Retail")
             .update_email("masked-in-quick-start")
             .update_commerce_platform_id(platform_id);
@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         customer.audit_as("Create masked quick-start customer").save(&context).await?;
 
         let request = Q::customer_orders().comment("Construct the quick-start order").purpose(PURPOSE);
-        let mut order = request.new_entity(&context);
+        let mut order = request.new_entity(&context)?;
         order.update_order_number("WEB-2026-001")
             .update_order_date(NaiveDate::from_ymd_opt(2026, 8, 12).unwrap())
             .update_total_amount(Decimal::new(12995, 2))
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("[mutation] preset #{} already exists", preset.id());
     } else {
         let request = Q::order_search_presets().comment("Construct a reusable search").purpose(PURPOSE);
-        let mut preset = request.new_entity(&context);
+        let mut preset = request.new_entity(&context)?;
         preset.update_name("Pending web orders")
             .update_filter_json("{\"order_number\":\"WEB-\"}")
             .update_request_id("quick-start-pending-orders")
