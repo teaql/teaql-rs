@@ -205,7 +205,7 @@ where
     log::info!("Generating sample data for entry (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::entries().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
+        let mut entity = Q::entries().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context).map_err(SampleDataError::from_display)?;
         let mut used_refs = std::collections::HashSet::<u64>::new();
 
                 if let Some(ref_id) = state.pick_unused_id("catalog", i as usize, &used_refs) {

@@ -2613,20 +2613,18 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PurchaseOrderRequest<R>> {
         self
     }
 
-    pub fn new_entity<C>(&self, context: &C) -> crate::PurchaseOrder
+    pub fn new_entity<C>(&self, context: &C) -> Result<crate::PurchaseOrder, RuntimeError>
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
-        let id = context.user_context().next_id(crate::PurchaseOrder::ENTITY_NAME)
-            .unwrap_or_else(|_| panic!(
-                "ENTITY_ID_RESERVATION_FAILED: cannot reserve identity for {}",
-                crate::PurchaseOrder::ENTITY_NAME,
-            ));
+        // Reserve identity before allocating mutation state. A failed reservation
+        // must not escape as an entity or fall back to a different allocator.
+        let id = context.user_context().next_id(crate::PurchaseOrder::ENTITY_NAME)?;
         let mut entity = crate::PurchaseOrder::runtime_new(context.user_context().entity_runtime_state());
         entity.update_id(id);
         teaql_core::Entity::mark_as_new(&mut entity);
-        entity
+        Ok(entity)
     }
 
     fn into_inner_with_trace(mut self) -> PurchaseOrderRequest<R> {

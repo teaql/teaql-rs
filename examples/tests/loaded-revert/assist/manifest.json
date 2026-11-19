@@ -1,17 +1,17 @@
 {
   "currentAssistReceipt": {
-    "path": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/retained-assist-corrected-paths/receipt.json",
-    "sha256": "86970f4455e8d4963072b6d475fb9200640903597c31e86413258154558c6632"
+    "path": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/retained-assist-compatibility-candidate/receipt.json",
+    "sha256": "4932d3ca374ffccaecbc950558dfa21da96124b5063ecb7ba2c4aa1ef8984bd7"
   },
   "files": {
-    "scalar_type_probe-create.md": "bb7a07162a2eeddc6479570efff815560379522fa6f6597ab2739729928254a7",
+    "scalar_type_probe-create.md": "cd81940b79e1976e789225b5a9e964be14463c912f8fb5b5d76f58695fd0bccb",
     "scalar_type_probe-ensure-schema.md": "62fbe84c8da5508b0e3fcec3259256fdf56c1045db31e969b12ee59ac962abee",
     "scalar_type_probe-expression.md": "5e49a450a56abb7b5925652c9b00553209787316129e85cb54143c59f8ba361e",
     "scalar_type_probe-query.md": "20c242ae06a58c8a29c2be72d34ec0bcb9def14e4233c8be64a7531647ebad36",
     "scalar_type_probe-runtime-custom.md": "1bd135abc7b70a8e7268c28751f441f864c231e468a05d3bec5b0c938c77e947",
     "scalar_type_probe.required_string-query.md": "4f3cac2b3e2e201e47ebe03606ebdeb460ecfa35280f11c8857eacf611dcdb67",
     "scalar_type_probe.type_platform-query.md": "b27a94ad6b48d903952eb089734bbaf140a5618614da3cf47dc7010eb60198c1",
-    "type_platform-create.md": "ac056c981403c2a4e4520620fae85e5dfead3c3813d7484dbc6d469aff9908ac",
+    "type_platform-create.md": "d3f93b92fa02133c4842021ad6272d8d48f49c129a9ae28e35fd38af20e982ae",
     "type_platform-expression.md": "f1fd6955a4aff3528c093cb7b90540e8e5f7b2ea676fcc2b9207cdecde52b9e9",
     "type_platform-query.md": "da844d5787d8db9774127a21ffc255435e6b239a0b76b470b4aa639e3f2e5d61",
     "type_platform.id-query.md": "43c6ec6651072de6964bcd2f28c019dd91541c92ef55143d4979261161a796b8",

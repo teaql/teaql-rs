@@ -1,26 +1,39 @@
 {
-  "schema": "teaql.generated-inheritance-example/v1",
-  "generatorCommit": "77081b0935ab49c90b15f345c29a7724c407b3dd",
-  "sourceReceipt": "teaql-conformance/evidence/2026-11-14-release246-rust800-generation-fourth/receipt.json",
-  "sourceReceiptSha256": "b0730a661bcff52dd4acfa7853fbffbf40f4e0a68b79c23b31e94e1df7ac2eb4",
-  "generatedManifestSha256": "7a87ce4f483855d8733212e1285669ffc40ab7fbba104d12b5f9c418d50a7a73",
-  "assistSourceReceipt": "teaql-conformance/evidence/2026-11-14-recovery-assist-generation-rust/receipt.json",
-  "assistSourceReceiptSha256": "49ff34d328d53fdba6a60c1d0ed65cb64d3bbdd9699771fb48c65dbdbfe8f23d",
   "applicationSource": "generator/src/test/resources/rust-grouped-mapping/inheritance_natural_parent_probe.rs",
   "applicationSourceSha256": "639d6d093286bf58c50d170bdd73e0c3a1e3827387e03b177d3853e11ac9bec0",
-  "runtimeDependencies": "local repository source via Cargo patches; origin verified at execution",
-  "note": "Regenerated for explicitly selected Rust 8.0.0. Producer receipt source hashes identify uncommitted generator adaptations; generated Rust implementation is byte-identical to the preceding qualified fixture.",
+  "assistSourceReceipt": "teaql-conformance/evidence/2026-11-14-recovery-assist-generation-rust/receipt.json",
+  "assistSourceReceiptSha256": "49ff34d328d53fdba6a60c1d0ed65cb64d3bbdd9699771fb48c65dbdbfe8f23d",
+  "generatedManifestSha256": "7a87ce4f483855d8733212e1285669ffc40ab7fbba104d12b5f9c418d50a7a73",
+  "generator": {
+    "artifactKind": "new source build; not the historical v4.2.0 release artifact",
+    "baseRelease": "v4.2.0",
+    "jarSHA256": "6a9420e4ffd686e0813ca9c0d2ad20991fa2f8ff2e365d39148c85e79acad86e",
+    "qualificationReceiptSHA256": "e401e5436216b87140101f7e4f29cec3e620fa852637de397f74cd7a3b9a8cf9",
+    "sourceCommit": "42275522b8405f65f84a7961c66b615a427391f7",
+    "tag": "unreleased-source-42275522"
+  },
+  "generatorCommit": "77081b0935ab49c90b15f345c29a7724c407b3dd",
+  "note": "Exact output from the qualified unreleased generator source candidate. Local runtime source acceptance is recorded separately; this is not a public generator release claim.",
   "previousGeneration": {
-    "schema": "teaql.generated-inheritance-example/v1",
-    "generatorCommit": "77081b0935ab49c90b15f345c29a7724c407b3dd",
-    "sourceReceipt": "teaql-conformance/evidence/2026-11-14-rust-subtype-static-sqlite/receipt.json",
-    "sourceReceiptSha256": "9cd6c7542b7f574ced31325a22ce049caa777c13a41a79c5ac3fb06b7696c3d9",
-    "generatedManifestSha256": "2340cf17ac4a4c14a30d687b33c5eb023c209219fd6c8a65caf2d5a01bee9a3a",
-    "assistSourceReceipt": "teaql-conformance/evidence/2026-11-14-recovery-assist-generation-rust/receipt.json",
-    "assistSourceReceiptSha256": "49ff34d328d53fdba6a60c1d0ed65cb64d3bbdd9699771fb48c65dbdbfe8f23d",
     "applicationSource": "generator/src/test/resources/rust-grouped-mapping/inheritance_natural_parent_probe.rs",
     "applicationSourceSha256": "639d6d093286bf58c50d170bdd73e0c3a1e3827387e03b177d3853e11ac9bec0",
+    "assistSourceReceipt": "teaql-conformance/evidence/2026-11-14-recovery-assist-generation-rust/receipt.json",
+    "assistSourceReceiptSha256": "49ff34d328d53fdba6a60c1d0ed65cb64d3bbdd9699771fb48c65dbdbfe8f23d",
+    "generatedManifestSha256": "2340cf17ac4a4c14a30d687b33c5eb023c209219fd6c8a65caf2d5a01bee9a3a",
+    "generatorCommit": "77081b0935ab49c90b15f345c29a7724c407b3dd",
+    "note": "Candidate generation includes uncommitted source changes; the receipt source hashes, not the base commit alone, identify the implementation. Application-owned code extends the referenced lifecycle probe with generic saving, recovery and controlled rollback tests. Fresh targeted Assist and original generated-library bytes are retained separately.",
     "runtimeDependencies": "local repository source via Cargo patches; origin verified at execution",
-    "note": "Candidate generation includes uncommitted source changes; the receipt source hashes, not the base commit alone, identify the implementation. Application-owned code extends the referenced lifecycle probe with generic saving, recovery and controlled rollback tests. Fresh targeted Assist and original generated-library bytes are retained separately."
-  }
+    "schema": "teaql.generated-inheritance-example/v1",
+    "sourceReceipt": "teaql-conformance/evidence/2026-11-14-rust-subtype-static-sqlite/receipt.json",
+    "sourceReceiptSha256": "9cd6c7542b7f574ced31325a22ce049caa777c13a41a79c5ac3fb06b7696c3d9"
+  },
+  "previousOrigin": {
+    "commit": "5a9946e49fc998cd1bbc40da5ae4a83926b89047",
+    "path": "examples/inheritance-save/generation-origin.json",
+    "sha256": "32e85fa0a418f90ee78c6c2b74b5e836dab02a6cab04a863977f560aa89fe7f1"
+  },
+  "runtimeDependencies": "local repository source via Cargo patches; origin verified at execution",
+  "schema": "teaql.generated-inheritance-example/v1",
+  "sourceReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-compatibility-candidate/rust/inheritance-save/model/receipt.json",
+  "sourceReceiptSha256": "acb00b1baa040f96b550523d9d2217a5d7a000baabf834f43fa0441113ed49f7"
 }
