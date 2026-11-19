@@ -149,6 +149,31 @@ domain code still passes only `UserContext` to Q/Mutation APIs.
 - A complete integration test also runs the generated Query/Create Assist against SQLite;
   do not claim runtime customization from a route-only `/health` smoke test.
 
+## Atomic PostgreSQL domain writes
+
+The generated `ServiceRuntime` is a `UserContext`. It registers
+`::runtime::DataServiceExecutor`. Use the transaction
+scope as the **only** context for every generated Q and audited save in the callback:
+
+```rust
+use ::runtime::DataServiceExecutor;
+use teaql_runtime::RuntimeError;
+
+context.execute_in_send_transaction::<DataServiceExecutor, _, _>(|context| {
+    Box::pin(async move {
+        // Q queries use .comment(...).purpose(...).execute_for_one(context).
+        // Entities use .audit_as(...).save(context).await?.
+        Ok::<_, RuntimeError>(())
+    })
+}).await?;
+```
+
+The generated `TeaqlRuntime` implementation for `TransactionScope` binds query,
+entity persistence, graph mutation and audit to one PG connection. Success commits;
+an error rolls back. Never call the outer context in this callback. Preserve
+unique constraints in migrations; retry a serialization/unique conflict in a fresh
+transaction with a bounded attempt count. Never acknowledge a failed commit.
+
 ## Context-bound aggregate document round trips
 
 Use this advanced boundary only when a client opens an Aggregate by Business ID,
