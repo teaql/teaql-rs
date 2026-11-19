@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut school = Q::schools()
         .comment("Create a School through the generated environment runtime helper")
         .purpose("Verify generated executor registration supports audited Save")
-        .new_entity(&context);
+        .new_entity(&context)?;
     school.update_platform_id(1_u64);
     school.update_school_type_to_primary();
     school.update_name("Env Helper School");
