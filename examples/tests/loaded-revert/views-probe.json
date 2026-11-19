@@ -2,6 +2,6 @@
   "files": {
     "rust-restoration-views.rs": "5742960f5abe0629b0bd96d9fcc9e3121adcf32d123a153633be8f2100048eef"
   },
-  "fixtureProvenanceSha256": "93a4b8317703e96cbca46c32675a5e7f3a49b800bd134403ef230204ef433d1d",
+  "fixtureProvenanceSha256": "936c53875497d5c099936618c40b3651449c1591fdc5f1718d0c864ddeee739c",
   "schema": "teaql.rust-restoration-views-probe/v1"
 }
