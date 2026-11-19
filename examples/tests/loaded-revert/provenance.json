@@ -41,7 +41,7 @@
     "generated/lib/src/type_platform/mod.rs": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7",
     "generated/lib/src/type_platform/request.rs": "26fe61ac4cd1b9862a6d0938d691c3daa552de71b1cbc48f7f0ec148bf912e9b",
     "generated/teaql/checker-model.json": "ce4ae61861d89991e89b2762d48bb448ad04ad18853c9c5d5ea4e0c7ac093bab",
-    "generated/teaql/model-provenance.json": "f826de0d805ff6c67ef4baea267b586655ba49dbb154079490ab4844e029243d",
+    "generated/teaql/model-provenance.json": "8d792f1114dddbf61b64f6afbae687abc9bd2410d751ea1ac1fcdef1895696dc",
     "model.xml": "8d3017392ffd00abbc06be2555ced27ac6360e2d05fabc4299e27a5ef8f1c762",
     "owned-command.cjs": "e5b5c48a928c590d70c12ba194edf2a3796ac6c8963b495e1d6aca4253fbbe2e",
     "owned-subreaper.c": "a57f65e25056148136df21106799248056e2e1f972b5aa0269c3b7f69cc7e59d",
@@ -49,23 +49,23 @@
     "rust-loaded-revert.rs": "faed429b83e37d229813b0c7a84570f516cd4ae8e6d054106e2c40f283d3c04a",
     "subreaper.cjs": "b7717db9e2d4069cf7a9b208f45ded606183aa34adc4e44d0bbd2bb679c03126"
   },
-  "generatedManifestSha256": "b9dd5963115d7fb13dcfa2b50ba0bb6e57231d4c725cbea9416d7281393b6664",
-  "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-compatibility-candidate/rust/tests/loaded-revert/model/receipt.json",
-  "generatorCommit": "42275522b8405f65f84a7961c66b615a427391f7",
-  "generatorJarSHA256": "6a9420e4ffd686e0813ca9c0d2ad20991fa2f8ff2e365d39148c85e79acad86e",
-  "generatorRelease": "unreleased-source-42275522",
+  "generatedManifestSha256": "4e69318db13003533f7a2f496641892d285e733738f5fc36ed1c6d97a9774d16",
+  "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-rust-current-source-followup/rust/tests/loaded-revert/model/receipt.json",
+  "generatorCommit": "19feda8a0608d7c7e0d64c7d9ec371c9021000fd",
+  "generatorJarSHA256": "dc6e26b561f618e1f9574c5c3b4c03b7a21da9ca630cc73a78ae8ccd0d89bd7e",
+  "generatorRelease": "unreleased-source-19feda8a",
   "language": "rust",
   "modelSha256": "8d3017392ffd00abbc06be2555ced27ac6360e2d05fabc4299e27a5ef8f1c762",
-  "previousFixtureManifestSha256": "936c53875497d5c099936618c40b3651449c1591fdc5f1718d0c864ddeee739c",
+  "previousFixtureManifestSha256": "ea65a3323753b50187b90c071bd743c454bf7b074d0e4643088882966270eee3",
   "previousOrigin": {
-    "commit": "5a9946e49fc998cd1bbc40da5ae4a83926b89047",
+    "commit": "dd62d055c73fcfb788d2b9ad44ea3805b33707b5",
     "path": "examples/tests/loaded-revert/provenance.json"
   },
   "producerReceiptSha256": "4bf07c193057490c8f4ce48c613cb5308f075099247cc07c7fa0583afee52eef",
   "producerSource": {
-    "commit": "42275522b8405f65f84a7961c66b615a427391f7",
-    "jarSHA256": "6a9420e4ffd686e0813ca9c0d2ad20991fa2f8ff2e365d39148c85e79acad86e",
-    "release": "unreleased-source-42275522"
+    "commit": "19feda8a0608d7c7e0d64c7d9ec371c9021000fd",
+    "jarSHA256": "dc6e26b561f618e1f9574c5c3b4c03b7a21da9ca630cc73a78ae8ccd0d89bd7e",
+    "release": "unreleased-source-19feda8a"
   },
   "schema": "teaql.rust-loaded-revert-fixture/v1"
 }

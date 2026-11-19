@@ -20,5 +20,5 @@
   "lib/src/runtime.rs": "3806df59c4f243614dd96de892de7850ec977036ef3f09ef861fbc9a32fc65f8",
   "lib/src/sample_data.rs": "81d5a42a2f26629f0888eb79fd9af92a6396e326084f0cdfc0b75df949d0c9a8",
   "teaql/checker-model.json": "dbac03cd54b294e3e60a62752aeb170ad1ad722a7dfb8feb639c569ff3e73b1a",
-  "teaql/model-provenance.json": "b7258ff8e69db00a0119d03e41358d272756522caa89f8701ffc5744fae2a6fe"
+  "teaql/model-provenance.json": "fb712caf023900f433faf280e9f8db87ff563d8cf1bceb30d121dce9a6cf8343"
 }
