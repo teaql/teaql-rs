@@ -39,9 +39,9 @@
   "generatorRelease": "unreleased-source-19feda8a",
   "language": "rust",
   "modelSha256": "a2cf4c907cb084cb0946e993eeba586c8c0701a89fdc4a849808aa743be033b7",
-  "previousFixtureManifestSha256": "912e78fefb960fefaf2b8c4e604d9e7ff3fd7c671e951627ff923dd83fffddb4",
+  "previousFixtureManifestSha256": "671788e1414ca516adc43f4b19ea9f36509ff2d6db8ec6b740cb25d1d4ce2291",
   "previousOrigin": {
-    "commit": "1a999d1baa071561bffc1ed0f47a688e0e57c32b",
+    "commit": "cafdf9c26aa3321c89982b24632e119518c8304a",
     "path": "examples/request-admission/fixture-manifest.json"
   },
   "producerReceiptSha256": "09e92e6d46e12969c984dd74cd63d406dc27b3e5161b66dc2587fd45efed7024",

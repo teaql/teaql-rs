@@ -2,9 +2,9 @@
   "generatorCommit": "19feda8a0608d7c7e0d64c7d9ec371c9021000fd",
   "generatorJarSHA256": "dc6e26b561f618e1f9574c5c3b4c03b7a21da9ca630cc73a78ae8ccd0d89bd7e",
   "generatorRelease": "unreleased-source-19feda8a",
-  "manifestSha256": "1453ff5b738bff1a74add1996dd0febf3326a6177c68d1ed795c958927aac092",
+  "manifestSha256": "1986908b95f5d8256206fe33c63ff6e436ce092028156c88a16a0d19068f50d6",
   "previousOrigin": {
-    "commit": "1a999d1baa071561bffc1ed0f47a688e0e57c32b",
+    "commit": "cafdf9c26aa3321c89982b24632e119518c8304a",
     "path": "examples/expression-profiles/provenance.json"
   }
 }

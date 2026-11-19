@@ -7,7 +7,7 @@
     "sourceCommit": "19feda8a0608d7c7e0d64c7d9ec371c9021000fd",
     "tag": "unreleased-source-19feda8a"
   },
-  "installationReceiptSHA256": "dfc1dcf93709c84d1b1ba1abd44b62ed2978c7a3e72eba274deeba9493908ef9",
+  "installationReceiptSHA256": "438dd7da022ab0100203bd55c2313bb7afea75b9559f49082f34d3f595dcd917",
   "libraries": [
     {
       "archiveSHA256": "a652e57cfac3c4c878c7260c160e1f8ba68001bc82ada5826add24140dad9852",
@@ -736,7 +736,7 @@
       "preservedApplicationFiles": {}
     },
     {
-      "archiveSHA256": "989526d46cb9d1e385cf363d4e8c98c37c3ff7508383d09d3ee4158c0a3711c1",
+      "archiveSHA256": "bba21216a3de9a6cce0f00cf55096b3faacb398898aeba96511b9382553197d3",
       "destination": "examples/inheritance-save",
       "generatedFiles": {
         "examples/inheritance-save/lib/Cargo.toml": {
@@ -753,7 +753,7 @@
         },
         "examples/inheritance-save/lib/src/academy/entity.rs": {
           "emittedPath": "lib/src/academy/entity.rs",
-          "sha256": "9e89a9e592235a3b96c5ed094b96f6144124e2936d67da34c6841b3314863256"
+          "sha256": "13a4e6cca3f566a7370532a094868ee52fd35639bf381a243b001ed255cec145"
         },
         "examples/inheritance-save/lib/src/academy/expression.rs": {
           "emittedPath": "lib/src/academy/expression.rs",
@@ -901,7 +901,7 @@
         },
         "examples/inheritance-save/lib/src/training_academy/entity.rs": {
           "emittedPath": "lib/src/training_academy/entity.rs",
-          "sha256": "c6b39c7aa675edc5534f88ad8cd2e9b1a975fdcfd10abb989c86c989ca590f8a"
+          "sha256": "a61af67541eb265a46e870ecfd5041058c1415553efa202b25a187197b472a4d"
         },
         "examples/inheritance-save/lib/src/training_academy/expression.rs": {
           "emittedPath": "lib/src/training_academy/expression.rs",
@@ -921,26 +921,36 @@
         },
         "examples/inheritance-save/teaql/model-provenance.json": {
           "emittedPath": "teaql/model-provenance.json",
-          "sha256": "26ae33a4425645f3125932fa4bd727768cba382c7184846f1b1c14db20e7f771"
+          "sha256": "3683a650364d67ddaf1e2a2f4d00249480cbbdbbf72079f38dbad94f8a3e8471"
         }
       },
       "model": "examples/inheritance-save/model.xml",
       "origin": {
+        "descriptorMetadataOverrides": [
+          {
+            "attribute": "column",
+            "entity": "academy",
+            "field": "campus_code",
+            "value": "Legacy Campus Code"
+          }
+        ],
         "evaluatedScope": "rust-lib-core",
         "evaluationErrors": 0,
         "evaluationWarnings": 1,
-        "generatedManifestSha256": "38c4ed4d88cc7aa782cf7e2a586757d7b48e2c7dc396001c7abb733c18934416",
-        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-current-source/rust/inheritance-save/model/receipt.json",
+        "generatedManifestSha256": "f421791164b550c32cd0920e18f6a1480560174579631680d855935bae526015",
+        "generationKind": "retained named source fixture with explicit descriptor metadata",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-rust-inheritance-explicit-descriptor-counted/rust/inheritance-save/model/receipt.json",
         "generatorCommit": "19feda8a0608d7c7e0d64c7d9ec371c9021000fd",
         "generatorJarSHA256": "dc6e26b561f618e1f9574c5c3b4c03b7a21da9ca630cc73a78ae8ccd0d89bd7e",
         "generatorRelease": "unreleased-source-19feda8a",
-        "modelSha256": "9ed75f14ac524f18ccaba59be8c7261da203d2472bbe5d1f88dfc16d8b203d01",
-        "producerReceiptSha256": "1910199e4d35cfbcb890c7930bbe6ba92db00c5c4646c66ec880fa0998652a6e",
+        "modelSha256": "f1558b9801700b6f63ed5293538f7095b94412e3b7cad4f7481818cfe004895e",
+        "producerReceiptSha256": "abcd3062e9ea219324451d297d4a1b968c9ecc532b4d7ba3374c8430b8119f76",
         "producerSource": {
           "commit": "19feda8a0608d7c7e0d64c7d9ec371c9021000fd",
           "jarSHA256": "dc6e26b561f618e1f9574c5c3b4c03b7a21da9ca630cc73a78ae8ccd0d89bd7e",
           "release": "unreleased-source-19feda8a"
-        }
+        },
+        "qualifiedJarExecuted": false
       },
       "preservedApplicationFiles": {}
     },
@@ -1887,7 +1897,7 @@
       "preservedApplicationFiles": {}
     }
   ],
-  "runtimeBaseCommit": "1a999d1baa071561bffc1ed0f47a688e0e57c32b",
+  "runtimeBaseCommit": "cafdf9c26aa3321c89982b24632e119518c8304a",
   "schema": "teaql.runtime-current-generated-examples/v1",
   "sourceCodeHandEdited": false
 }

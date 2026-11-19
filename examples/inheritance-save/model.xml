@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<root name="inheritance-matching-service" org="example" data_service="sqlite">
+<root name="inheritance-matching-service" org="example" data_service="sqlite" teaql_rs_version="8.1.0">
   <platform _name="Platform" _module="Organization" _module_key="organization"
             name="Inheritance Campus" base_url="https://inheritance.example.com"/>
   <school_type _name="School Type" _module="Academics" _module_key="academics"

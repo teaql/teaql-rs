@@ -2,7 +2,7 @@
   "lib/Cargo.toml": "88204b841ed37438775759a2ff072eb22cd8f5da8fd8eb1653a83ab76be5610a",
   "lib/src/academy/behavior.rs": "d043bb63246b472626e962c9ce9c09a29f2b6629a188ebdce7f654498f1ef8f3",
   "lib/src/academy/checker.rs": "1b54c421bd29548426a746991c1de2a449ed2ad067b234361b642938d19f8e53",
-  "lib/src/academy/entity.rs": "9e89a9e592235a3b96c5ed094b96f6144124e2936d67da34c6841b3314863256",
+  "lib/src/academy/entity.rs": "13a4e6cca3f566a7370532a094868ee52fd35639bf381a243b001ed255cec145",
   "lib/src/academy/expression.rs": "e23acda3e2d42113f57dd6c5229fc04e58e1055d81c9aa1ffa1fb4490fbfa0da",
   "lib/src/academy/mod.rs": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7",
   "lib/src/academy/request.rs": "715d43f503e50479cdff60326b940d4d45da67750d427e989bf076a9a1c2a36a",
@@ -39,10 +39,10 @@
   "lib/src/school_type/request.rs": "ccf2744ee99dd7a76707300e3b5469e0a253be42e3f47a9233b73fb96cbbdc2b",
   "lib/src/training_academy/behavior.rs": "ab915ac091cf9230426c54717c843b32d7fd4e0440b9cfc5088cc170ae7bb98a",
   "lib/src/training_academy/checker.rs": "876937fa360c1430bd5ca8e26cc70273f85bbdc20463f2bd5e843f17f4a100d3",
-  "lib/src/training_academy/entity.rs": "c6b39c7aa675edc5534f88ad8cd2e9b1a975fdcfd10abb989c86c989ca590f8a",
+  "lib/src/training_academy/entity.rs": "a61af67541eb265a46e870ecfd5041058c1415553efa202b25a187197b472a4d",
   "lib/src/training_academy/expression.rs": "b29fb7e0eba3397ff95bcb79bbe3f981421999a7f6ecdac2ba215fcf2f815ca6",
   "lib/src/training_academy/mod.rs": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7",
   "lib/src/training_academy/request.rs": "7a8a3c4df65b10f425f82345cc2fdb3bef61c928a4ae7d085a2fa5a6b3ee54de",
   "teaql/checker-model.json": "369def38a021b04fca5a8c8d7f68b7f495a0781b816e28b917729217bd6dc242",
-  "teaql/model-provenance.json": "26ae33a4425645f3125932fa4bd727768cba382c7184846f1b1c14db20e7f771"
+  "teaql/model-provenance.json": "3683a650364d67ddaf1e2a2f4d00249480cbbdbbf72079f38dbad94f8a3e8471"
 }

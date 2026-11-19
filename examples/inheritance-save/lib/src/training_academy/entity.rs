@@ -38,6 +38,7 @@ pub struct TrainingAcademy {
 
 // @source model.xml:15
 #[teaql(max_length = 100)]
+#[teaql(column = "Legacy Campus Code")]
     campus_code: String,
 
 // @source model.xml:17
@@ -67,7 +68,7 @@ impl TrainingAcademy {
     pub const ENTITY_NAME: &'static str = "Training Academy";
 
     // Framework metadata: complete fixed layout, including overflow slots.
-    pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "d5c47f287adcf434556be4564044800fdadd56e6914079eb97fedf380ef46cc2";
+    pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "febc19f1547b3c9d17b9acd2ae34f398323bbe38ad635615cf4c19a534590fbc";
     pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
         ("id", 0),
         ("platform", 1),
@@ -85,7 +86,7 @@ impl TrainingAcademy {
         ("name", "name", "name"),
         ("student_capacity", "student_capacity", "student_capacity"),
         ("version", "version", "version"),
-        ("campus_code", "campus_code", "campus_code"),
+        ("campus_code", "campus_code", "Legacy Campus Code"),
         ("specialty", "specialty", "specialty"),
     ];
 

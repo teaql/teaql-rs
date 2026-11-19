@@ -5,7 +5,7 @@
   "generatorRelease": "unreleased-source-19feda8a",
   "language": "rust",
   "localSourceOnly": true,
-  "previousManifestSha256": "81515712f34d390d0cb934e682d576154f6927d4085e596ac39067d163f5b195",
+  "previousManifestSha256": "1453ff5b738bff1a74add1996dd0febf3326a6177c68d1ed795c958927aac092",
   "profiles": {
     "PascalCase": {
       "evaluation": {

@@ -61,9 +61,9 @@
   "generatorRelease": "unreleased-source-19feda8a",
   "language": "rust",
   "modelSha256": "8d3017392ffd00abbc06be2555ced27ac6360e2d05fabc4299e27a5ef8f1c762",
-  "previousFixtureManifestSha256": "1782306c38ca23a61ef9b5e7005391269c4f852619d851f6deb245b9f2be14f2",
+  "previousFixtureManifestSha256": "761b79b07672bc647b98fc96f6a49dbef1161f404aa080d797c4d2ad91a58141",
   "previousOrigin": {
-    "commit": "1a999d1baa071561bffc1ed0f47a688e0e57c32b",
+    "commit": "cafdf9c26aa3321c89982b24632e119518c8304a",
     "path": "examples/tests/loaded-revert/provenance.json"
   },
   "producerReceiptSha256": "4bf07c193057490c8f4ce48c613cb5308f075099247cc07c7fa0583afee52eef",

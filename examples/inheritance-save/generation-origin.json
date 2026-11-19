@@ -3,7 +3,16 @@
   "applicationSourceSha256": "639d6d093286bf58c50d170bdd73e0c3a1e3827387e03b177d3853e11ac9bec0",
   "assistSourceReceipt": "teaql-conformance/evidence/2026-11-14-recovery-assist-generation-rust/receipt.json",
   "assistSourceReceiptSha256": "49ff34d328d53fdba6a60c1d0ed65cb64d3bbdd9699771fb48c65dbdbfe8f23d",
-  "generatedManifestSha256": "38c4ed4d88cc7aa782cf7e2a586757d7b48e2c7dc396001c7abb733c18934416",
+  "descriptorMetadataOverrides": [
+    {
+      "attribute": "column",
+      "entity": "academy",
+      "field": "campus_code",
+      "value": "Legacy Campus Code"
+    }
+  ],
+  "generatedManifestSha256": "f54661b24ae0a6a7f8d42d518c770d7813c078be4ab2f9f4fdab6d1408c64a46",
+  "generationKind": "retained named source fixture with explicit descriptor metadata",
   "generator": {
     "artifactKind": "new source build; not the historical v4.2.0 release artifact",
     "baseRelease": "v4.2.0",
@@ -28,12 +37,13 @@
     "sourceReceiptSha256": "9cd6c7542b7f574ced31325a22ce049caa777c13a41a79c5ac3fb06b7696c3d9"
   },
   "previousOrigin": {
-    "commit": "1a999d1baa071561bffc1ed0f47a688e0e57c32b",
+    "commit": "cafdf9c26aa3321c89982b24632e119518c8304a",
     "path": "examples/inheritance-save/generation-origin.json",
-    "sha256": "5b1ef439f3bb33f7226c68e7ff9b149dcd35102da84eb4f413390d173d5e6550"
+    "sha256": "98725102a9d0cc5569a747fb0db25b69a3f6bca2a89d8f654e30a562838cc380"
   },
+  "qualifiedJarExecuted": false,
   "runtimeDependencies": "local repository source via Cargo patches; origin verified at execution",
   "schema": "teaql.generated-inheritance-example/v1",
-  "sourceReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-current-source/rust/inheritance-save/model/receipt.json",
-  "sourceReceiptSha256": "1910199e4d35cfbcb890c7930bbe6ba92db00c5c4646c66ec880fa0998652a6e"
+  "sourceReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-rust-inheritance-explicit-descriptor-counted/rust/inheritance-save/model/receipt.json",
+  "sourceReceiptSha256": "abcd3062e9ea219324451d297d4a1b968c9ecc532b4d7ba3374c8430b8119f76"
 }
