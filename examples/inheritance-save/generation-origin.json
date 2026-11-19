@@ -11,17 +11,17 @@
       "value": "Legacy Campus Code"
     }
   ],
-  "generatedManifestSha256": "f54661b24ae0a6a7f8d42d518c770d7813c078be4ab2f9f4fdab6d1408c64a46",
+  "generatedManifestSha256": "1878a1dd83a87c1d6594d3688a161bd04c8ceccef4a04f2e71cd7b1788236729",
   "generationKind": "retained named source fixture with explicit descriptor metadata",
   "generator": {
     "artifactKind": "new source build; not the historical v4.2.0 release artifact",
     "baseRelease": "v4.2.0",
-    "jarSHA256": "dc6e26b561f618e1f9574c5c3b4c03b7a21da9ca630cc73a78ae8ccd0d89bd7e",
-    "qualificationReceiptSHA256": "d2ef37d0536f6d5be84baab53eb21ad8c771bee88aefe97a7c591d146cdfee44",
-    "sourceCommit": "19feda8a0608d7c7e0d64c7d9ec371c9021000fd",
-    "tag": "unreleased-source-19feda8a"
+    "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+    "qualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
+    "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+    "tag": "unreleased-source-021b1ed8"
   },
-  "generatorCommit": "19feda8a0608d7c7e0d64c7d9ec371c9021000fd",
+  "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
   "note": "Exact output from the qualified unreleased generator source candidate. Local runtime source acceptance is recorded separately; this is not a public generator release claim.",
   "previousGeneration": {
     "applicationSource": "generator/src/test/resources/rust-grouped-mapping/inheritance_natural_parent_probe.rs",
@@ -37,13 +37,13 @@
     "sourceReceiptSha256": "9cd6c7542b7f574ced31325a22ce049caa777c13a41a79c5ac3fb06b7696c3d9"
   },
   "previousOrigin": {
-    "commit": "cafdf9c26aa3321c89982b24632e119518c8304a",
+    "commit": "858da6c8233eb96289014002efe60a16e5698020",
     "path": "examples/inheritance-save/generation-origin.json",
-    "sha256": "98725102a9d0cc5569a747fb0db25b69a3f6bca2a89d8f654e30a562838cc380"
+    "sha256": "6764f6a07cd564fc77ee7781f3f77341967b073c9d3bd34042b806839182874e"
   },
   "qualifiedJarExecuted": false,
   "runtimeDependencies": "local repository source via Cargo patches; origin verified at execution",
   "schema": "teaql.generated-inheritance-example/v1",
-  "sourceReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-rust-inheritance-explicit-descriptor-counted/rust/inheritance-save/model/receipt.json",
-  "sourceReceiptSha256": "abcd3062e9ea219324451d297d4a1b968c9ecc532b4d7ba3374c8430b8119f76"
+  "sourceReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-rust-inheritance-intent-source/rust/inheritance-save/model/receipt.json",
+  "sourceReceiptSha256": "0e6118abd77d61612e2a8fd1f11f4e81572e3c1fec56ea66b905ef0f74712e25"
 }
