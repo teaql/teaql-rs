@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut school = Q::schools()
             .comment("Prepare the secondary school observation")
             .purpose("Complete the four-primary one-secondary statistics population")
-            .new_entity(&context);
+            .new_entity(&context)?;
         school.update_platform_id(1_u64);
         school.update_school_type_to_secondary();
         school.update_name("Mapping API ordering secondary");
