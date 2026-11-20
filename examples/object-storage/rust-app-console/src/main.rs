@@ -53,6 +53,14 @@ impl ObjectStorageObserver for Observations {
     }
 }
 
+fn require(ok: bool, message: &'static str) -> Result<()> {
+    if ok {
+        Ok(())
+    } else {
+        Err(message.into())
+    }
+}
+
 fn checksum(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -148,39 +156,41 @@ async fn verify(database: &str, download: &str, round: u8) -> Result<()> {
         let attachment = attachment.audit_as("associate the stored receipt with its order").save(&context).await?;
         let attachment_id = attachment.id();
         let rows = attachments(&context, order_id).await?;
-        assert!(rows.len() == 1 && rows[0].id() == attachment_id, "persisted order association mismatch");
+        require(rows.len() == 1 && rows[0].id() == attachment_id, "persisted order association mismatch")?;
         let expression = E::order_attachment(&rows[0]);
-        assert_eq!(expression.get_customer_order_id().eval(), Some(order_id));
-        assert_eq!(expression.get_file_name().eval().as_deref(), Some(FILENAME));
-        assert_eq!(expression.get_content_type().eval().as_deref(), Some(MEDIA_TYPE));
-        assert_eq!(expression.get_content_length().eval(), Some(RECEIPT.len() as i64));
-        assert_eq!(expression.get_content_sha256().eval().as_deref(), Some(digest.as_str()));
+        require(expression.get_customer_order_id().eval() == Some(order_id)
+            && expression.get_file_name().eval().as_deref() == Some(FILENAME)
+            && expression.get_content_type().eval().as_deref() == Some(MEDIA_TYPE),
+            "stored receipt owner, filename or type mismatch")?;
+        require(expression.get_content_length().eval() == Some(RECEIPT.len() as i64)
+            && expression.get_content_sha256().eval().as_deref() == Some(digest.as_str()),
+            "stored receipt bytes metadata mismatch")?;
         let value = expression.get_object_key().eval().ok_or("stored receipt reference missing")?;
-        assert!(value == key.as_str(), "stored receipt reference mismatch");
+        require(value == key.as_str(), "stored receipt reference mismatch")?;
         let persisted_key = ObjectKey::new(value)?;
         let metadata = storage.head(&persisted_key).await?.ok_or("object metadata missing")?;
-        assert!(metadata.size == RECEIPT.len() as u64 && metadata.content_type.as_deref() == Some(MEDIA_TYPE)
-            && metadata.custom_metadata.get("receipt-sha256") == Some(&digest));
+        require(metadata.size == RECEIPT.len() as u64 && metadata.content_type.as_deref() == Some(MEDIA_TYPE)
+            && metadata.custom_metadata.get("receipt-sha256") == Some(&digest), "provider metadata mismatch")?;
         let replacement = Bytes::from_static(b"replacement");
         let rejected = storage.put_bytes(&persisted_key, replacement.clone(),
             &PutOptions::new(replacement.len() as u64, WriteMode::CreateOnly)?).await;
-        assert!(matches!(rejected, Err(StorageError(StorageErrorCode::Conflict))));
-        assert!(matches!(storage.get_bytes(&persisted_key, RECEIPT.len()-1).await, Err(StorageError(StorageErrorCode::TooLarge))));
+        require(matches!(rejected, Err(StorageError(StorageErrorCode::Conflict))), "duplicate upload was not refused")?;
+        require(matches!(storage.get_bytes(&persisted_key, RECEIPT.len()-1).await, Err(StorageError(StorageErrorCode::TooLarge))), "undersized read was not refused")?;
         let downloaded = storage.get_bytes(&persisted_key, RECEIPT.len()).await?;
-        assert!(downloaded.as_ref() == RECEIPT && checksum(&downloaded) == digest, "retrieved receipt changed");
+        require(downloaded.as_ref() == RECEIPT && checksum(&downloaded) == digest, "retrieved receipt changed")?;
         std::fs::write(download, &downloaded)?;
 
         storage.delete(&persisted_key).await?;
         uploaded = false;
-        assert!(matches!(storage.get(&persisted_key).await, Err(StorageError(StorageErrorCode::NotFound))));
-        assert!(!storage.exists(&persisted_key).await?);
+        require(matches!(storage.get(&persisted_key).await, Err(StorageError(StorageErrorCode::NotFound)))
+            && !storage.exists(&persisted_key).await?, "missing object reported present")?;
         let persisted = attachments(&context, order_id).await?;
-        assert!(persisted.len() == 1 && persisted[0].id() == attachment_id, "missing object changed the order association");
+        require(persisted.len() == 1 && persisted[0].id() == attachment_id, "missing object changed the order association")?;
         let events = observations.0.lock().unwrap();
         let saved = audit.0.lock().unwrap();
-        assert!(!events.is_empty() && events.iter().all(|event| event.trace_id == trace));
-        assert_eq!(saved.iter().map(|event| event.entity.as_str()).collect::<Vec<_>>(), ["CustomerOrder", "OrderAttachment"]);
-        assert!(!format!("{events:?} {saved:?}").contains(key.as_str()), "private object key reached safe events");
+        require(!events.is_empty() && events.iter().all(|event| event.trace_id == trace), "storage observation escaped the attachment Context")?;
+        require(saved.iter().map(|event| event.entity.as_str()).eq(["CustomerOrder", "OrderAttachment"]), "committed order and attachment audits missing")?;
+        require(!format!("{events:?} {saved:?}").contains(key.as_str()), "private object key reached safe events")?;
         Ok(json!({
             "round": round, "order": order_id, "attachment": attachment_id, "orderNumber": order_number,
             "filename": FILENAME, "contentType": MEDIA_TYPE, "length": downloaded.len(), "sha256": digest,
