@@ -115,6 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let query = PurposedSelectQuery::new(
         SelectQuery::new("School")
+            .projects(["id", "name"])
             .order_asc("id")
             .limit(1)
             .relation_query("students", SelectQuery::new("Student").order_asc("id").limit(2))
@@ -124,6 +125,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let schools = data_service
         .fetch_enhanced_entities::<School>(&query)
         .await?;
+    assert_eq!(schools.len(), 1);
+    assert_eq!(schools[0].name, "My School");
+    assert_eq!(
+        schools[0].students.iter().map(|pupil| pupil.name.as_str()).collect::<Vec<_>>(),
+        ["Alice", "Bob"],
+    );
 
     println!("school.audit_as(\"创建学校\").save(&context) succeeded!");
     println!("Schools: {:#?}", schools);
