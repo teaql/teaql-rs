@@ -45,13 +45,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let rejected = prepare_order(&context, REJECTED_SUPPLIER)?;
-    let result = rejected.audit_as(" ").save(&context).await;
-    let rejection = match result {
-        Err(RuntimeError::RequestIntent(error)) if error.code() == "REQUEST_COMMENT_REQUIRED" => {
-            error.code()
-        }
-        _ => return Err("Expected missing mutation comment rejection".into()),
-    };
+    // The fluent Rust audit wrapper rejects blank input before a save can be made.
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rejected.audit_as(" ")));
+    let message = failure
+        .err()
+        .and_then(|payload| payload.downcast::<String>().ok())
+        .expect("Blank audit must be rejected by the generated audit wrapper");
+    let rejection = "REQUEST_COMMENT_REQUIRED";
+    assert!(message.starts_with(rejection), "{message}");
     let absent = Q::purchase_orders()
         .with_supplier_is(REJECTED_SUPPLIER)
         .limit(2)
