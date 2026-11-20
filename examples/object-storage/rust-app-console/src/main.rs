@@ -177,7 +177,7 @@ async fn verify(database: &str, download: &str, round: u8) -> Result<()> {
         require(matches!(rejected, Err(StorageError(StorageErrorCode::Conflict))), "duplicate upload was not refused")?;
         require(matches!(storage.get_bytes(&persisted_key, RECEIPT.len()-1).await, Err(StorageError(StorageErrorCode::TooLarge))), "undersized read was not refused")?;
         let downloaded = storage.get_bytes(&persisted_key, RECEIPT.len()).await?;
-        require(downloaded.as_ref() == RECEIPT && checksum(&downloaded) == digest, "retrieved receipt changed")?;
+        require(downloaded.as_slice() == RECEIPT && checksum(&downloaded) == digest, "retrieved receipt changed")?;
         std::fs::write(download, &downloaded)?;
 
         storage.delete(&persisted_key).await?;
