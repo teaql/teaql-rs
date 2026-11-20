@@ -21,8 +21,16 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/order-privacy-and-federation-generation/receipt.json",
     "receiptSHA256": "0ae62ffb613692c2d0922b4da1b1dbb9ca6081e8a36a5786a27029a614b711d1"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-order-federation-native-with-logical-fk/business-receipt.json",
+    "businessReceiptSHA256": "1442a9562efdb7014e9814b6dbe0054ee75f82b958ce53175cd94f559bb4ead3",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-order-federation-native-with-logical-fk/receipt.json",
+    "nativeReceiptSHA256": "88f9d0519cf10fc4041d168f148d47db80a9b3ed5bf33ed057d7d932407c441a",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "8069516526145db67b2c7f28ec19febb3024632c"
+  },
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "title": "Merchant order dispatch through the federation protocol",
   "workspace": {
     "applicationOwnedFiles": [
