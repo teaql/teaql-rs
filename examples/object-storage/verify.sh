@@ -20,8 +20,10 @@ fingerprint() {
 }
 fingerprint > "$evidence/source-before.sha256"
 cd "$repo"
-cargo test --locked -p teaql-core -p teaql-runtime -p teaql-object-storage-s3 object_storage 2>&1 | tee "$evidence/provider-tests.log"
-cargo run --locked -p teaql-object-storage-s3 --example object_storage | tee "$evidence/s3-calibration.log"
+if [[ "${1:-}" != --workspace-only ]]; then
+  cargo test --locked -p teaql-core -p teaql-runtime -p teaql-object-storage-s3 object_storage 2>&1 | tee "$evidence/provider-tests.log"
+  cargo run --locked -p teaql-object-storage-s3 --example object_storage | tee "$evidence/s3-calibration.log"
+fi
 cd "$app"
 cargo metadata --locked --format-version 1 |
   python3 -B -c 'import json,sys; m=json.load(sys.stdin); print(json.dumps({p["name"]:p["manifest_path"] for p in m["packages"] if p["source"] is None},sort_keys=True,indent=2))'   > "$evidence/origins.log"

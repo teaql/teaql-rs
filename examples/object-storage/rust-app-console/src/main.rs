@@ -122,7 +122,7 @@ async fn verify(database: &str, download: &str, round: u8) -> Result<()> {
         .purpose("file a receipt against this order")
         .new_entity(&context)?;
     order
-        .update_order_number(&order_number)
+        .update_order_number(order_number.as_str())
         .update_commerce_platform_id(platform.id());
     let order = order
         .audit_as("place the order receiving the receipt")
