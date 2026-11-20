@@ -33,6 +33,7 @@ async fn line_with_order(context: &UserContext, id: u64) -> AppResult<ShippingLi
     Ok(line)
 }
 
+#[tokio::main]
 async fn main() -> AppResult<()> {
     let database = std::env::var("TEAQL_ORDER_EDIT_DATABASE")?;
     let round = std::env::var("TEAQL_SHOWCASE_ROUND")?;
