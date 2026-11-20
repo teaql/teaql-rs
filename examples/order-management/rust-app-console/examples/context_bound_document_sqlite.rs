@@ -53,10 +53,15 @@ impl GeneratedOrderDocumentService {
     async fn load_order(
         &self,
         context: &UserContext,
+        principal: &TrustedReferencePrincipal,
         order_number: &str,
     ) -> Result<CustomerOrder, DocumentRoundTripError> {
+        if principal.domain_root_type != "Customer" {
+            return Err(DocumentRoundTripError::authorization_required());
+        }
         Q::customer_orders()
             .with_order_number_is(order_number)
+            .with_customer_matching(Q::customers_minimal().with_id_is(principal.domain_root_id))
             .select_order_line_list_with(
                 Q::order_lines()
                     .select_self_fields()
@@ -190,7 +195,7 @@ impl ContextBoundDocumentService for GeneratedOrderDocumentService {
         if request.aggregate_type != "CustomerOrder" || request.purpose != PURPOSE {
             return Err(DocumentRoundTripError::scope_mismatch());
         }
-        let order = self.load_order(context, &request.business_id).await?;
+        let order = self.load_order(context, principal, &request.business_id).await?;
         self.render(context, principal, &order, request.lifetime)
     }
 
@@ -222,7 +227,7 @@ impl ContextBoundDocumentService for GeneratedOrderDocumentService {
         }
 
         let mut order = self
-            .load_order(context, &verified.snapshot.business_id)
+            .load_order(context, principal, &verified.snapshot.business_id)
             .await?;
         self.validate_owner(principal, &order)?;
         let order_id = required(E::customer_order(&order).get_id().eval())?;
@@ -384,7 +389,7 @@ impl ContextBoundDocumentService for GeneratedOrderDocumentService {
                 .map_err(|_| DocumentRoundTripError::validation_failed())?
         };
         let refreshed = self
-            .load_order(context, &verified.snapshot.business_id)
+            .load_order(context, principal, &verified.snapshot.business_id)
             .await?;
         Ok(AcceptedContextualDocument {
             document: self.render(context, principal, &refreshed, Duration::from_secs(900))?,

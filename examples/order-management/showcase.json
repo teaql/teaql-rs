@@ -5,7 +5,7 @@
     "orderDate": "2026-08-12",
     "orderNumber": "WEB-2026-001",
     "orders": 1,
-    "originalBusinessFilesUnchanged": 8,
+    "originalWorkspaceFilesRetainedAtInstallation": 8,
     "presets": 1,
     "sameDatabaseRuns": 2
   },
@@ -33,6 +33,9 @@
   },
   "scene": "Audited order terminal workflow, reusable search and graph-save governance",
   "schema": "teaql.model-workspace-showcase/v1",
+  "sourceCorrections": [
+    "Scope document business-number lookup by trusted Customer identity"
+  ],
   "status": "implemented-pending-native-qualification",
   "verification": [
     "bash",

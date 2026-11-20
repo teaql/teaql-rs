@@ -1,8 +1,11 @@
 # Order Management — Rust + SQLite
 
 The retained model owns the exact `rust-lib-core` and `rust-app-console` scopes.
-All original business sources, dependency declarations and the lock remain
-byte-identical. Current generated workspace scaffolding and immutable embedded
+All eight original workspace files were retained byte for byte at installation.
+The document consumer then received a localized owner-scoped query correction:
+repeated runs can use the same business number under different trusted Customers.
+Its actor, version, projection and token checks remain intact; other business
+sources, dependency declarations and the lock are unchanged. Current generated workspace scaffolding and immutable embedded
 domain files are installed alongside the original application. `showcase.json`
 records their model and producer identity. Run `bash verify.sh` from this scene
 for the focused terminal/graph/policy gate. It retains compact evidence and
