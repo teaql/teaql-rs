@@ -18,6 +18,7 @@ teaql-core = "8.1.0"
 teaql-provider-sqlite = "8.1.0"
 teaql-sql = "8.1.0"
 teaql-tfp-endpoint = { path = "../../.." }
+teaql-web-integration-axum = { path = "../../../../teaql-web-integration-axum" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 
