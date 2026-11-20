@@ -157,15 +157,15 @@ async fn verify(database: &str, download: &str, round: u8) -> Result<()> {
         let attachment_id = attachment.id();
         let rows = attachments(&context, order_id).await?;
         require(rows.len() == 1 && rows[0].id() == attachment_id, "persisted order association mismatch")?;
-        let expression = E::order_attachment(&rows[0]);
-        require(expression.get_customer_order_id().eval() == Some(order_id)
-            && expression.get_file_name().eval().as_deref() == Some(FILENAME)
-            && expression.get_content_type().eval().as_deref() == Some(MEDIA_TYPE),
+        let expression = || E::order_attachment(&rows[0]);
+        require(expression().get_customer_order_id().eval() == Some(order_id)
+            && expression().get_file_name().eval().as_deref() == Some(FILENAME)
+            && expression().get_content_type().eval().as_deref() == Some(MEDIA_TYPE),
             "stored receipt owner, filename or type mismatch")?;
-        require(expression.get_content_length().eval() == Some(RECEIPT.len() as i64)
-            && expression.get_content_sha256().eval().as_deref() == Some(digest.as_str()),
+        require(expression().get_content_length().eval() == Some(RECEIPT.len() as i64)
+            && expression().get_content_sha256().eval().as_deref() == Some(digest.as_str()),
             "stored receipt bytes metadata mismatch")?;
-        let value = expression.get_object_key().eval().ok_or("stored receipt reference missing")?;
+        let value = expression().get_object_key().eval().ok_or("stored receipt reference missing")?;
         require(value == key.as_str(), "stored receipt reference mismatch")?;
         let persisted_key = ObjectKey::new(value)?;
         let metadata = storage.head(&persisted_key).await?.ok_or("object metadata missing")?;
