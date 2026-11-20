@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 example_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-run_dir="$(mktemp -d -t teaql-rust-standard-telemetry.XXXXXXXX)"
-manifest="$example_dir/Cargo.toml"
+run_dir="${TEAQL_TRACE_CHAIN_STANDARD_EVIDENCE_DIR:-$(mktemp -d -t teaql-rust-standard-telemetry.XXXXXXXX)}"
+mkdir -p "$run_dir"
+manifest="$example_dir/rust-app-console/Cargo.toml"
 names=(TEAQL_TELEMETRY_ENABLED TEAQL_TELEMETRY_SERVICE_NAME TEAQL_TELEMETRY_OTLP_ENDPOINT)
 disabled=(env -u "${names[0]}" -u "${names[1]}" -u "${names[2]}")
 library_manifest() {

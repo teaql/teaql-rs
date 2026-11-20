@@ -1,0 +1,43 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/trace-chain",
+  "library": {
+    "generatedFilesManifestSHA256": "f9a5db236b4eace1795ac9169839ec791560ac0025ba2957e2ddac3c93e8546f",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "8074789ddeecbdcf11d6647108d275a45e8b7736ae95980ec594a40af7956db3"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "unsigned unpublished versioned source candidate; not a released artifact",
+      "baseRelease": "v4.2.0",
+      "candidatePreparationReceiptSHA256": "52b4c2042be58624c08d07186b7081cf6ad4c0fccfc8e9724bee7f9280b5c02f",
+      "candidateVersion": "4.3.0",
+      "jarSHA256": "3a4988ada43aeb01d5cbba5901c1eef64c58b2bd4142c99fd7692cf1dc413e9e",
+      "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+      "sourceQualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
+      "tag": "unsigned-candidate-v4.3.0"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-v430-candidate/receipt.json",
+    "receiptSHA256": "9bf2a08fa9c5bec0d9b1a2e1420044ffdd6bc71c6a1a09ce70d81d1cf0cdbd0a"
+  },
+  "scene": "Save, roll back and replay customer order graphs with shared products, payment and shipment trace evidence",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "bash",
+    "examples/trace-chain/verify.sh"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "src/main.rs"
+    ],
+    "generatedFilesManifestSHA256": "902dea5ba9fe6250d096d9f7b8a378c425038142972916f9b9f9260eaf2467bc",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}

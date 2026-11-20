@@ -25,7 +25,7 @@ jobs:
           # index/archive inputs before the unchanged offline acceptance phase.
           cargo fetch --locked
           cargo fetch --locked --manifest-path examples/facet-trace/Cargo.toml
-          cargo fetch --locked --manifest-path examples/trace-chain/Cargo.toml
+          cargo fetch --locked --manifest-path examples/trace-chain/rust-app-console/Cargo.toml
           cargo fetch --locked --manifest-path examples/school-management/Cargo.toml
           cargo fetch --locked --manifest-path examples/inheritance-save/Cargo.toml
       - name: Start dedicated S3 example fixture
