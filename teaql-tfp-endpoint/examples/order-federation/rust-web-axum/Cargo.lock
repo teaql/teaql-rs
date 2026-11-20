@@ -865,6 +865,7 @@ dependencies = [
  "teaql-runtime",
  "teaql-sql",
  "teaql-tfp-endpoint",
+ "teaql-web-integration-axum",
  "tokio",
 ]
 
@@ -1329,6 +1330,18 @@ dependencies = [
  "teaql-data-service",
  "teaql-runtime",
  "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "teaql-web-integration-axum"
+version = "8.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "teaql-core",
+ "teaql-runtime",
  "tokio",
 ]
 
