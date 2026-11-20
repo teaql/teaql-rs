@@ -463,117 +463,117 @@
     },
     {
       "archiveSHA256": "952c0934643c9e5c01ef80ce6758441f008468b9bc5b2318ae55f67da978fd47",
-      "destination": "examples/facet-trace",
+      "destination": "examples/facet-trace/rust-lib-core",
       "generatedFiles": {
-        "examples/facet-trace/lib/Cargo.toml": {
+        "examples/facet-trace/rust-lib-core/lib/Cargo.toml": {
           "emittedPath": "lib/Cargo.toml",
           "sha256": "bc2a23434c86180ee490b905cb3248b4fd6ab1ba87ffb6860dbeba865d176446"
         },
-        "examples/facet-trace/lib/src/e.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/e.rs": {
           "emittedPath": "lib/src/e.rs",
           "sha256": "00a126c3ea9b689b9a7dd375dbfe2605afc009a53ff03b02b70334b602799b89"
         },
-        "examples/facet-trace/lib/src/lib.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/lib.rs": {
           "emittedPath": "lib/src/lib.rs",
           "sha256": "a0f592d86e09574d3194279c97a264a2a04ff84fa302a3e16cab73f49c62f893"
         },
-        "examples/facet-trace/lib/src/platform/behavior.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/platform/behavior.rs": {
           "emittedPath": "lib/src/platform/behavior.rs",
           "sha256": "33504f41ce179be8dcb01a52ef885e2894ee18a1f060a659c215ee41fbe43df4"
         },
-        "examples/facet-trace/lib/src/platform/checker.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/platform/checker.rs": {
           "emittedPath": "lib/src/platform/checker.rs",
           "sha256": "8d7412d6e063496ddd7902e511b2051b47475fb9b8ba15268b2e8612e44df82c"
         },
-        "examples/facet-trace/lib/src/platform/entity.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/platform/entity.rs": {
           "emittedPath": "lib/src/platform/entity.rs",
           "sha256": "81713a567ceef26c821f5726ea57ed112c1f1066d7120a658a0bfd79ae08981b"
         },
-        "examples/facet-trace/lib/src/platform/expression.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/platform/expression.rs": {
           "emittedPath": "lib/src/platform/expression.rs",
           "sha256": "9ed8481d47e432c0811f83c2c49ece085adbce3d3cb359de0cefefe1f97161c8"
         },
-        "examples/facet-trace/lib/src/platform/mod.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/platform/mod.rs": {
           "emittedPath": "lib/src/platform/mod.rs",
           "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
         },
-        "examples/facet-trace/lib/src/platform/request.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/platform/request.rs": {
           "emittedPath": "lib/src/platform/request.rs",
           "sha256": "fb8f91e5a97d350604d42a60788ce49f6d8e2157c0be5f19c9c284e8d0427ff4"
         },
-        "examples/facet-trace/lib/src/q.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/q.rs": {
           "emittedPath": "lib/src/q.rs",
           "sha256": "1fe610ef84363444de4c2c15cc0a68ec1c1c24154da1b3c52e83e92351056719"
         },
-        "examples/facet-trace/lib/src/request_support.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/request_support.rs": {
           "emittedPath": "lib/src/request_support.rs",
           "sha256": "23baac13cf4dd2667945c06d5e786a1c4cf386b0023a4f687ff6cb4670d46a37"
         },
-        "examples/facet-trace/lib/src/rollup_support.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/rollup_support.rs": {
           "emittedPath": "lib/src/rollup_support.rs",
           "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
         },
-        "examples/facet-trace/lib/src/runtime.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/runtime.rs": {
           "emittedPath": "lib/src/runtime.rs",
           "sha256": "255b24b3abd5e511b693b8efd0901344fc3c1e8393d5349f2cd50361b13293fc"
         },
-        "examples/facet-trace/lib/src/sample_data.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/sample_data.rs": {
           "emittedPath": "lib/src/sample_data.rs",
           "sha256": "aa88bdc79f8694ad81f66adb5edc44770a48c260d2dffad7f5e1b588db58ac78"
         },
-        "examples/facet-trace/lib/src/school/behavior.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school/behavior.rs": {
           "emittedPath": "lib/src/school/behavior.rs",
           "sha256": "41c4faa5d2fc86da9b3d080a4a07b17cd5e74ac453ec1e7ca914b8c68c30db05"
         },
-        "examples/facet-trace/lib/src/school/checker.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school/checker.rs": {
           "emittedPath": "lib/src/school/checker.rs",
           "sha256": "6fa6e96f450692595d46358f6cb3af980be58a243800ce9c4051bb021310296c"
         },
-        "examples/facet-trace/lib/src/school/entity.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school/entity.rs": {
           "emittedPath": "lib/src/school/entity.rs",
           "sha256": "edc5bf05edfbd407f6b7b05aef24d06b400f44fec04dbb400c5fe42c1e886fd9"
         },
-        "examples/facet-trace/lib/src/school/expression.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school/expression.rs": {
           "emittedPath": "lib/src/school/expression.rs",
           "sha256": "69e51fbf2a71e975ba094c7c81d2fedc5d65979f5958fd9786fa0bd7df83f7e0"
         },
-        "examples/facet-trace/lib/src/school/mod.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school/mod.rs": {
           "emittedPath": "lib/src/school/mod.rs",
           "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
         },
-        "examples/facet-trace/lib/src/school/request.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school/request.rs": {
           "emittedPath": "lib/src/school/request.rs",
           "sha256": "889cdeb0368f943ab2504f29ed1f9c11e89f524be051e52e49cae70a78f262f0"
         },
-        "examples/facet-trace/lib/src/school_type/behavior.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/behavior.rs": {
           "emittedPath": "lib/src/school_type/behavior.rs",
           "sha256": "48d0c35546b4955fc90d927bbb6ee2dcad4eec42ba3c8609adf17e103c54d680"
         },
-        "examples/facet-trace/lib/src/school_type/checker.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/checker.rs": {
           "emittedPath": "lib/src/school_type/checker.rs",
           "sha256": "f648439e3836b84418ca3ab98d2818a67d00804c3209460c04aea1d66bb9e06f"
         },
-        "examples/facet-trace/lib/src/school_type/entity.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/entity.rs": {
           "emittedPath": "lib/src/school_type/entity.rs",
           "sha256": "d2c090546096ab79230c79d4172fb30db7305a3fd226ee0a15ab47cfa63a3417"
         },
-        "examples/facet-trace/lib/src/school_type/expression.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/expression.rs": {
           "emittedPath": "lib/src/school_type/expression.rs",
           "sha256": "11581fb4098c9eae8c4a733cffe4e6a80c6c932588abfaca8b28f1a08932b41e"
         },
-        "examples/facet-trace/lib/src/school_type/mod.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/mod.rs": {
           "emittedPath": "lib/src/school_type/mod.rs",
           "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
         },
-        "examples/facet-trace/lib/src/school_type/request.rs": {
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/request.rs": {
           "emittedPath": "lib/src/school_type/request.rs",
           "sha256": "23462171b9523c4f7bcd5654ae1b9122a8411086550347ecfd00c54af451b93c"
         },
-        "examples/facet-trace/teaql/checker-model.json": {
+        "examples/facet-trace/rust-lib-core/teaql/checker-model.json": {
           "emittedPath": "teaql/checker-model.json",
           "sha256": "8e28ee16cddc21191816ed05999142fccb870bf42795f5a1f21268ebd4469e71"
         },
-        "examples/facet-trace/teaql/model-provenance.json": {
+        "examples/facet-trace/rust-lib-core/teaql/model-provenance.json": {
           "emittedPath": "teaql/model-provenance.json",
           "sha256": "56be5429cafdde8592b184750ab17e87b0cf53165456deb2c0c531444424c0ab"
         }

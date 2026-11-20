@@ -1,10 +1,29 @@
-# Generated Facet Trace example
+# School directory: Facet browsing and membership counts
 
-This small School fixture exercises generated Q APIs with real SQLite, without
-handwritten application SQL or generated-source repair. The 24 `lib/src` files
-are the exact bytes retained by the producer's School Facet acceptance (issue
-teaql-code-gen #251, `RustGeneratedCrateCompileTest`). Only manifest wiring is
-portable here; the example always patches runtime dependencies to this repository.
+This example starts with the School/SchoolType/Platform domain in `model.xml`.
+The generated `rust-lib-core/` library and `rust-app-console/` workspace come
+from that same model. Application-owned code publishes three demonstration
+schools through generated creation and audited save APIs, then browses a
+one-school page with school-type Facets and full membership counts.
+
+```bash
+cargo run --locked --manifest-path examples/facet-trace/rust-app-console/Cargo.toml -- /tmp/school-directory.sqlite
+```
+
+The business result has two primary schools and one secondary school. The
+one-row page retains counts `PRIMARY=2, SECONDARY=1`; filtering to primary
+schools produces `PRIMARY=2`, and include-all choices retain `SECONDARY=0`.
+Repeating the command reuses the three records. A rejected blank audit reason
+cannot publish a fourth school. No application SQL or hand-written descriptor
+is used for these business operations.
+
+The root Cargo manifest only aggregates the two named scope projects. Native
+runtime dependencies resolve to this checkout through explicit local wiring.
+Generated implementations remain byte-identical to the recorded producer.
+
+The complete verifier runs the business workspace twice on one fresh retained
+business database and preserves the original nine integration tests on their
+separate retained fixture database:
 
 ```bash
 bash examples/facet-trace/verify.sh
@@ -13,7 +32,10 @@ bash examples/facet-trace/verify.sh
 Cargo dependencies must already be fetched; the verifier runs offline. Reuse
 `CARGO_TARGET_DIR` to avoid recompiling unchanged dependencies. It creates a fresh
 retained database, executes nine tests twice without cleanup, checks exact
-test identities, and verifies every library input hash before/after.
+test identities, and verifies every library input hash before/after. Set
+`TEAQL_FACET_EVIDENCE_DIR` to an unused output directory for compact receipts.
+An automatically owned build directory is removed on exit; a caller-supplied
+`CARGO_TARGET_DIR` stays under that caller's lifecycle.
 
 The original four tests cover 16 combinations: four root/nested include-all/matched-only
 queries; eight typed loaded-relation empty/nonempty include-all combinations;

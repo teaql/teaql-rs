@@ -1,0 +1,62 @@
+{
+  "expected": {
+    "missingAuditHasNoWrite": true,
+    "primaryFilteredCounts": {
+      "PRIMARY": 2
+    },
+    "primaryIncludeAllCounts": {
+      "PRIMARY": 2,
+      "SECONDARY": 0
+    },
+    "retainedRegressionTests": 9,
+    "schools": 3,
+    "secondRunCreates": 0,
+    "unfilteredMembershipCounts": {
+      "PRIMARY": 2,
+      "SECONDARY": 1
+    },
+    "visiblePageSize": 1
+  },
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/facet-trace",
+  "library": {
+    "generatedFilesManifestSHA256": "67bd04a163c89f1c87c328e9bf1e9566cf31812de7a1d516c01e7f2c2b667651",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "5bc5dd647f2d6317235e4a3eb4399e30d896a71159c57b7af0a7d065a732ed65"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build; not a public release",
+      "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+      "qualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
+      "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+      "tag": "unreleased-source-021b1ed8"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-facet-generation/receipt.json",
+    "receiptSHA256": "0f5277d5fe7509a2d009ff9d083b503f51341f954b078fa85c70e6b0bbb87f66"
+  },
+  "scene": "School directory Facet browsing and membership counts",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implementation-awaiting-verification",
+  "verification": [
+    "bash",
+    "verify.sh"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "src/main.rs",
+      "src/school_directory.rs",
+      "tests/request_intent.rs",
+      "tests/counted_facets.rs",
+      "tests/web_response.rs"
+    ],
+    "generatedFilesManifestSHA256": "095d120ae26234ae03d99607683cbbfb11b2880d584ee5a82274797f6ad737c4",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}
