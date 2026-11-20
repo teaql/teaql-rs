@@ -21,9 +21,17 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-purchase-approval-generation/receipt.json",
     "receiptSHA256": "a465f9aa292698e0d3cdbda4203cf4b3cf4dfb14d8b1a2e6c79252d28b76d81b"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-purchase-approval-loaded-null/runtime/purchase-approval/receipt.json",
+    "businessReceiptSHA256": "43a31bedae0208bb0f37c3ea832734410b72029f59221d874813280a28d0e389",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-purchase-approval-loaded-null/receipt.json",
+    "nativeReceiptSHA256": "44a68bb25b33835250c4d456a4c5d4781f517bf2bd0e944a0ec7533da43a3b64",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "4157df3a6c83df19103be3f6d9560b001af96eda"
+  },
   "scene": "Approved, declined and undecided purchase orders",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "bash",
     "examples/boolean-boundaries/verify-approval.sh"
