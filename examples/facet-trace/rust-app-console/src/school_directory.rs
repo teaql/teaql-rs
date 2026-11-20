@@ -108,10 +108,11 @@ pub async fn run(database: PathBuf) -> Result<(), Box<dyn Error>> {
     rejected.update_school_type_to_primary();
     // Validate caller-supplied intent before the fluent audited wrapper, whose
     // native contract intentionally panics when given a blank constant reason.
-    let attempted = match teaql_core::MutationIntent::new("") {
-        Ok(intent) => {
+    let audit_reason = "";
+    let attempted = match teaql_core::MutationIntent::new(audit_reason) {
+        Ok(_) => {
             rejected
-                .audit_as(intent.into_comment())
+                .audit_as(audit_reason)
                 .save(&context)
                 .await
         }
