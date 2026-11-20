@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="order-line-restoration" org="teaql" data_service="sqlite">
+  <dispatch_desk name="Dispatch Desk"/>
+  <shipping_order dispatch_desk="dispatch_desk()" order_number="string()"/>
+  <shipping_line shipping_order="shipping_order()" item_code="string()"
+                 quantity="integer()" delivery_note="string()?"/>
+</root>

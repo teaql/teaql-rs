@@ -1,0 +1,56 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/tests/context_bound_order_document.rs",
+  "library": {
+    "generatedFilesManifestSHA256": "3eddcd6649440f3c47c02909ecba69d76c4dcfcdd34173c465ef64e960a8a820",
+    "root": "../../order-management/rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "../../order-management/order-management-model.xml",
+    "sha256": "8b11ee844c2be184e194d8116994fb5fe95299dd593bfed83ec06d71ada0411d"
+  },
+  "originalProtocolCalibration": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "teaql-examples",
+    "--test",
+    "context_bound_order_document"
+  ],
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build; not a public release",
+      "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+      "qualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
+      "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+      "tag": "unreleased-source-021b1ed8"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/order-generation/receipt.json",
+    "receiptSHA256": "5041246b7c9f452219d943efa393ea380ce7f7e172da739a945bb49da2ba5db2"
+  },
+  "scene": "Edit visible order lines in a trusted customer document and verify the committed aggregate",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "bash",
+    "examples/order-management/verify.sh"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.lock",
+      "Cargo.toml",
+      "examples/context_bound_document_sqlite.rs",
+      "src/bin/mutation_policy_probe.rs",
+      "src/bin/nested_graph_probe.rs",
+      "src/bin/save_forward_fk_probe.rs",
+      "src/bin/save_loaded_relation_probe.rs",
+      "src/main.rs"
+    ],
+    "generatedFilesManifestSHA256": "a53832cc810569362ced53aa7939d8974dcb48fab12ee042dddf62a518b1a559",
+    "root": "../../order-management/rust-app-console",
+    "scope": "rust-app-console"
+  }
+}
