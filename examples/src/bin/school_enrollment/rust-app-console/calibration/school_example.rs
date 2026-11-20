@@ -114,7 +114,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     >>("School")?;
 
     let query = PurposedSelectQuery::new(
-        SelectQuery::new("School").order_asc("id"),
+        SelectQuery::new("School")
+            .order_asc("id")
+            .comment("Read the school and its loaded roster"),
         "Verify the saved school graph",
     );
     let schools = data_service
