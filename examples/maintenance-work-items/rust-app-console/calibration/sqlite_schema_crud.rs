@@ -64,8 +64,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     let orders = data_service.fetch_entities::<Order>(&query).await?;
-    assert!(orders.is_empty(), "The soft-deleted order is still visible");
-    println!("PASS native schema and CRUD calibration: draft v1, submitted v2, deleted row hidden");
+    assert_eq!(orders.len(), 1);
+    assert_eq!((orders[0].name.as_str(), orders[0].version), ("submitted", -3));
+    println!("PASS native schema and CRUD calibration: draft v1, submitted v2, deleted v-3");
     println!("schema+crud example rows: {orders:?}");
     Ok(())
 }

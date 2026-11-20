@@ -57,8 +57,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query = PurposedSelectQuery::new(
         SelectQuery::new("Order")
             .project("name")
-            .relation_query("lines", SelectQuery::new("OrderLine").relation("product"))
-            .order_asc("id"),
+            .relation_query(
+                "lines",
+                SelectQuery::new("OrderLine")
+                    .relation("product")
+                    .comment("Read the purchase lines and their linked products"),
+            )
+            .order_asc("id")
+            .comment("Read the saved equipment order and all of its lines"),
         "Display the saved example order",
     );
     let orders = data_service
