@@ -22,8 +22,8 @@ python3 examples/context-derived/verify-local.py --output "${verification_dir%/r
 python3 scripts/verify-natural-messages.py --example --output "${verification_dir%/runtime}/natural-messages"
 TEAQL_REQUEST_ADMISSION_EVIDENCE_DIR="${verification_dir%/runtime}/request-admission" \
   node examples/request-admission/verify-local.cjs
-TEAQL_BOOLEAN_EVIDENCE_DIR="${verification_dir%/runtime}/boolean-boundaries" \
-  node examples/boolean-boundaries/verify-local.cjs
+TEAQL_PURCHASE_APPROVAL_EVIDENCE_DIR="${verification_dir%/runtime}/purchase-approval" \
+  bash examples/boolean-boundaries/verify-approval.sh
 # Isolated non-Git copies must name their hash-bound Git origin explicitly.
 TEAQL_GENERATED_E_PROFILE_EVIDENCE_DIR="${verification_dir%/runtime}/expression-profiles" \
   node examples/expression-profiles/verify-local.cjs

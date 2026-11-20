@@ -1,4 +1,18 @@
-# Typed Boolean boundaries
+# Purchase approval queue
+
+The generated console records three orders at the purchasing desk. Approved
+orders can go to a supplier, declined orders stay out of that list, and orders
+awaiting review have no decision. Generated Q predicates, COUNT and E read back
+the three states. A projection omitting approval remains unloaded. A non-Boolean
+edit is rejected at the approval field, and the declined order retains its
+original decision and version across a restart.
+
+`model.xml` defines the orders and purchasing desk. The generated
+`rust-app-console` workspace uses the byte-exact `rust-lib-core` domain library.
+Run it and the original calibration with
+`bash examples/boolean-boundaries/verify-approval.sh`.
+
+## Original Boolean calibration
 
 Run `node examples/boolean-boundaries/verify-local.cjs` from this repository.
 The verifier uses the local runtime, the existing evaluated scalar fixture and
