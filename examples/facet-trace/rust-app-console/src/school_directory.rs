@@ -1,7 +1,7 @@
 //! Application-owned school browsing through the current model-aware Q/Create APIs.
-use school_management_service_core::{service_runtime, School, ServiceRuntimeConfig, Q};
+use school_management_service_core::{service_runtime, AuditedSave, School, ServiceRuntimeConfig, Q};
 use std::{collections::BTreeMap, error::Error, path::PathBuf};
-use teaql_core::{SmartList, Value};
+use teaql_core::{Entity as _, SmartList, Value};
 
 const PREFIX: &str = "Facet Showcase ";
 
