@@ -32,9 +32,17 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/school-generation/receipt.json",
     "receiptSHA256": "86cdc634a758fdf746de3323e8cd5c4fd32a050e50c0b7b04c5e64b397a1165f"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-school-scopes/runtime/grouped-mapping/receipt.json",
+    "businessReceiptSHA256": "f1adde9e8480ace23a6c3b70e78c29b4d51e25d23f969842f9dfe85ed4ba059e",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-school-scopes/receipt.json",
+    "nativeReceiptSHA256": "1e07eb0b017c1c894e262d11bc76dad2ac6dbf1127c08f67b932b085510c2931",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "5aa2785d64d50aaf147bd025f19666a90401a59d"
+  },
   "scene": "School startup, constant reconciliation and School query/statistics lifecycle",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "node",
     "verify-grouped-mapping.cjs",
