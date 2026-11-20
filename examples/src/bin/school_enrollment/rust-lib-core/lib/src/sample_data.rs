@@ -242,7 +242,7 @@ where
                 } else {
                     // Optional relation was missing in reference pool
                 }
-                entity.update_name(format!("{} {}", "string(1", i + 1));
+                entity.update_name(format!("{} {}", "string()", i + 1));
 
 
 
@@ -297,7 +297,7 @@ where
                 } else {
                     // Optional relation was missing in reference pool
                 }
-                entity.update_name(format!("{} {}", "string(1", i + 1));
+                entity.update_name(format!("{} {}", "string()", i + 1));
 
 
 

@@ -2,13 +2,13 @@
   "generatedDomainLibraryHandEdited": false,
   "goalId": "rust:examples/src/bin/school_example.rs",
   "library": {
-    "generatedFilesManifestSHA256": "3b4351950b42c688f6c698b40a20a2544fe13e9b4b68374797f7634c460acf24",
+    "generatedFilesManifestSHA256": "559ccf3c1ffaa88dc7da9e6c1677a948a872a708ccdf861d76a5885e9ebccf21",
     "root": "rust-lib-core",
     "scope": "rust-lib-core"
   },
   "model": {
     "path": "model.xml",
-    "sha256": "5f7850526e509a41a1956a2e5fe9b44f90e549fcd3dc870c60f0b3a440b12388"
+    "sha256": "127f9ac08dadd7b0ffac299547b6a41cb587bca19de06af889163faad9ac71d6"
   },
   "producer": {
     "generator": {
@@ -18,8 +18,8 @@
       "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
       "tag": "unreleased-source-99d6bde2"
     },
-    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-school-enrollment-generation/receipt.json",
-    "receiptSHA256": "41a99c0ab0ef624c4fab1f1400efc441e928cb33b0ae1d0f7c0ee6bbff16a928"
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-school-enrollment-required-name-generation/receipt.json",
+    "receiptSHA256": "7b47ec6836de666a833a27cc1e4985873452bd530c147aa99971d06703f37b30"
   },
   "scene": "Audited district school enrollment and startup",
   "schema": "teaql.model-workspace-showcase/v1",
@@ -34,7 +34,7 @@
       "src/main.rs",
       "calibration/school_example.rs"
     ],
-    "generatedFilesManifestSHA256": "7bbb8caa07744c9749f0a34c80e40a0153401a686bc04174be3c165e96a677d7",
+    "generatedFilesManifestSHA256": "f676373343e62f4013ac5f24e6efb8a79b4ba61fa31ffd4dd26f0a9235ace90f",
     "root": "rust-app-console",
     "scope": "rust-app-console"
   }

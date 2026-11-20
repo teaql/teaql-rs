@@ -151,14 +151,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .purpose("Prevent invalid enrollments")
             .new_entity(&context)?;
         pupil.update_school_id(school.id());
-        pupil.update_name("x".repeat(81));
         let rejected = pupil
-            .audit_as("Reject a name beyond the roster limit")
+            .audit_as("Reject an enrollment without the required pupil name")
             .save(&context)
             .await
-            .expect_err("oversize pupil name");
+            .expect_err("missing pupil name");
+        let diagnosis = rejected.to_string().to_lowercase();
         assert!(
-            rejected.to_string().to_lowercase().contains("name"),
+            diagnosis.contains("required") && diagnosis.contains("name"),
             "{rejected}"
         );
         assert!(
