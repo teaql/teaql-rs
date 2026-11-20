@@ -31,12 +31,20 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/order-generation/receipt.json",
     "receiptSHA256": "5041246b7c9f452219d943efa393ea380ce7f7e172da739a945bb49da2ba5db2"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-order-trusted-customer/runtime/order-management/business-receipt.json",
+    "businessReceiptSHA256": "5c16bb7047f77a39922630dc35315f7add2100f31b2b88b50f7f45bc3ce52292",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-order-trusted-customer/receipt.json",
+    "nativeReceiptSHA256": "40b78da4d2d867bd4e7d041c2c4cb52035e745d96f7cd2fdf19f16a7274de496",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "663521c6548026970e90aa8bfbf77ba941cfb793"
+  },
   "scene": "Audited order terminal workflow, reusable search and graph-save governance",
   "schema": "teaql.model-workspace-showcase/v1",
   "sourceCorrections": [
     "Scope document business-number lookup by trusted Customer identity"
   ],
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "bash",
     "verify.sh"
