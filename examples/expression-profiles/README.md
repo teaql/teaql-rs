@@ -1,4 +1,16 @@
-# Generated E diagnostics under model JSON naming profiles
+# Dispatch order field names
+
+Save a dispatch order, then read its loading instruction through the distribution
+center’s generated Q and E APIs. The three model profiles preserve the same
+business data across a restart. They choose the external field spellings and
+the exact preload diagnostic for an omitted reverse list.
+
+`model.xml` owns the camelCase variant. The snake_case and PascalCase variants
+own separate models and native generated workspaces under `profiles/`.
+Run `bash examples/expression-profiles/verify-dispatch.sh` to exercise all three
+variants and the original expression diagnostics.
+
+## Original expression diagnostics
 
 Run from the runtime repository with the local Rust toolchain and Node:
 

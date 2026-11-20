@@ -1,0 +1,44 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/expression-profiles",
+  "library": {
+    "generatedFilesManifestSHA256": "70c8f33585b0caa92131ac59055dafde1a3e888430e2dbbc385e8f4816a9b986",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "80efe091edc3c7e43fa0b654cc1fecf65fda6664434b3a3ee8d8676027e70ede"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/dispatch-document-profiles-generation/receipt.json",
+    "receiptSHA256": "11b1084da4040d1a68378b9ee879d98dd18d61b7eace2700c2e3dc207276c1b3"
+  },
+  "relatedShowcases": [
+    "profiles/snake_case/showcase.json",
+    "profiles/PascalCase/showcase.json"
+  ],
+  "scene": "Read a dispatch order in camelCase",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "bash",
+    "examples/expression-profiles/verify-dispatch.sh"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "src/main.rs",
+      "Cargo.toml"
+    ],
+    "generatedFilesManifestSHA256": "1c2cdb7eba35036dd29a508a0b23d3c2b95bbf028635b304dd746005c21d0dc6",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}

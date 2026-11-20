@@ -25,8 +25,7 @@ TEAQL_REQUEST_ADMISSION_EVIDENCE_DIR="${verification_dir%/runtime}/request-admis
 TEAQL_PURCHASE_APPROVAL_EVIDENCE_DIR="${verification_dir%/runtime}/purchase-approval" \
   bash examples/boolean-boundaries/verify-approval.sh
 # Isolated non-Git copies must name their hash-bound Git origin explicitly.
-TEAQL_GENERATED_E_PROFILE_EVIDENCE_DIR="${verification_dir%/runtime}/expression-profiles" \
-  node examples/expression-profiles/verify-local.cjs
+TEAQL_DISPATCH_PROFILE_EVIDENCE_DIR="${verification_dir%/runtime}/expression-profiles" bash "examples/expression-profiles/verify-dispatch.sh"
 node examples/tests/loaded-revert/verify-local.cjs
 node examples/tests/loaded-revert/verify-views.cjs
 bash examples/http-resilience/verify.sh
