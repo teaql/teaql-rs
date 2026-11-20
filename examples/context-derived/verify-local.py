@@ -4,7 +4,7 @@ Build outputs are disposable; reports and the twice-used SQLite DB are retained.
 This is a source qualification gate, not a published-package acceptance test.
 """
 import argparse
-from current_library import current_library_inputs
+import importlib.util
 import hashlib
 import json
 import os
@@ -17,6 +17,10 @@ import subprocess
 import tempfile
 
 EXAMPLE = Path(__file__).resolve().parent
+_current_guard_spec = importlib.util.spec_from_file_location("context_field_current_library", EXAMPLE / "current_library.py")
+_current_guard_module = importlib.util.module_from_spec(_current_guard_spec)
+_current_guard_spec.loader.exec_module(_current_guard_module)
+current_library_inputs = _current_guard_module.current_library_inputs
 REPO = EXAMPLE.parents[1]
 CRATES = ("teaql-core", "teaql-runtime", "teaql-macros", "teaql-data-service", "teaql-sql", "teaql-provider-sqlite")
 
