@@ -33,9 +33,17 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/school-inheritance-and-partial-views-generation/receipt.json",
     "receiptSHA256": "7c8fb5f6c6619d7165638972cdbbe267d68e50cadf33d70065b45a52c68cf84f"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-inheritance-relocated-native/runtime/inheritance-save/receipt.json",
+    "businessReceiptSHA256": "d45bc12b315aa2be8e5fe29771b3fc9e22f9d0e751a4608d3a37eca688f08fe9",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-inheritance-relocated-native/receipt.json",
+    "nativeReceiptSHA256": "eed8ec9c906f0283b3b29cccc4c6775bb570f0721d40aa63e538733ee2660ebf",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "674139f8e368be3b8501c03895e08ee559541e58"
+  },
   "scene": "Edit inherited school and academy fields through the same identity",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "node",
     "examples/inheritance-save/verify.cjs"
