@@ -1,0 +1,40 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/business-id-runtime",
+  "library": {
+    "generatedFilesManifestSHA256": "e1d1dbb5dc9874d43863fd731284a9f6c24e034ca6740a0ca45b81c7c9c68ada",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "04eb9dcc3062ceae19a3de676d89d9ad8647fb0d691f3ad653b6ba4462904c71"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build; not a public release",
+      "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+      "qualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
+      "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+      "tag": "unreleased-source-021b1ed8"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/purchase-order-numbering-generation/receipt.json",
+    "receiptSHA256": "e65136b27d5640fa4cdd62b13413148a267ea25ae0c7947adbea2ad9121c84b4"
+  },
+  "scene": "Number and re-read two purchase orders with a trusted business date",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "rust-app-console/src/main.rs"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "src/main.rs",
+      "Cargo.toml",
+      "calibration/business_id_runtime.rs"
+    ],
+    "generatedFilesManifestSHA256": "3963235ebd283e0fe8aca336132b056291d46e57b7a9b0848006ad0e6107fed0",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}

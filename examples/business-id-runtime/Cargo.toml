@@ -1,0 +1,12 @@
+[workspace]
+members=["rust-lib-core/lib","rust-app-console"]
+default-members=["rust-app-console"]
+resolver="2"
+
+[patch.crates-io]
+teaql-core = { path = "../../teaql-core" }
+teaql-runtime = { path = "../../teaql-runtime" }
+teaql-macros = { path = "../../teaql-macros" }
+teaql-data-service = { path = "../../teaql-data-service" }
+teaql-sql = { path = "../../teaql-sql" }
+teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }

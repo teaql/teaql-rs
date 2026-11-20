@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="purchase-order-numbering" org="teaql" data_service="sqlite">
+  <platform name="Procurement"/>
+  <purchase_order platform="platform()" supplier="Supplier|[1,80]"
+                  order_number="businessId(prefix=ORD namespace=order_number)"/>
+</root>

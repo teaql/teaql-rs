@@ -34,6 +34,10 @@ bash examples/object-storage/verify.sh
 bash examples/trace-chain/verify-standard-telemetry.sh
 cargo test -p teaql-provider-sqlite --test relation_membership -- --nocapture
 cargo test -p teaql-examples --all-targets
+TEAQL_BUSINESS_ID_KEY_V1_HEX=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
+TEAQL_PURCHASE_NUMBERING_ROUND=inventory \
+PURCHASE_ORDER_NUMBERING_CORE_DATABASE_URL="sqlite:file:$verification_dir/business-id.sqlite" \
+cargo run --locked --manifest-path examples/business-id-runtime/Cargo.toml
 TEAQL_CONFORMANCE_EVIDENCE_DIR="$verification_dir/conformance" bash examples/conformance/verify.sh
 cargo run --quiet --manifest-path examples/school-management/Cargo.toml
 bash scripts/verify-school-bootstrap-example.sh

@@ -1,17 +1,12 @@
-# Business ID focused runtime example
+# Number two procurement orders
 
-The executable test at `../tests/business_id_runtime.rs` verifies the default
-six-character volume-obscuring Base36 profile, a Context-controlled business
-date, Domain Root scoping, the byte-identical Java/Rust golden-vector
-algorithm, strong `OrderNumber` assignment through a Mutation Ledger adapter,
-retry reuse,
-explicit SQLite schema setup, concurrent allocation, and restart continuity.
+`model.xml` defines the purchase order and its `ORD` Business ID.
+`rust-lib-core/` contains the generated domain library. The console at
+`rust-app-console/src/main.rs` installs the trusted business clock and SQLite allocator,
+records two orders, retries the first, and reads both back by number.
+It rejects a blank audit reason and verifies the denied order is absent.
 
-The example installs a deterministic static 32-byte test key. Production
-applications provide a versioned `BusinessIdKeyProvider` through the Context;
-the key never belongs in generated code or model metadata. Business IDs remain
-ordinary identifiers and still require authorization and anti-enumeration.
-
-```bash
-cargo test -p teaql-examples --test business_id_runtime
-```
+The original four allocator, Root, and Ledger calibration tests live under
+`rust-app-console/calibration/`. Their `teaql-examples` test target is retained.
+The focused gate runs both the calibration and two workspace processes on one
+SQLite file.
