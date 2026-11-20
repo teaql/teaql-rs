@@ -31,9 +31,17 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/order-generation/receipt.json",
     "receiptSHA256": "5041246b7c9f452219d943efa393ea380ce7f7e172da739a945bb49da2ba5db2"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-context-document-original-protocol/business-receipt.json",
+    "businessReceiptSHA256": "b003e2675d2cad19b0bdfcd8a8807a86a93250122834ab483e7a071193bb5333",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-context-document-original-protocol/receipt.json",
+    "nativeReceiptSHA256": "f2ba9f6c67402faea84fa670a5ac8c1ad6417ca3d6ad052e69949c12ed5b5ee6",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "2f9b3d48b8555cbf797cf27295cf64f448d53694"
+  },
   "scene": "Edit visible order lines in a trusted customer document and verify the committed aggregate",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "bash",
     "examples/order-management/verify.sh"
