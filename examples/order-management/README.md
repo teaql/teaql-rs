@@ -1,5 +1,14 @@
 # Order Management — Rust + SQLite
 
+The retained model owns the exact `rust-lib-core` and `rust-app-console` scopes.
+All original business sources, dependency declarations and the lock remain
+byte-identical. Current generated workspace scaffolding and immutable embedded
+domain files are installed alongside the original application. `showcase.json`
+records their model and producer identity. Run `bash verify.sh` from this scene
+for the focused terminal/graph/policy gate. It retains compact evidence and
+removes its owned compilation scratch. The historical `published-replay`
+consumer remains unchanged; this gate makes no new published-artifact claim.
+
 Run without a database server, fixture DB, model input, or generator installation:
 
 ```bash

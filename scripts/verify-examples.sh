@@ -88,16 +88,7 @@ done
 test ! -s "$verification_dir/privacy-debug.log"
 test ! -s "$verification_dir/privacy-audit.log"
 echo 'PASS: default SQL preserves ordinary fields; sensitive names, rejected payloads and unapproved debug sinks stay private'
-TEAQL_EXAMPLE_DATABASE="$verification_dir/order.db" \
-  cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml
-for graph_pass in 1 2; do
-  TEAQL_NESTED_PROBE_DATABASE="sqlite:file:$verification_dir/graph.db" \
-    cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml --bin nested_graph_probe
-done
-TEAQL_SAVE_LOAD_STATE_DATABASE="sqlite:file:$verification_dir/graph.db" \
-  cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml --bin save_loaded_relation_probe
-TEAQL_SAVE_LOAD_STATE_DATABASE="sqlite:file:$verification_dir/graph.db" \
-  cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml --bin save_forward_fk_probe
+TEAQL_ORDER_EVIDENCE_DIR="${verification_dir%/runtime}/order-management" bash examples/order-management/verify.sh
 cargo test -p teaql-tfp-endpoint --examples
 bash examples/trace-chain/verify.sh
 bash examples/facet-trace/verify.sh
