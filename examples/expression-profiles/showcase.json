@@ -21,13 +21,21 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/dispatch-document-profiles-generation/receipt.json",
     "receiptSHA256": "11b1084da4040d1a68378b9ee879d98dd18d61b7eace2700c2e3dc207276c1b3"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-dispatch-profiles-native/runtime/expression-profiles/receipt.json",
+    "businessReceiptSHA256": "715e7e2e601b24cde9331bea062962c02fbc541aafbd5add5fd869a371bab4fc",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-dispatch-profiles-native/receipt.json",
+    "nativeReceiptSHA256": "4bfdf36e0c7643c72014d12a80638257594033625a54d41555894f8713ff17d0",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "5c8bb97bd6c1024a1673c62e1ee7e23573b42f17"
+  },
   "relatedShowcases": [
     "profiles/snake_case/showcase.json",
     "profiles/PascalCase/showcase.json"
   ],
   "scene": "Read a dispatch order in camelCase",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "bash",
     "examples/expression-profiles/verify-dispatch.sh"
