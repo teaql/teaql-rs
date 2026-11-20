@@ -103,7 +103,7 @@ TEAQL_ORDER_EVIDENCE_DIR="${verification_dir%/runtime}/order-management" bash ex
 cargo test -p teaql-tfp-endpoint --examples
 bash examples/trace-chain/verify.sh
 bash examples/facet-trace/verify.sh
-bash examples/shared-load-state/verify.sh
+TEAQL_LOAD_STATE_EVIDENCE_DIR="${verification_dir%/runtime}/shared-load-state" bash examples/shared-load-state/verify.sh --workspace
 TEAQL_MAINSTREAM_EVIDENCE_DIR="${verification_dir%/runtime}/mainstream-reference" \
-  node examples/shared-load-state/verify-mainstream-reference.cjs
+  node examples/shared-load-state/verify-mainstream-reference.cjs --workspace
 echo "PASS: all Rust examples"

@@ -44,7 +44,9 @@ async function main() {
       }
     }
     for (const file of ['rust-app-console/Cargo.toml','rust-app-console/Cargo.lock','model.xml','generated-files.json','generation-origin.json','verify.cjs']) sourceNames.push('examples/inheritance-save/'+file);
-    for (const area of ['src','tests','assist']) for(const file of Object.keys(inventory(path.join(__dirname,area)))) sourceNames.push('examples/inheritance-save/'+area+'/'+file);
+    for (const area of ['rust-app-console/src','rust-app-console/tests','assist']) {
+      for (const file of Object.keys(inventory(path.join(__dirname,area)))) sourceNames.push('examples/inheritance-save/'+area+'/'+file);
+    }
     const sources = () => Object.fromEntries(sourceNames.map(name=>[name,sha(fs.readFileSync(path.join(repo,name)))]));
     receipt.sourceHashes = sources();
     const expected = JSON.parse(fs.readFileSync(path.join(__dirname,'generated-files.json')));
