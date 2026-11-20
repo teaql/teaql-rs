@@ -30,6 +30,7 @@ node examples/tests/loaded-revert/verify-local.cjs
 node examples/tests/loaded-revert/verify-views.cjs
 TEAQL_ORDER_EDIT_EVIDENCE_DIR="${verification_dir%/runtime}/order-line-edit" bash examples/tests/loaded-revert/verify-order-edit.sh
 bash examples/http-resilience/verify.sh
+TEAQL_SUPPLIER_SYNC_EVIDENCE_DIR="${verification_dir%/runtime}/supplier-order-sync" bash examples/http-resilience/verify-sync.sh
 bash examples/object-storage/verify.sh
 bash examples/trace-chain/verify-standard-telemetry.sh
 TEAQL_SQLITE_EXAMPLE_EVIDENCE_DIR="$verification_dir/equipment-purchase-graph" \
