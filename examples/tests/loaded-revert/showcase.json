@@ -21,9 +21,17 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/order-reference-and-line-restoration-evaluated-generation/receipt.json",
     "receiptSHA256": "21eae4c57d59881287106fe7871d0958e6596ab455f9e7e095580b0b03a05dc8"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-dispatch-line-restoration-tokio-native/business-receipt.json",
+    "businessReceiptSHA256": "4e267b8fdc77edfdb8c23596d44b43d73cbc34bd87b0e0ed5586c6e9b4ed3fa3",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-dispatch-line-restoration-tokio-native/receipt.json",
+    "nativeReceiptSHA256": "2a87ded2fc65657f1f0383b51add870e5b255115236ea28db9da7ab22bd91122",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "e23682a93ad1862879f60005e0ca3ec56413595f"
+  },
   "scene": "Undo a dispatch line edit while preserving unloaded fields",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "bash",
     "examples/tests/loaded-revert/verify-order-edit.sh"
