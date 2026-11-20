@@ -21,9 +21,17 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/purchase-order-fix-generation/receipt.json",
     "receiptSHA256": "920c683d71de38e609d2be2c3d8b7f2fb6c014e3b123edd5c4ea694fc6e91a48"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-purchase-order-native-scopes/runtime/fix-e/receipt.json",
+    "businessReceiptSHA256": "0b89d83f0813ffac5ec90a26691c29d352562d4ab9ef2b23c82ffac38123e4e1",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-purchase-order-native-scopes/receipt.json",
+    "nativeReceiptSHA256": "edab67b0241096d79f7a35147b458a00fc2e5b5ebbd6318f7d6b53f56c217ed2",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "d8e762e9e327dab7b2fb4070193047ba7b235eb2"
+  },
   "scene": "Purchase-order partial graph edits, root/clock Fix and precise loaded-state boundaries",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "node",
     "verify-local.cjs"
