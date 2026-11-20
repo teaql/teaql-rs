@@ -1,5 +1,8 @@
 # Generated Fix/E and graph-mutation example
 
+`model.xml` owns `rust-lib-core` and `rust-app-console`. The twenty original application files now live in the native workspace source folder with unchanged bytes. Its manifest declares the original test and expression targets, consumes the sibling generated domain and uses this SDK source. The verifier copies those exact scopes into owned scratch and rebases only SDK paths for that disposable location; generated domain manifests and implementations remain unchanged. `showcase.json` records current qualification.
+
+
 ```sh
 node examples/fix-e-alignment/verify-local.cjs
 ```

@@ -1,0 +1,32 @@
+[package]
+name = "teaql-fix-e-example"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[[test]]
+name = "creation_identity"
+path = "src/creation_identity.rs"
+[[bin]]
+name = "teaql-expression-boundaries"
+path = "src/expression_boundary_probe.rs"
+
+[dependencies]
+checker-fix-advanced-core = { path = "../rust-lib-core/lib" }
+teaql-core = { path = "../../../teaql-core" }
+teaql-runtime = { path = "../../../teaql-runtime" }
+teaql-tfp-endpoint = { path = "../../../teaql-tfp-endpoint" }
+chrono = "0.4"
+serde_json = "1"
+futures-util = "0.3"
+rusqlite = { version = "0.41.1", features = ["bundled", "trace", "hooks"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[workspace]
+[patch.crates-io]
+teaql-core = { path = "../../../teaql-core" }
+teaql-macros = { path = "../../../teaql-macros" }
+teaql-runtime = { path = "../../../teaql-runtime" }
+teaql-sql = { path = "../../../teaql-sql" }
+teaql-data-service = { path = "../../../teaql-data-service" }
+teaql-provider-sqlite = { path = "../../../teaql-provider-sqlite" }

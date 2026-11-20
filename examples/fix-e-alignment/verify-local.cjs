@@ -3,6 +3,7 @@
 // Offline source gate. All compiler output lives in one owned scratch tree.
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), cp = require("node:child_process"), crypto = require("node:crypto"), assert = require("node:assert/strict");
 const example = __dirname, repo = path.resolve(example, "../.."), sha = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
+const workspace=path.join(example,'rust-app-console'),application=path.join(workspace,'src');
 function fingerprint() {
   const m = JSON.parse(fs.readFileSync(path.join(example, "fixture-manifest.json")));
   assert.equal(m.language, "rust"); assert.equal(m.evaluationErrors, 0);
@@ -12,9 +13,9 @@ function fingerprint() {
     const name = path.join(prefix, e.name), file = path.join(dir, e.name);
     assert(!e.isSymbolicLink()); if (e.isDirectory()) visit(file, name); else { assert(e.isFile()); files.push(name); }
   } }
-  visit(path.join(example, "generated"));
+  visit(path.join(example, "rust-lib-core"));
   assert.deepEqual(files.sort(), Object.keys(m.files).sort());
-  for (const [name, expected] of Object.entries(m.files)) assert.equal(sha(fs.readFileSync(path.join(example, "generated", name))), expected, name);
+  for (const [name, expected] of Object.entries(m.files)) assert.equal(sha(fs.readFileSync(path.join(example, "rust-lib-core", name))), expected, name);
   return m;
 }
 const requested = process.env.TEAQL_FIX_E_EVIDENCE_DIR;
@@ -29,28 +30,20 @@ async function main() {
 try {
   assert(fs.statfsSync(scratch).bavail * fs.statfsSync(scratch).bsize > 8 * 1024 ** 3, "8 GiB free build space required");
   const m = fingerprint(); report.modelSha256 = m.modelSha256;
-  fs.cpSync(path.join(example, 'generated/lib'), path.join(scratch, 'lib'), {recursive: true});
-  report.libraryMetadata = require('../../scripts/pin-local-example-library.cjs').pin(path.join(scratch, 'lib'), repo, scratch);
-  fs.mkdirSync(path.join(scratch, "src"));
-  for (const file of fs.readdirSync(example).filter(file => file.endsWith(".rs"))) fs.copyFileSync(path.join(example, file), path.join(scratch, "src", file));
-  const local = name => quote(path.join(repo, name));
-  const manifest = ['[package]', 'name = "teaql-fix-e-example"', 'version = "0.0.0"', 'edition = "2024"', 'publish = false',
-    '[[test]]', 'name = "creation_identity"', 'path = "src/creation_identity.rs"',
-    '[[bin]]', 'name = "teaql-expression-boundaries"', 'path = "src/expression_boundary_probe.rs"',
-    '[dependencies]', 'checker-fix-advanced-core = { path = ' + quote(path.join(scratch, 'lib')) + ' }',
-    'teaql-core = { path = ' + local('teaql-core') + ' }', 'teaql-runtime = { path = ' + local('teaql-runtime') + ' }',
-    'teaql-tfp-endpoint = { path = ' + local('teaql-tfp-endpoint') + ' }',
-    'chrono = "0.4"', 'serde_json = "1"', 'futures-util = "0.3"', 'rusqlite = { version = "0.41.1", features = ["bundled", "trace", "hooks"] }',
-    'tokio = { version = "1", features = ["macros", "rt-multi-thread"] }', '[patch.crates-io]',
-    ...['teaql-core', 'teaql-macros', 'teaql-runtime', 'teaql-sql', 'teaql-data-service', 'teaql-provider-sqlite'].map(name => name + ' = { path = ' + local(name) + ' }'), ''].join('\n');
-  fs.writeFileSync(path.join(scratch, "Cargo.toml"), manifest);
-  fs.writeFileSync(path.join(evidence, "consumer-manifest.toml"), manifest);
+  const consumer=path.join(scratch,'rust-app-console'),generated=path.join(scratch,'rust-lib-core');
+  fs.cpSync(workspace,consumer,{recursive:true});
+  fs.cpSync(path.join(example,'rust-lib-core'),generated,{recursive:true});
+  const manifest=fs.readFileSync(path.join(consumer,'Cargo.toml'),'utf8')
+    .replaceAll(/"\.\.\/\.\.\/\.\.\/(teaql-[^"]+)"/g,(_,name)=>quote(path.join(repo,name)));
+  fs.writeFileSync(path.join(consumer,'Cargo.toml'),manifest);
+  fs.writeFileSync(path.join(evidence,'consumer-manifest.toml'),manifest);
+  report.libraryMetadata={sourceOnly:true,generatedManifestUnchanged:true};
   const env = {...process.env, CARGO_TARGET_DIR: path.join(scratch, "target"), CARGO_INCREMENTAL: "0",
     CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0", CARGO_BUILD_JOBS: "2",
     TEAQL_FIX_E_DB: path.join(evidence, "fixture.sqlite")};
   async function run(command, log, timeout) {
     const fd = fs.openSync(path.join(evidence, log), "w"); let result;
-    try { result = await runner.run(command, {cwd: scratch, env, timeout, stdio: ["ignore", fd, fd]}); }
+    try { result = await runner.run(command, {cwd: consumer, env, timeout, stdio: ["ignore", fd, fd]}); }
     finally { fs.closeSync(fd); }
     const bytes = fs.readFileSync(path.join(evidence, log));
     report.rounds.push({command, exitCode: result.status, signal: result.signal, log, logSha256: sha(bytes)});
@@ -58,16 +51,16 @@ try {
     assert.equal(result.status, 0, bytes.toString().slice(-12000));
     return bytes.toString();
   }
-  await run(['cargo', 'build', '--offline', '--manifest-path', path.join(scratch, 'Cargo.toml')], 'build.log', 540000);
+  await run(['cargo', 'build', '--offline', '--manifest-path', path.join(consumer, 'Cargo.toml')], 'build.log', 540000);
   report.creationIdentityRounds = [];
-  report.creationIdentityApplicationSha256 = sha(fs.readFileSync(path.join(example, 'creation_identity.rs')));
+  report.creationIdentityApplicationSha256 = sha(fs.readFileSync(path.join(application, 'creation_identity.rs')));
   for (const round of [1, 2]) {
     const log = await run(['cargo', 'test', '--offline', '--test', 'creation_identity', '--', '--test-threads=1', '--nocapture'],
       'creation-identity-round-' + round + '.log', 540000);
     assert.match(log, /test result: ok\. 5 passed; 0 failed; 0 ignored/);
     report.creationIdentityRounds.push({round, passed: 5});
   }
-  fs.copyFileSync(path.join(scratch, 'Cargo.lock'), path.join(evidence, 'consumer-Cargo.lock'));
+  fs.copyFileSync(path.join(consumer, 'Cargo.lock'), path.join(evidence, 'consumer-Cargo.lock'));
   const binary = path.join(scratch, 'target/debug/teaql-fix-e-example');
   report.binarySha256 = sha(fs.readFileSync(binary));
   for (const round of [1, 2]) {
@@ -100,36 +93,36 @@ try {
   report.databaseSha256 = sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite')));
   report.mixedGraphDatabase = {file: 'fixture.sqlite.mixed-graph.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.mixed-graph.sqlite')))};
-  report.mixedGraphApplicationSha256 = sha(fs.readFileSync(path.join(example, 'mixed_graph_probe.rs')));
-  report.concurrentQueryApplicationSha256 = sha(fs.readFileSync(path.join(example, 'concurrent_query_probe.rs')));
+  report.mixedGraphApplicationSha256 = sha(fs.readFileSync(path.join(application, 'mixed_graph_probe.rs')));
+  report.concurrentQueryApplicationSha256 = sha(fs.readFileSync(path.join(application, 'concurrent_query_probe.rs')));
   report.concurrentQueryDatabase = {file: 'fixture.sqlite.concurrent-query.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.concurrent-query.sqlite')))};
   report.checkerTypeDatabase = {file: 'fixture.sqlite.checker-types.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.checker-types.sqlite')))};
   report.checkerRangeDatabase = {file: 'fixture.sqlite.checker-ranges.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.checker-ranges.sqlite')))};
-  report.rangeApplicationSha256 = sha(fs.readFileSync(path.join(example, 'checker_range_probe.rs')));
+  report.rangeApplicationSha256 = sha(fs.readFileSync(path.join(application, 'checker_range_probe.rs')));
   report.clockUpdateDatabase = {file: 'fixture.sqlite.clock-updates.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.clock-updates.sqlite')))};
-  report.clockUpdateApplicationSha256 = sha(fs.readFileSync(path.join(example, 'clock_update_probe.rs')));
+  report.clockUpdateApplicationSha256 = sha(fs.readFileSync(path.join(application, 'clock_update_probe.rs')));
   report.contextRootDatabase = {file: 'fixture.sqlite.context-root.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.context-root.sqlite')))};
-  report.contextRootApplicationSha256 = sha(fs.readFileSync(path.join(example, 'context_root_probe.rs')));
+  report.contextRootApplicationSha256 = sha(fs.readFileSync(path.join(application, 'context_root_probe.rs')));
   report.cancelledRootDatabase = {file: 'fixture.sqlite.cancelled-root.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.cancelled-root.sqlite')))};
-  report.cancelledRootApplicationSha256 = sha(fs.readFileSync(path.join(example, 'cancelled_root_probe.rs')));
+  report.cancelledRootApplicationSha256 = sha(fs.readFileSync(path.join(application, 'cancelled_root_probe.rs')));
   report.partialAncestorDatabase = {file: 'fixture.sqlite.partial-ancestors.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.partial-ancestors.sqlite')))};
-  report.partialAncestorApplicationSha256 = sha(fs.readFileSync(path.join(example, 'partial_ancestor_probe.rs')));
+  report.partialAncestorApplicationSha256 = sha(fs.readFileSync(path.join(application, 'partial_ancestor_probe.rs')));
   report.partialAncestorRootDatabase = {file: 'fixture.sqlite.partial-ancestor-root.sqlite',
     sha256: sha(fs.readFileSync(path.join(evidence, 'fixture.sqlite.partial-ancestor-root.sqlite')))};
   report.checkerBoundaryApplications = Object.fromEntries(['checker_pipeline_probe.rs', 'nonroot_completeness_probe.rs', 'checker_wire_probe.rs']
-    .map(file => [file, sha(fs.readFileSync(path.join(example, file)))]));
+    .map(file => [file, sha(fs.readFileSync(path.join(application, file)))]));
   report.checkerBoundaryDatabases = ['fixture.sqlite.checker-pipeline.sqlite', 'fixture.sqlite.checker-pipeline.sqlite.no-schema.sqlite',
     'fixture.sqlite.nonroot-completeness.sqlite', 'fixture.sqlite.checker-wire.sqlite'].map(file => ({file, sha256: sha(fs.readFileSync(path.join(evidence, file)))}));
   const expressionBinary = path.join(scratch, 'target/debug/teaql-expression-boundaries');
   report.expressionBoundaryBinarySha256 = sha(fs.readFileSync(expressionBinary));
-  report.expressionBoundaryApplicationSha256 = sha(fs.readFileSync(path.join(example, 'expression_boundary_probe.rs')));
+  report.expressionBoundaryApplicationSha256 = sha(fs.readFileSync(path.join(application, 'expression_boundary_probe.rs')));
   env.TEAQL_EXPRESSION_DB = path.join(evidence, 'fixture.sqlite.expression-boundaries.sqlite');
   report.expressionBoundaryRounds = [];
   for (const round of [1, 2]) {
