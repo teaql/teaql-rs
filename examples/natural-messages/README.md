@@ -18,7 +18,7 @@ database without cleanup between rounds. It retains source and fixture hashes,
 commands, raw logs, structured responses and the database, and removes its own
 temporary executable/build output on success or failure.
 
-`automatic-fixture/` contains the validated two-entity model, 21 generated files,
+`rust-lib-core/` contains the validated two-entity model, 21 generated files,
 passive presentation metadata, source provenance and five retained object/field
 Assist responses. The generated factory installs its original Checker and model
 descriptors; application code supplies neither replacements nor hand-built
@@ -55,3 +55,23 @@ other runtimes and published artifacts remain separate acceptance gates.
 
 Tracking: [teaql-rs #324](https://github.com/teaql/teaql-rs/issues/324),
 [conformance #244](https://github.com/teaql/teaql-conformance/issues/244).
+
+## Current model and workspace
+
+`model.xml` defines the Catalog and Entry business graph. The exact generated
+domain library is read-only in `rust-lib-core/`; its current provenance points to
+the qualified generator source build, with the prior generation identity retained
+separately in its metadata. The application lives in `rust-app-console/src/main.rs`.
+
+Run this focused business entry from the SDK repository root:
+
+```bash
+python3 scripts/verify-natural-messages.py --example-only --output /new/absolute/evidence
+```
+
+The same graph is rejected before writes for an invalid second Entry, then
+corrected and saved through generated Q/E and audited Save. Two runs check
+actual stored values, precise machine locations, English/Chinese messages and
+private-value redaction. Language-specific native length rules remain intact.
+The verifier preserves result stores and compact receipts and removes owned
+build outputs. Full runtime example qualification remains a separate gate.
