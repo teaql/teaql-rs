@@ -26,41 +26,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .save(&context)
     .await?;
 
-    Order {
-        root: Default::default(),
-        id: 1,
-        version: 1,
-        name: "submitted".to_owned(),
-        lines: SmartList::default(),
-    }
-    .audit_as("Submit the example order")
-    .save(&context)
-    .await?;
-
-    let deleted = Order {
-        root: Default::default(),
-        id: 1,
-        version: 2,
-        name: "submitted".to_owned(),
-        lines: SmartList::default(),
-    };
-    deleted.root.mark_as_delete(EntityKey::new("Order", 1_u64));
-    deleted
-        .audit_as("Delete the example order")
-        .save(&context)
-        .await?;
-
     let query = PurposedSelectQuery::new(
         data_service
             .select()
             .project("id")
             .project("version")
             .project("name")
-            .filter(Expr::eq("id", 1_u64)),
-        "Inspect the soft-deleted example order",
+            .filter(Expr::eq("id", 1_u64))
+            .comment("Read the order from the SQLite CRUD calibration"),
+        "Check persisted business state at each CRUD boundary",
     );
-    let orders = data_service.fetch_entities::<Order>(&query).await?;
+    let draft = data_service
+        .fetch_entities::<Order>(&query)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("The draft order was not created")?;
+    assert_eq!((draft.name.as_str(), draft.version), ("draft", 1));
+    let key = EntityKey::new("Order", draft.id);
+    draft.root.set(key.clone(), "name", "submitted");
+    draft
+        .audit_as("Submit the example order")
+        .save(&context)
+        .await?;
 
+    let submitted = data_service
+        .fetch_entities::<Order>(&query)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("The submitted order could not be reloaded")?;
+    assert_eq!((submitted.name.as_str(), submitted.version), ("submitted", 2));
+    submitted.root.mark_as_delete(key);
+    submitted
+        .audit_as("Delete the example order")
+        .save(&context)
+        .await?;
+
+    let orders = data_service.fetch_entities::<Order>(&query).await?;
+    assert!(orders.is_empty(), "The soft-deleted order is still visible");
+    println!("PASS native schema and CRUD calibration: draft v1, submitted v2, deleted row hidden");
     println!("schema+crud example rows: {orders:?}");
     Ok(())
 }
