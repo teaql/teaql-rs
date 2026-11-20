@@ -64,11 +64,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (&awaiting, "PO-AWAITING", None),
     ] {
         assert_eq!(rows.len(), 1, "{reference} belongs to a single bucket");
+        assert!(rows[0].is_field_loaded("approved"));
         let e = E::purchase_order(&rows[0]);
         assert_eq!(e.get_reference().try_eval()?, Some(reference.to_owned()));
         assert_eq!(
             E::purchase_order(&rows[0]).get_approved().try_eval()?,
-            Some(value)
+            value.map(Some)
         );
     }
     let total = Q::purchase_orders()
