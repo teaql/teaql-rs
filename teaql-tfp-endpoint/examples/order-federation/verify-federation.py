@@ -138,6 +138,7 @@ def run_workspace(runtime, evidence, scratch):
         log = evidence / f'host-{round_no}.log'
         with log.open('xb') as output:
             env = dict(os.environ, TEAQL_FEDERATION_DATABASE=str(db), TEAQL_TELEMETRY_ENABLED='false')
+            env['TEAQL_FEDERATION_FIXTURE_DIAGNOSTIC'] = 'true'
             proc = subprocess.Popen(run, cwd=REPO, stdout=output, stderr=subprocess.STDOUT, env=env)
             try:
                 deadline = time.monotonic() + 30

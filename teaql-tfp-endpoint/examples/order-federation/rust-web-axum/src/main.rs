@@ -149,6 +149,12 @@ async fn mutate(State(state): State<AppState>, Json(payload): Json<JsonValue>) -
 }
 
 fn reply_error(error: TfpEndpointError) -> (StatusCode, Json<JsonValue>) {
+    if std::env::var_os("TEAQL_FEDERATION_FIXTURE_DIAGNOSTIC").is_some() {
+        // This switch is used by the verifier with its own synthetic SQLite database.
+        if let Some(detail) = error.internal_diagnostic() {
+            eprintln!("Order federation fixture provider diagnostic: {detail}");
+        }
+    }
     let status = match error.code() {
         "TFP_FORBIDDEN_ENTITY" | "TFP_FORBIDDEN_FIELD" | "TFP_POLICY_VIOLATION" => {
             StatusCode::FORBIDDEN
