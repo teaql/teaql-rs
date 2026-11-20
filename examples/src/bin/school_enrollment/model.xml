@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="school-enrollment" teaql_rs_version="8.1.0" org="example"
+      data_service="sqlite" _module_key="root">
+  <platform _name="Enrollment Platform" _module="Schools" _module_key="schools"
+            name="District Enrollment"/>
+  <school_type _name="School Type" _module="Schools" _module_key="schools"
+               platform="platform()" id="id()" name="string()" code="string()"
+               _constant="true" _identifier="code">
+    <_value id="1001" name="Primary" code="PRIMARY"/>
+    <_value id="1002" name="Secondary" code="SECONDARY"/>
+  </school_type>
+  <school _name="School" _module="Schools" _module_key="schools"
+          platform="platform()" school_type="school_type()" name="string(1,80)"/>
+  <student _name="Student" _module="Schools" _module_key="schools"
+           school="school()" name="string(1,80)"/>
+</root>

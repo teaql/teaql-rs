@@ -1,0 +1,41 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/src/bin/school_example.rs",
+  "library": {
+    "generatedFilesManifestSHA256": "3b4351950b42c688f6c698b40a20a2544fe13e9b4b68374797f7634c460acf24",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "5f7850526e509a41a1956a2e5fe9b44f90e549fcd3dc870c60f0b3a440b12388"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-school-enrollment-generation/receipt.json",
+    "receiptSHA256": "41a99c0ab0ef624c4fab1f1400efc441e928cb33b0ae1d0f7c0ee6bbff16a928"
+  },
+  "scene": "Audited district school enrollment and startup",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "bash",
+    "examples/src/bin/school_enrollment/verify.sh"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "src/main.rs",
+      "calibration/school_example.rs"
+    ],
+    "generatedFilesManifestSHA256": "7bbb8caa07744c9749f0a34c80e40a0153401a686bc04174be3c165e96a677d7",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}
