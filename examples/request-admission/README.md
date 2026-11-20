@@ -1,8 +1,13 @@
-# Request intent admission
+# Purchase order request intent
 
 This small generated order model verifies that query and mutation intent is
 required independently of SQL logging. It uses local runtime code, generated Q/E
 APIs and real SQLite; it does not install or publish a runtime package.
+
+`model.xml` defines the tenant, purchase order and order item. The verifier
+compiles the original business program and both compile-failure controls
+from `rust-app-console` against the emitted `rust-lib-core` domain library.
+Successful saves persist the revised contact number and approved item names.
 
 ```sh
 node examples/request-admission/verify-local.cjs

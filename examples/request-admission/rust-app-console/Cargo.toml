@@ -1,0 +1,32 @@
+
+# TEAQL WARNING: This project uses TeaQL. TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
+# Do NOT apply traditional ORM logic here. You must strictly follow the generated API.
+[package]
+name = "checker-fix-advanced-core-workspace"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Application workspace for the TeaQL domain crate checker-fix-advanced-core"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+checker_fix_advanced_core = { package = "checker-fix-advanced-core", path = "../rust-lib-core/lib" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+teaql-core = "8.1.0"
+chrono = "0.4"
+teaql-runtime = "8.1.0"
+serde_json = "1"
+futures-util = "0.3"
+rusqlite = { version = "0.41.1", features = ["bundled", "trace"] }
+
+[[bin]]
+name = "request-admission"
+path = "src/main.rs"
+
+[[bin]]
+name = "missing-purpose"
+path = "src/missing_purpose.rs"
+
+[[bin]]
+name = "missing-audit"
+path = "src/missing_audit.rs"

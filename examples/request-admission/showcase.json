@@ -1,0 +1,42 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/request-admission",
+  "library": {
+    "generatedFilesManifestSHA256": "e78debca35b0c99d63bb3ef22df2c48cdf43d31ae2e92607fda96d5a0e333337",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "a2cf4c907cb084cb0946e993eeba586c8c0701a89fdc4a849808aa743be033b7"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-request-admission-native-generation/receipt.json",
+    "receiptSHA256": "6db7846b02d2417672783c5cbc040d57319a1898421e16f272969e6b81520f4f"
+  },
+  "scene": "Purchase order request intent and rejection before provider entry",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "node",
+    "examples/request-admission/verify-local.cjs"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "src/main.rs",
+      "src/missing_audit.rs",
+      "src/missing_purpose.rs"
+    ],
+    "generatedFilesManifestSHA256": "f7d6ccc8d0edfad3bc72d312160430ee96fb1e0bdf7ab9b2d4d71f3ffc39e25f",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}

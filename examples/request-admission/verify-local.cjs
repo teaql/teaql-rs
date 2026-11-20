@@ -5,6 +5,9 @@ const {createOwnedRunner,ownedBytes}=require('./verify/owned-command.cjs');
 const {prepareOwnedSubreaper}=require('./verify/subreaper.cjs');
 const {sourceIdentity}=require('./verify/source-identity.cjs');
 const example=__dirname,repo=path.resolve(example,'../..'),sha=b=>crypto.createHash('sha256').update(b).digest('hex');
+const workspace = path.join(example, 'rust-app-console');
+const library = path.join(example, 'rust-lib-core');
+const applicationFiles = ['main.rs', 'missing_purpose.rs', 'missing_audit.rs'];
 function files(dir,prefix=''){const out={};for(const n of fs.readdirSync(dir).sort()){const f=path.join(dir,n),s=fs.lstatSync(f);assert(!s.isSymbolicLink());if(s.isDirectory())Object.assign(out,files(f,prefix+n+'/'));else out[prefix+n]=sha(fs.readFileSync(f));}return out;}
 function fixture(){const m=JSON.parse(fs.readFileSync(path.join(example,'fixture-manifest.json')));assert.equal(m.evaluationErrors,0);assert.equal(sha(fs.readFileSync(path.join(example,'model.xml'))),m.modelSha256);assert.deepEqual(files(path.join(example,'generated')),m.files);return m;}
 async function main(){
@@ -20,29 +23,44 @@ async function main(){
   r.source=sourceIdentity(repo);
   r.fixture=fixture();r.inputs=Object.fromEntries(['main.rs','missing_purpose.rs','missing_audit.rs','model.xml','fixture-manifest.json','verify-local.cjs','verify/owned-command.cjs','verify/subreaper.cjs','verify/owned-subreaper.c','verify/source-identity.cjs'].map(n=>[n,sha(fs.readFileSync(path.join(example,n)))]));
   for(const n of Object.keys(r.inputs))write('inputs/'+n,fs.readFileSync(path.join(example,n)));
-  scratch=fs.mkdtempSync(path.join(os.tmpdir(),'teaql-request-admission-build-'));r.scratch=scratch;runner=createOwnedRunner({supervisor:prepareOwnedSubreaper(scratch)});fs.mkdirSync(path.join(scratch,'src'));
-  for(const n of ['main.rs','missing_purpose.rs','missing_audit.rs'])fs.copyFileSync(path.join(example,n),path.join(scratch,'src',n));
-  fs.cpSync(path.join(example,'generated/lib'),path.join(scratch,'lib'),{recursive:true});
-  r.libraryMetadata=require('../../scripts/pin-local-example-library.cjs').pin(path.join(scratch,'lib'),repo,scratch);
-  const q=JSON.stringify,crates=['teaql-core','teaql-runtime','teaql-macros','teaql-sql','teaql-data-service','teaql-provider-sqlite'];
-  const manifest=['[package]','name="teaql-request-admission-example"','version="0.0.0"','edition="2024"','publish=false',
-   ...[['request-admission','main.rs'],['missing-purpose','missing_purpose.rs'],['missing-audit','missing_audit.rs']].flatMap(([n,f])=>['[[bin]]','name='+q(n),'path='+q('src/'+f)]),
-   '[dependencies]','checker-fix-advanced-core={path='+q(path.join(scratch,'lib'))+'}',
-   'teaql-core={path='+q(path.join(repo,'teaql-core'))+'}','teaql-runtime={path='+q(path.join(repo,'teaql-runtime'))+'}',
-   'chrono="0.4"','serde_json="1"','futures-util="0.3"','tokio={version="1",features=["macros","rt-multi-thread"]}',
-   'rusqlite={version="0.41.1",features=["bundled","trace"]}',
-   '[patch.crates-io]',...crates.map(n=>n+'={path='+q(path.join(repo,n))+'}'),''].join('\n');
-  fs.writeFileSync(path.join(scratch,'Cargo.toml'),manifest);write('Cargo.toml',manifest);
+  scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'teaql-request-admission-build-'));
+  r.scratch = scratch;
+  runner = createOwnedRunner({supervisor: prepareOwnedSubreaper(scratch)});
+  const app = path.join(scratch, 'rust-app-console');
+  const domain = path.join(scratch, 'rust-lib-core');
+  const nativeInputs = {workspace: files(workspace), library: files(library)};
+  for (const name of applicationFiles) {
+    assert.equal(nativeInputs.workspace['src/' + name], r.inputs[name], 'Original assertion source changed');
+  }
+  fs.cpSync(workspace, app, {recursive: true});
+  fs.cpSync(library, domain, {recursive: true});
+  assert.deepEqual(files(app), nativeInputs.workspace);
+  assert.deepEqual(files(domain), nativeInputs.library);
+  r.nativeWorkspace = nativeInputs;
+  const crates = ['teaql-core', 'teaql-runtime', 'teaql-macros', 'teaql-sql', 'teaql-data-service', 'teaql-provider-sqlite'];
+  const overrides = ['[workspace]', '', '[patch.crates-io]',
+    ...crates.map(name => name + ' = { path = ' + JSON.stringify(path.join(repo, name)) + ' }'), ''].join('\n');
+  const manifest = fs.readFileSync(path.join(app, 'Cargo.toml'), 'utf8') + '\n' + overrides;
+  fs.writeFileSync(path.join(app, 'Cargo.toml'), manifest);
+  fs.copyFileSync(path.join(repo, 'Cargo.lock'), path.join(app, 'Cargo.lock'));
+  write('Cargo.toml', manifest);
   const env={...process.env};for(const n of Object.keys(env))if(/^(TEAQL_|CORE236_|OTEL_)/.test(n)||/TOKEN|PASSWORD|SECRET|AUTH|API_KEY/.test(n)||['CARGO_TARGET_DIR','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','RUSTC_WORKSPACE_WRAPPER'].includes(n))delete env[n];
   Object.assign(env,{PATH:['/home/philip/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin',path.dirname(process.execPath),env.PATH].join(path.delimiter),
    TMPDIR:scratch,CARGO_TARGET_DIR:path.join(scratch,'target'),CARGO_INCREMENTAL:'0',CARGO_BUILD_JOBS:'2',CARGO_PROFILE_DEV_DEBUG:'0',
    CARGO_PROFILE_DEV_DEBUG_ASSERTIONS:'true',CARGO_PROFILE_DEV_OVERFLOW_CHECKS:'true',TEAQL_TELEMETRY_ENABLED:'false',TEAQL_REQUEST_ADMISSION_DB:path.join(output,'admission.sqlite')});
-  async function run(name,command,expected=0){const fd=fs.openSync(path.join(output,name+'.log'),'wx');let v;console.log(JSON.stringify({phase:name,state:'started'}));try{v=await runner.run(command,{cwd:scratch,env,timeout:600000,stdio:['ignore',fd,fd]});}finally{fs.closeSync(fd);}const b=fs.readFileSync(path.join(output,name+'.log'));r.commands.push({name,command,cwd:scratch,exitCode:v.status,signal:v.signal,descendantProof:v.descendantProof,logSha256:sha(b)});assert(!v.error&&!v.signal&&v.descendantProof?.safe&&v.descendantProof.primaryDone);assert.equal(v.status,expected,b.toString().slice(-9000));return b.toString();}
-  const build=await run('build',['cargo','build','--offline','--bin','request-admission','--message-format=json']);write('Cargo.lock',fs.readFileSync(path.join(scratch,'Cargo.lock')));
+  async function run(name,command,expected=0){const fd=fs.openSync(path.join(output,name+'.log'),'wx');let v;console.log(JSON.stringify({phase:name,state:'started'}));try{v=await runner.run(command,{cwd:app,env,timeout:600000,stdio:['ignore',fd,fd]});}finally{fs.closeSync(fd);}const b=fs.readFileSync(path.join(output,name+'.log'));r.commands.push({name,command,cwd:app,exitCode:v.status,signal:v.signal,descendantProof:v.descendantProof,logSha256:sha(b)});assert(!v.error&&!v.signal&&v.descendantProof?.safe&&v.descendantProof.primaryDone);assert.equal(v.status,expected,b.toString().slice(-9000));return b.toString();}
+  const build=await run('build',['cargo','build','--offline','--bin','request-admission','--message-format=json']);write('Cargo.lock',fs.readFileSync(path.join(app,'Cargo.lock')));
   const messages=build.split(/\r?\n/).filter(n=>n.startsWith('{')).map(n=>JSON.parse(n)),artifacts=messages.filter(m=>m.reason==='compiler-artifact');
   r.compiledRuntime=artifacts.filter(m=>crates.includes(m.target.name.replaceAll('_','-'))).map(m=>({name:m.target.name,source:m.target.src_path}));assert.equal(new Set(r.compiledRuntime.map(m=>m.name)).size,6);
   for(const m of r.compiledRuntime)assert(m.source.startsWith(repo+'/'));
-  const binary=artifacts.find(m=>m.executable&&m.target.name==='request-admission').executable;assert(binary.startsWith(scratch+'/target/'));r.binarySha256=sha(fs.readFileSync(binary));
+  const application = artifacts.find(m => m.executable && m.target.name === 'request-admission');
+  assert.equal(application.target.src_path, path.join(app, 'src/main.rs'));
+  assert(application.profile.debug_assertions && application.profile.overflow_checks);
+  assert(artifacts.some(m => m.target.name === 'checker_fix_advanced_core'
+    && m.target.src_path === path.join(domain, 'lib/src/lib.rs')));
+  const binary = application.executable;
+  assert(binary.startsWith(scratch + '/target/'));
+  r.binarySha256 = sha(fs.readFileSync(binary));
   for(const round of[1,2]){env.TEAQL_REQUEST_ADMISSION_ROUND=String(round);const log=await run('round-'+round,[binary]);
    const rows=key=>log.split(/\r?\n/).filter(n=>n.startsWith(key+'=')).map(n=>JSON.parse(n.slice(key.length+1)));
    const frame={round,cases:rows('RUST_REQUEST_ADMISSION_CASE'),controls:rows('RUST_REQUEST_ADMISSION_CONTROL'),results:rows('RUST_REQUEST_ADMISSION_RESULT')};
@@ -56,6 +74,8 @@ async function main(){
    r.compileFail.push({bin,method,code:'E0599',diagnostics});
   }
   assert.deepEqual(fixture(),r.fixture);for(const[n,h]of Object.entries(r.inputs))assert.equal(sha(fs.readFileSync(path.join(example,n))),h);
+  assert.deepEqual({workspace: files(workspace), library: files(library)}, nativeInputs);
+  assert.deepEqual(files(domain), nativeInputs.library);
   r.sourceAfter=sourceIdentity(repo);assert.deepEqual(r.sourceAfter,r.source);
   r.database={file:'admission.sqlite',sha256:sha(fs.readFileSync(path.join(output,'admission.sqlite'))),bytes:fs.statSync(path.join(output,'admission.sqlite')).size};r.passed=true;
  }catch(error){r.error=error.stack;console.error(r.error);process.exitCode=1;}
