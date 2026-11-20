@@ -3,11 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
-use supplier_order_sync_service_core::{service_runtime, AuditedSave, ServiceRuntimeConfig, E, Q};
+use supplier_order_sync_service_core::{
+    service_runtime, AuditedSave, ServiceRuntimeConfig, SupplierOrder, E, Q,
+};
 use teaql_core::Entity;
 use teaql_http_reqwest::{HttpServiceProfile, ReqwestHttpRequestService};
 use teaql_runtime::{
-    HttpCall, HttpCancellation, HttpFailure, HttpMethod, HttpRetryMode, UserContext,
+    HttpCall, HttpCancellation, HttpFailure, HttpMethod, HttpResponse, HttpRetryMode, UserContext,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -122,7 +124,12 @@ async fn serve(
             } else {
                 &reference
             };
-            let body = json!({"reference": reply_reference, "status": scenario.status}).to_string();
+            let proposed_status = if scenario.name == "mismatch" || status_line.starts_with("503") {
+                "dispatched"
+            } else {
+                scenario.status
+            };
+            let body = json!({"reference": reply_reference, "status": proposed_status}).to_string();
             let response = format!(
                 "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -135,11 +142,34 @@ async fn serve(
     Ok(requests)
 }
 
-async fn reconcile(
+async fn apply_reply(
     context: &UserContext,
-    round: &str,
-    arrived: &Notify,
-) -> AppResult<BTreeMap<&'static str, u64>> {
+    mut order: SupplierOrder,
+    reply: HttpResponse,
+) -> AppResult<&'static str> {
+    if reply.status() != 200 {
+        return Ok("unavailable");
+    }
+    let payload = reply.json_value()?;
+    let reference = E::supplier_order(&order)
+        .get_external_reference()
+        .eval()
+        .ok_or("The order needs a supplier reference")?;
+    if payload["reference"] != reference {
+        return Ok("wrong-order");
+    }
+    let Some(status @ ("acknowledged" | "dispatched")) = payload["status"].as_str() else {
+        return Ok("invalid-status");
+    };
+    order.update_sync_status(status);
+    order
+        .audit_as("Apply the verified supplier status")
+        .save(context)
+        .await?;
+    Ok("applied")
+}
+
+async fn reconcile(context: &UserContext, round: &str, arrived: &Notify) -> AppResult<Value> {
     let supplier = Q::suppliers_minimal()
         .with_id_is(1)
         .limit(1)
@@ -149,6 +179,7 @@ async fn reconcile(
         .await?
         .ok_or("Supplier was not found")?;
     let mut result = BTreeMap::new();
+    let mut outcomes = BTreeMap::new();
     for scenario in SCENARIOS.iter() {
         let reference = scenario.reference(round);
         let mut order = Q::supplier_orders()
@@ -159,7 +190,7 @@ async fn reconcile(
             .update_supplier_id(supplier.id())
             .update_external_reference(reference.as_str())
             .update_sync_status("pending");
-        let mut order = order
+        let order = order
             .audit_as("Record a pending procurement order")
             .save(context)
             .await?;
@@ -178,7 +209,8 @@ async fn reconcile(
         )?
         .with_retry_mode(scenario.retry);
         let http = context.http_requests()?;
-        if scenario.name == "cancel" {
+        let order_id = order.id();
+        let response = if scenario.name == "cancel" {
             let cancellation = HttpCancellation::new();
             let interrupt = async {
                 let result = timeout(FIXTURE_BUDGET, arrived.notified()).await;
@@ -190,35 +222,21 @@ async fn reconcile(
                 interrupt
             );
             delivered?;
-            assert_eq!(res, Err(HttpFailure::Cancelled));
+            res
         } else {
-            let reply = http.execute(context, &call).await?;
-            assert_eq!(reply.attempts(), scenario.attempts);
-            let payload = reply.json_value()?;
-            match scenario.name {
-                "failed" => assert_eq!(reply.status(), 503),
-                "mismatch" => {
-                    assert_eq!(reply.status(), 200);
-                    assert_ne!(payload["reference"], requested_reference);
-                }
-                _ => {
-                    assert_eq!(reply.status(), 200);
-                    assert_eq!(payload["reference"], requested_reference);
-                    assert_eq!(payload["status"], scenario.status);
-                    order.update_sync_status(
-                        payload["status"]
-                            .as_str()
-                            .ok_or("Expected a supplier status")?,
-                    );
-                    order = order
-                        .audit_as("Apply the verified supplier status")
-                        .save(context)
-                        .await?;
-                }
+            http.execute(context, &call).await
+        };
+        let outcome = match response {
+            Ok(reply) => {
+                assert_eq!(reply.attempts(), scenario.attempts);
+                apply_reply(context, order, reply).await?
             }
-        }
+            Err(HttpFailure::Cancelled) => "cancelled",
+            Err(error) => return Err(error.into()),
+        };
+        outcomes.insert(scenario.name, outcome);
         let stored = Q::supplier_orders()
-            .with_id_is(order.id())
+            .with_id_is(order_id)
             .limit(1)
             .comment("Read the order after its HTTP reconciliation")
             .purpose("Check the persisted supplier result")
@@ -245,7 +263,17 @@ async fn reconcile(
         );
         result.insert(scenario.name, stored.id());
     }
-    Ok(result)
+    assert_eq!(
+        outcomes,
+        BTreeMap::from([
+            ("direct", "applied"),
+            ("retry", "applied"),
+            ("failed", "unavailable"),
+            ("cancel", "cancelled"),
+            ("mismatch", "wrong-order"),
+        ])
+    );
+    Ok(json!({"orders": result, "outcomes": outcomes}))
 }
 
 #[tokio::main]
@@ -283,10 +311,12 @@ async fn main() -> AppResult<()> {
     let requests = fixture.await??;
     context.runtime_telemetry().flush();
     context.runtime_telemetry().shutdown();
+    let reconciled = reconciled?;
     println!(
         "SUPPLIER_ORDER_SYNC={}",
         json!({
-            "round": round, "orders": reconciled?, "requests": requests.len(), "cancelled": true,
+            "round": round, "orders": reconciled["orders"], "outcomes": reconciled["outcomes"],
+            "requests": requests.len(), "cancelled": true,
             "wireRequests": requests
         })
     );
