@@ -1,0 +1,37 @@
+{
+  "goalId": "rust:teaql-tfp-endpoint/examples",
+  "library": {
+    "generatedFilesManifestSHA256": "18f160c59fda0acecfa5d098768cb2f3bbc1152c94106287937325990e52579d",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "998e1dd5b8f305db96e99e599d0b3783cf8409739dd665fe58a007750b6e09be"
+  },
+  "originalCalibration": "teaql-tfp-endpoint/examples",
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/order-privacy-and-federation-generation/receipt.json",
+    "receiptSHA256": "0ae62ffb613692c2d0922b4da1b1dbb9ca6081e8a36a5786a27029a614b711d1"
+  },
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "title": "Merchant order dispatch through the federation protocol",
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.lock",
+      "Cargo.toml",
+      "src/main.rs"
+    ],
+    "generatedFilesManifestSHA256": "ff8dce0bacb0e0a911e9909649b7f673944eb1ea0bba3c356b9d71bc3ef65df0",
+    "root": "rust-web-axum",
+    "scope": "rust-web-axum"
+  }
+}
