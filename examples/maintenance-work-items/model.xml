@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="maintenance-work-items" org="teaql" data_service="sqlite">
+  <maintenance_board name="Warehouse Maintenance"/>
+  <work_item maintenance_board="maintenance_board()" ticket="string()" title="string()"
+             priority="integer()" inspection_note="string()?"/>
+</root>
