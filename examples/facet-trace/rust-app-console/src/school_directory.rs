@@ -1,5 +1,8 @@
 //! Application-owned school browsing through the current model-aware Q/Create APIs.
-use school_management_service_core::{service_runtime, AuditedSave, School, ServiceRuntimeConfig, Q};
+use chrono::NaiveDate;
+use school_management_service_core::{
+    service_runtime, AuditedSave, School, ServiceRuntimeConfig, Q,
+};
 use std::{collections::BTreeMap, error::Error, path::PathBuf};
 use teaql_core::{Entity as _, SmartList, Value};
 
@@ -64,6 +67,7 @@ pub async fn run(database: PathBuf) -> Result<(), Box<dyn Error>> {
                 .update_platform_id(1)
                 .update_name(name)
                 .update_address("Campus demonstration district")
+                .update_established_date(NaiveDate::from_ymd_opt(1995, 9, 1).unwrap())
                 .update_student_capacity(800)
                 .update_active(true);
             if primary {
@@ -96,9 +100,25 @@ pub async fn run(database: PathBuf) -> Result<(), Box<dyn Error>> {
         .new_entity(&context)?;
     rejected
         .update_platform_id(1)
-        .update_name("Facet Showcase Rejected");
+        .update_name("Facet Showcase Rejected")
+        .update_address("Campus demonstration district")
+        .update_established_date(NaiveDate::from_ymd_opt(1995, 9, 1).unwrap())
+        .update_student_capacity(800)
+        .update_active(true);
     rejected.update_school_type_to_primary();
-    assert!(rejected.audit_as("").save(&context).await.is_err());
+    let error = rejected
+        .audit_as("")
+        .save(&context)
+        .await
+        .err()
+        .ok_or("an unaudited school was unexpectedly published")?;
+    match error {
+        teaql_runtime::RuntimeError::RequestIntent(error) => {
+            assert_eq!(error.code(), "REQUEST_COMMENT_REQUIRED");
+            assert_eq!(error.request_kind, teaql_core::RequestKind::Mutation);
+        }
+        other => return Err(format!("unexpected unaudited publication error: {other}").into()),
+    }
     let rejected_rows = Q::schools_minimal()
         .with_name_is("Facet Showcase Rejected")
         .limit(2)
