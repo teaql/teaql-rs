@@ -116,6 +116,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let query = PurposedSelectQuery::new(
         SelectQuery::new("School")
             .order_asc("id")
+            .limit(1)
+            .relation_query("students", SelectQuery::new("Student").order_asc("id").limit(2))
             .comment("Read the school and its loaded roster"),
         "Verify the saved school graph",
     );
