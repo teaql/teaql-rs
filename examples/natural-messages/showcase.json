@@ -1,0 +1,40 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/natural-messages",
+  "library": {
+    "generatedFilesManifestSHA256": "3a914b854018562741a03961bdaa3a955e98aee0eb61dbfe7dfb1dcdc09d6df8",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "4c69fcaa275d1f7d255f325305cc0c6c5071154d278f9f4af7775ae0758144a6"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build; not a public release",
+      "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+      "qualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
+      "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+      "tag": "unreleased-source-021b1ed8"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/catalog-natural-generation/receipt.json",
+    "receiptSHA256": "c321d972c75d8f73f7f62525162f64337461996c487f3ab3abdaef25cba5e23a"
+  },
+  "scene": "Catalog entry validation with natural messages, exact locations and private values",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "node",
+    "verify-local.cjs"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "src/main.rs"
+    ],
+    "generatedFilesManifestSHA256": "4a7e2c071f5dcba804dea140d21df61ba5ea9d6816a5ec41bea3f663298953ea",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}

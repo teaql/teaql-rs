@@ -81,7 +81,9 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--all-targets", action="store_true")
     parser.add_argument("--example", action="store_true", help="Also run generated SQLite Q/E/Save twice")
+    parser.add_argument("--example-only", action="store_true")
     args = parser.parse_args()
+    assert not (args.all_targets and args.example_only), "Full native and example-only gates are distinct"
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     scratch = Path(tempfile.mkdtemp(prefix="teaql-natural-rust-build-"))
@@ -102,7 +104,7 @@ def main():
         commands = [[cargo, "test", "--locked", "-p", "teaql-runtime", "--test", "natural_messages", "--", "--nocapture"]]
         if args.all_targets:
             commands.append([cargo, "test", "--locked", "-p", "teaql-runtime", "-p", "teaql-core", "-p", "teaql-macros", "--all-targets", "--no-fail-fast"])
-        for index, command in enumerate(commands, 1):
+        for index, command in enumerate([] if args.example_only else commands, 1):
             log = output / f"native-{index}.log"
             code = run(command, env, log)
             summaries = re.findall(r"test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored", log.read_text())
@@ -111,14 +113,16 @@ def main():
                 passed=sum(int(s[0]) for s in summaries), failed=sum(int(s[1]) for s in summaries),
                 ignored=sum(int(s[2]) for s in summaries), targets=len(summaries)))
             assert code == 0 and summaries, f"native gate failed: {log.name}"
-        if args.example:
-            pin_command = [shutil.which("node") or "/home/philip/.nvm/versions/node/v24.19.0/bin/node", "--test", str(REPO / "scripts/pin-local-example-library.test.cjs")]
-            pin_code = run(pin_command, env, output / "pin-tests.log")
-            assert pin_code == 0, "local manifest pin guards failed"
-            report["metadataPinTests"] = dict(command=pin_command, exitCode=pin_code, tests=7, logSha256=hashlib.sha256((output / "pin-tests.log").read_bytes()).hexdigest())
+        if args.example or args.example_only:
+            if not args.example_only:
+                pin_command = [shutil.which("node") or "/home/philip/.nvm/versions/node/v24.19.0/bin/node", "--test", str(REPO / "scripts/pin-local-example-library.test.cjs")]
+                pin_code = run(pin_command, env, output / "pin-tests.log")
+                assert pin_code == 0, "local manifest pin guards failed"
+                report["metadataPinTests"] = dict(command=pin_command, exitCode=pin_code, tests=7, logSha256=hashlib.sha256((output / "pin-tests.log").read_bytes()).hexdigest())
             from natural_message_consumer import verify_consumer
             report.update(verify_consumer(scratch / "automatic-consumer", output, env, run))
         assert source_hashes() == report["sourceHashes"], "source changed during qualification"
+        report["exampleOnly"] = args.example_only
         report["passed"] = True
         status = 0
     except BaseException as error:

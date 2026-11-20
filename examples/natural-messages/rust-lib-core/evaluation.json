@@ -1,0 +1,8 @@
+{
+  "errors": [],
+  "normalizedFromMarkdown": true,
+  "schema": "teaql.markdown-model-evaluation-reference/v1",
+  "source": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/catalog-natural-generation/rust/catalog-natural-messages/library/evaluation.md",
+  "sourceSHA256": "898f40bd7d8475763d927f70bcca1e116abd30c898414b9fec937cf79814a69c",
+  "warningsCount": 2
+}
