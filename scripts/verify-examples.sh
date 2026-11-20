@@ -102,6 +102,7 @@ test ! -s "$verification_dir/privacy-audit.log"
 echo 'PASS: default SQL preserves ordinary fields; sensitive names, rejected payloads and unapproved debug sinks stay private'
 TEAQL_ORDER_EVIDENCE_DIR="${verification_dir%/runtime}/order-management" bash examples/order-management/verify.sh
 cargo test --offline --locked -p teaql-examples --test context_bound_order_document
+TEAQL_REFERENCE_EVIDENCE_DIR="${verification_dir%/runtime}/order-edit-reference" bash examples/src/bin/order-edit-reference/verify.sh
 cargo test -p teaql-tfp-endpoint --examples
 bash examples/trace-chain/verify.sh
 bash examples/facet-trace/verify.sh

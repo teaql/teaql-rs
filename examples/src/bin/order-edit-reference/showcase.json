@@ -23,8 +23,17 @@
   },
   "scene": "Resolve a scoped order-line reference before accepting an edit",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "generation-prepared",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "bash",
+    "examples/src/bin/order-edit-reference/verify.sh"
+  ],
   "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "src/main.rs"
+    ],
     "generatedFilesManifestSHA256": "88fd2cac03ac892da36d8e764e1cfeeaf6cfecdf3cea222363d118e196e5e6a6",
     "root": "rust-app-console",
     "scope": "rust-app-console"
