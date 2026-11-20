@@ -40,3 +40,26 @@ Never edit fixture sources to make the test pass. Keep full-load validation and
 the existing generated bounds checks; this example does not approve selective
 validation or qualify published artifacts, every runtime example, or all
 `FIX-14`–`FIX-19` scenarios.
+
+## Current business model and workspace
+
+`model.xml` defines Catalog and Entry. Trusted Context supplies collection/edit
+times, IP and actor fields; the example shows why saving an unchanged entry
+must leave those business values untouched. `rust-lib-core/` is the exact, read-only
+current generated domain library. The application is in `rust-app-console/src/main.rs`.
+The historical `fixture/` remains byte-identical and retains all of its original
+fingerprint checks; a separate guard verifies the current library before and
+after business execution.
+
+Run the focused source qualifier entry from the SDK repository root:
+
+```bash
+python3 examples/context-derived/verify-local.py --output /new/absolute/evidence
+```
+
+The original assertions run twice on retained stores: no-op saves produce no
+updates, genuine edits consume the trusted Context, failed validation/provider
+work preserves edits, and a later invalid child rolls back staged graph fields.
+Current managed creation results are explicitly awaited or checked. No generated
+implementation is hand-edited. Compact receipts and result stores are retained;
+owned build output is removed. Full runtime inventories remain separate gates.
