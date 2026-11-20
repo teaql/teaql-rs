@@ -13,7 +13,8 @@ license = "MIT OR Apache-2.0"
 order_attachment_service_core = { package = "order-attachment-service-core", path = "../rust-lib-core/lib" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 teaql-core = "8.1.0"
-chrono = "0.4"teaql-runtime = { path = "../../../teaql-runtime" }
+chrono = "0.4"
+teaql-runtime = { path = "../../../teaql-runtime" }
 teaql-object-storage-s3 = { path = "../../../teaql-object-storage-s3" }
 aws-sdk-s3 = { version = "=1.152.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
 bytes = "1"
