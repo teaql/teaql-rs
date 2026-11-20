@@ -21,9 +21,17 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-request-admission-native-generation/receipt.json",
     "receiptSHA256": "6db7846b02d2417672783c5cbc040d57319a1898421e16f272969e6b81520f4f"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-request-admission-native-workspace/runtime/request-admission/business-receipt.json",
+    "businessReceiptSHA256": "40d80c15ccf931ed39b587e16566b2a8bc0424b2378f4242e245b8b28b17250c",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-request-admission-native-workspace/receipt.json",
+    "nativeReceiptSHA256": "8d73b62579d357a48ffcbfba939c28e61fb6961533fa5147283cec5f37bf4196",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "d20293af63e27651144fb7df4b70de8998900fae"
+  },
   "scene": "Purchase order request intent and rejection before provider entry",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "node",
     "examples/request-admission/verify-local.cjs"
