@@ -3,8 +3,26 @@
 Tracking: [Rust #249](https://github.com/teaql/teaql-rs/issues/249),
 [shared contract #122](https://github.com/teaql/teaql-conformance/issues/122).
 
-The example uses this checkout's core, runtime and optional S3 provider through
-workspace path dependencies. No generated domain library is required.
+## File an order receipt
+
+`model.xml` defines the commerce platform, order and attachment. The
+`rust-app-console` consumes the generated domain library and installs the S3
+provider in trusted Context setup. The receipt is uploaded and associated
+with a persisted order through generated mutations. Generated Q and E reload
+the association and its stored reference for the download.
+
+Run `bash examples/object-storage/verify.sh` with the dedicated fixture settings.
+The original runtime and provider checks run before two launches on one SQLite
+file. The application verifies the downloaded bytes, type, length and SHA-256.
+Create-only conflict and a too-small read limit leave the object intact. After
+the application removes its own test object, a fresh get reports missing while
+the order association remains. Set `TEAQL_ORDER_ATTACHMENT_EVIDENCE_DIR` to
+choose a fresh output path.
+
+## Provider setup
+
+The lifecycle calibration uses this checkout's core, runtime and optional S3
+provider through workspace path dependencies.
 
 ```rust,no_run
 use std::sync::Arc;
