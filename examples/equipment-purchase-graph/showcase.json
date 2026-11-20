@@ -21,9 +21,17 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-sqlite-business-generation/receipt.json",
     "receiptSHA256": "2fdda83fd38eba3f66c06031d502e133994446bf607d1e7dfd566039201ef585"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-equipment-purchase-graph-calibrated-intent/runtime/equipment-purchase-graph/receipt.json",
+    "businessReceiptSHA256": "7f1cd13c2902852602fb0eeb73b391c97addacea0a5f40c0300f74fb87f489ed",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-equipment-purchase-graph-calibrated-intent/receipt.json",
+    "nativeReceiptSHA256": "d0ce923fe845e58a24c224f95bc46b44b8e0ef3cd48aed1730b94ed103667d57",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "3d920b182a6d676aa8f8dac8b2208841ef2c4cc0"
+  },
   "scene": "Purchase equipment with a shared catalog and roll back a blocked order graph",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "bash",
     "scripts/verify-sqlite-business-example.sh",
