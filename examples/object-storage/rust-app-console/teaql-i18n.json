@@ -1,0 +1,114 @@
+{
+    "schema": "teaql.i18n/v1",
+    "defaultLocale": "en",
+    "locales": {
+        "de": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ko": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "pt": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "zh-TW": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "fil": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "en": {
+            "vocabulary": {
+                "property.customerOrder.orderNumber": "Order Number",
+                "property.commercePlatform.name": "Name",
+                "property.orderAttachment.contentType": "Content Type",
+                "property.commercePlatform.id": "Id",
+                "entity.commercePlatform": "Commerce Platform",
+                "property.orderAttachment.contentLength": "Content Length",
+                "entity.customerOrder": "Customer Order",
+                "property.orderAttachment.customerOrder": "Customer Order",
+                "property.orderAttachment.fileName": "File Name",
+                "property.customerOrder.id": "Id",
+                "property.orderAttachment.id": "Id",
+                "property.orderAttachment.contentSha256": "Content Sha256",
+                "entity.orderAttachment": "Order Attachment",
+                "property.orderAttachment.version": "Version",
+                "property.commercePlatform.version": "Version",
+                "property.orderAttachment.objectKey": "Object Key",
+                "property.customerOrder.commercePlatform": "Commerce Platform",
+                "property.customerOrder.version": "Version"
+            },
+            "messages": {
+            }
+        },
+        "fr": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "zh-CN": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "es": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ar": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "vi": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "th": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "uk": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ja": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "id": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        }
+    }
+}

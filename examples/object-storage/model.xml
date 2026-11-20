@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="order-attachment-service" org="teaql" data_service="sqlite">
+  <commerce_platform name="Order Attachments"/>
+  <customer_order order_number="ATTACH-ORDER-001" commerce_platform="commerce_platform()"/>
+  <order_attachment customer_order="customer_order()" file_name="receipt.pdf"
+                    content_type="application/pdf" content_length="154" content_sha256="string()"
+                    object_key="string()" _audit_mask_fields="object_key"/>
+</root>
