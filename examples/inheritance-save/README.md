@@ -41,9 +41,9 @@ From the runtime repository root:
 
 ```bash
 INHERITANCE_MATCHING_SERVICE_CORE_DATABASE_URL=/tmp/my-new-inheritance-demo.sqlite \
-  cargo run --manifest-path examples/inheritance-save/Cargo.toml
+  cargo run --manifest-path examples/inheritance-save/rust-app-console/Cargo.toml
 
-cargo test --manifest-path examples/inheritance-save/Cargo.toml
+cargo test --manifest-path examples/inheritance-save/rust-app-console/Cargo.toml
 
 node examples/inheritance-save/verify.cjs --output /absolute/new/evidence-directory
 ```

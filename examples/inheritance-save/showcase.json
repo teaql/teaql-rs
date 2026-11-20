@@ -1,0 +1,53 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/inheritance-save",
+  "library": {
+    "generatedFilesManifestSHA256": "a96971e1fdb45f532be37035b46f10a7a24f9dfb81117cf7b22dc1d63402b214",
+    "producer": {
+      "generator": {
+        "artifactKind": "new source build; not the historical v4.2.0 release artifact",
+        "baseRelease": "v4.2.0",
+        "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "qualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
+        "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "tag": "unreleased-source-021b1ed8"
+      },
+      "receipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-rust-inheritance-intent-source/receipt.json",
+      "receiptSHA256": "a8ba6eeac5160ed9d15ab8e95e8bbcd3a61ee500c12abc05450c75d09be42ee8"
+    },
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "f1558b9801700b6f63ed5293538f7095b94412e3b7cad4f7481818cfe004895e"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/school-inheritance-and-partial-views-generation/receipt.json",
+    "receiptSHA256": "7c8fb5f6c6619d7165638972cdbbe267d68e50cadf33d70065b45a52c68cf84f"
+  },
+  "scene": "Edit inherited school and academy fields through the same identity",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "node",
+    "examples/inheritance-save/verify.cjs"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "src/main.rs"
+    ],
+    "generatedFilesManifestSHA256": "aeb837d21d4e1887ba5f5e79f6ba6ea184b8ec2ecbcb7eb4a49cb3c865f7937c",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}

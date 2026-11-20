@@ -1,0 +1,123 @@
+{
+    "schema": "teaql.i18n/v1",
+    "defaultLocale": "en",
+    "locales": {
+        "de": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ko": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "pt": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "zh-TW": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "fil": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "en": {
+            "vocabulary": {
+                "property.platform.name": "Name",
+                "entity.academy": "Academy",
+                "property.trainingAcademy.specialty": "Specialty",
+                "entity.college": "College",
+                "property.academy.id": "Id",
+                "property.school.platform": "Platform",
+                "property.school.id": "Id",
+                "property.schoolType.version": "Version",
+                "property.academy.campusCode": "Campus Code",
+                "property.schoolType.code": "Code",
+                "property.school.studentCapacity": "Student Capacity",
+                "property.school.schoolType": "School Type",
+                "entity.platform": "Platform",
+                "property.platform.id": "Id",
+                "property.schoolType.id": "Id",
+                "entity.school": "School",
+                "entity.trainingAcademy": "Training Academy",
+                "property.college.id": "Id",
+                "property.school.name": "Name",
+                "property.college.degreeLevel": "Degree Level",
+                "property.trainingAcademy.id": "Id",
+                "entity.schoolType": "School Type",
+                "property.platform.baseUrl": "Base Url",
+                "property.platform.version": "Version",
+                "property.schoolType.platform": "Platform",
+                "property.school.version": "Version",
+                "property.schoolType.name": "Name"
+            },
+            "messages": {
+            }
+        },
+        "fr": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "zh-CN": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "es": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ar": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "vi": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "th": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "uk": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ja": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "id": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        }
+    }
+}
