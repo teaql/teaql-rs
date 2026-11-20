@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="shipping-order-logging" org="example" data_service="sqlite"
+      teaql_rs_version="8.1.0" _module_key="root">
+  <warehouse _name="Dispatch Warehouse" _module="Shipping" _module_key="shipping"
+             name="Riverside Dispatch"/>
+  <shipping_order _name="Shipping Order" _module="Shipping" _module_key="shipping"
+                  warehouse="warehouse()" reference="SHIP-001"
+                  customer_reference="CUSTOMER-REF-001" instructions="Await carrier"
+                  _audit_mask_fields="customer_reference"/>
+  <shipping_item _name="Shipping Item" _module="Shipping" _module_key="shipping"
+                 shipping_order="shipping_order()" sku="RETURNABLE-CASE" quantity="integer()"/>
+</root>

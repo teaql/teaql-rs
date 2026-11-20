@@ -32,3 +32,7 @@ path = "business-id-runtime/rust-app-console/calibration/business_id_runtime.rs"
 [[bin]]
 name = "school_example"
 path = "src/bin/school_enrollment/rust-app-console/calibration/school_example.rs"
+
+[[bin]]
+name = "test_default_log"
+path = "src/bin/order_logging/rust-app-console/calibration/test_default_log.rs"
