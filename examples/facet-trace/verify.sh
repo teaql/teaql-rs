@@ -30,7 +30,7 @@ fi
 export TEAQL_FACET_DATABASE="$evidence_dir/school.db"
 unset TEAQL_ALLOW_SENSITIVE_PLAINTEXT_LOGS
 hash_library() {
-  (cd "$example_dir" && find rust-lib-core rust-app-console/lib -type f -exec sha256sum {} \; | sort)
+  (cd "$example_dir" && find rust-lib-core -type f -exec sha256sum {} \; | sort)
 }
 hash_library > "$evidence_dir/library-before.sha256"
 sha256sum "$example_dir/Cargo.lock" > "$evidence_dir/lock-before.sha256"

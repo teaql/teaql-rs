@@ -40,6 +40,7 @@
     ],
     "generatedFilesManifestSHA256": "ff8dce0bacb0e0a911e9909649b7f673944eb1ea0bba3c356b9d71bc3ef65df0",
     "root": "rust-web-axum",
-    "scope": "rust-web-axum"
+    "scope": "rust-web-axum",
+    "useSiblingCargoLibrary": true
   }
 }

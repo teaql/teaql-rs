@@ -44,6 +44,7 @@
     ],
     "generatedFilesManifestSHA256": "2f696ca62285d42085d57b8ff40a72222bdebcbfb25a5696fa19c43ad62aa276",
     "root": "rust-app-console",
-    "scope": "rust-app-console"
+    "scope": "rust-app-console",
+    "useSiblingCargoLibrary": true
   }
 }
