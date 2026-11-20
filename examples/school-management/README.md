@@ -1,4 +1,12 @@
-# School Management bootstrap example
+# School startup and query showcase
+
+The School domain is owned by `models/school-model.xml`. The immutable generated
+`rust-lib-core` and generated `rust-app-console` scopes use that exact model.
+All application customization and regression consumers live in
+`rust-app-console`; the scenario root owns their shared Cargo workspace and
+lock. `showcase.json` records generator identity, scope receipts and business
+expectations. The application demonstrates real School creation/query/update
+and initialization; native source/dependency and result assertions remain active.
 
 This generated example retains `models/school-model.xml`. `cargo run` verifies
 explicit SQLite schema creation and idempotent repeated bootstrap of Platform
@@ -6,7 +14,7 @@ explicit SQLite schema creation and idempotent repeated bootstrap of Platform
 It also checks that a sparse audited School create missing required `address`
 returns a field-specific Checker error before SQLite writes any row.
 
-The application-owned `src/bin/soft_delete_return_probe.rs` follows current
+The application-owned `rust-app-console/src/bin/soft_delete_return_probe.rs` follows current
 `rust-assist-delete/school`: fully load School, call `mark_for_deletion()`, then
 audited `save(context)`. It asserts the returned strong entity has the
 persisted `version=-2` tombstone. It also deletes a second School inside an
@@ -62,21 +70,21 @@ From the repository root, run:
 node examples/school-management/verify-grouped-mapping.cjs --native --output /absolute/new/evidence-directory
 ```
 
-`tests/grouped_field_mapping.rs` starts with existing legacy tables whose columns
+`rust-app-console/tests/grouped_field_mapping.rs` starts with existing legacy tables whose columns
 include `Legacy Kind Key` and `Legacy Display Text`. Audited Context mutations
 populate them. The tests check logical keys, explicit aliases, grouped SUM and
 COUNT, grouped relation details through both row and SmartList execution, and
 grouping without aggregate functions. The original table definitions must remain
 unchanged. Physical column names are not accepted as logical query fields.
 
-The model explicitly selects runtime 7.1. The application-owned
+The model explicitly selects runtime 8.1.0. The application-owned
 `grouped_mapping_probe` exercises the regenerated, unmodified generated
 Q API: `group_by_school_type`, explicit aliases, `group_by_school_type_with_details`,
 and `roll_up_to_school_type`. It runs twice on one SQLite file, and an independent
 read-only query checks the stored FK values. Grouping without an aggregate returns
 only dimensions, not arbitrary fields from one member of the group. The verifier
 checks generated-library hashes and removes its disposable compilation output.
-Cargo metadata must resolve all six runtime components to this checkout at 7.1;
+Cargo metadata must resolve all six runtime components to this checkout at 8.1.0;
 old versions, registry artifacts and unrelated source directories fail the gate.
 The accompanying `native-verification.test.cjs` covers those rejection cases.
 

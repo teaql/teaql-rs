@@ -5,7 +5,7 @@ const example=__dirname,repo=path.resolve(example,'../..');
 const names=['teaql-core','teaql-macros','teaql-data-service','teaql-runtime','teaql-sql','teaql-provider-sqlite'];
 const selected=fs.readFileSync(path.join(example,'models/school-model.xml'),'utf8').match(/teaql_rs_version="(\d+\.\d+\.\d+)"/)[1];
 function fixture(){return {packages:[...names.map(name=>({name,version:selected,source:null,manifest_path:path.join(repo,name,'Cargo.toml')})),
-  {name:'school-management-service-core',source:null,manifest_path:path.join(example,'lib/Cargo.toml')}]};}
+  {name:'school-management-service-core',source:null,manifest_path:path.join(example,'rust-lib-core/lib/Cargo.toml')}]};}
 function runner(metadata,version=selected){return async(_command,log)=>JSON.stringify(log==='runtime-metadata.json'
   ?{packages:[{name:'teaql-runtime',version}]}:metadata);}
 test('all six runtime components and the generated library must resolve to this checkout',async()=>{

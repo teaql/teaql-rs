@@ -17,16 +17,16 @@ async function main(){
     receipt.sourceCommit=cp.execFileSync('git',['rev-parse','HEAD'],{cwd:repo,encoding:'utf8'}).trim();
     const sources=['teaql-core/src/meta.rs','teaql-sql/src/dialect.rs','teaql-sql/src/lib.rs',
       'teaql-runtime/src/data_service/resolved.rs','examples/school-management/verify-grouped-mapping.cjs',
-      'examples/school-management/src/bin/grouped_mapping_probe.rs','examples/school-management/tests/grouped_field_mapping.rs',
-      'examples/school-management/native-verification.cjs','examples/school-management/src/bin/rollup_statistics_probe.rs',
-      'examples/school-management/src/bin/numeric_rollup_probe.rs',
-      'examples/school-management/src/bin/gbk_rollup_cases/mod.rs',
-      'examples/school-management/src/bin/bitwise_rollup_cases/mod.rs',
-      'examples/school-management/src/bin/reverse_rollup_cases/mod.rs',
-      'examples/school-management/src/bin/expression_measure_cases/mod.rs',
-      'examples/school-management/src/bin/rollup_trace_cases/mod.rs',
-      'examples/school-management/src/bin/matching_criteria_cases/mod.rs',
-      'examples/school-management/src/bin/managed_field_cases/mod.rs',
+      'examples/school-management/rust-app-console/src/bin/grouped_mapping_probe.rs','examples/school-management/rust-app-console/tests/grouped_field_mapping.rs',
+      'examples/school-management/native-verification.cjs','examples/school-management/rust-app-console/src/bin/rollup_statistics_probe.rs',
+      'examples/school-management/rust-app-console/src/bin/numeric_rollup_probe.rs',
+      'examples/school-management/rust-app-console/src/bin/gbk_rollup_cases/mod.rs',
+      'examples/school-management/rust-app-console/src/bin/bitwise_rollup_cases/mod.rs',
+      'examples/school-management/rust-app-console/src/bin/reverse_rollup_cases/mod.rs',
+      'examples/school-management/rust-app-console/src/bin/expression_measure_cases/mod.rs',
+      'examples/school-management/rust-app-console/src/bin/rollup_trace_cases/mod.rs',
+      'examples/school-management/rust-app-console/src/bin/matching_criteria_cases/mod.rs',
+      'examples/school-management/rust-app-console/src/bin/managed_field_cases/mod.rs',
       'examples/school-management/models/school-model.xml','examples/school-management/Cargo.toml','examples/school-management/Cargo.lock',
       'Cargo.toml','Cargo.lock','teaql-core/src/aggregation_plan.rs','teaql-core/src/aggregation_plan/measure_expression.rs','teaql-sql/src/statistical.rs',
       'teaql-core/src/query.rs','teaql-core/src/request.rs','teaql-core/tests/rollup_navigation.rs'];
@@ -38,9 +38,9 @@ async function main(){
       'teaql-provider-sqlite/src/gbk_functions.rs');
     const sourceHashes=()=>Object.fromEntries(sources.map(name=>[name,sha(fs.readFileSync(path.join(repo,name)))]));
     receipt.sourceHashes=sourceHashes();
-    receipt.generatedFiles=files(path.join(__dirname,'lib'));
-    receipt.applicationSha256=sha(fs.readFileSync(path.join(__dirname,'src/bin/grouped_mapping_probe.rs')));
-    receipt.legacyTestSha256=sha(fs.readFileSync(path.join(__dirname,'tests/grouped_field_mapping.rs')));
+    receipt.generatedFiles=files(path.join(__dirname,'rust-lib-core/lib'));
+    receipt.applicationSha256=sha(fs.readFileSync(path.join(__dirname,'rust-app-console/src/bin/grouped_mapping_probe.rs')));
+    receipt.legacyTestSha256=sha(fs.readFileSync(path.join(__dirname,'rust-app-console/tests/grouped_field_mapping.rs')));
     const cargo=process.env.CARGO||'cargo',target=path.join(scratch,'target'),env={...process.env,
       CARGO_TARGET_DIR:target,CARGO_INCREMENTAL:'0',CARGO_BUILD_JOBS:'4',CARGO_PROFILE_DEV_DEBUG:'0',CARGO_PROFILE_TEST_DEBUG:'0',TEAQL_TELEMETRY_ENABLED:'false',
       TEAQL_GROUPED_MAPPING_DATABASE:path.join(output,'fixture.sqlite')};
@@ -65,7 +65,7 @@ async function main(){
     await run(['python3','-B','-c',oracle,env.TEAQL_GROUPED_MAPPING_DATABASE],'oracle.log');
     const rankOracle='import sqlite3,json,sys,pathlib,decimal; c=sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri()+"?mode=ro&immutable=1",uri=True); rows=[(r[0],str(decimal.Decimal(str(r[1])).normalize())) for r in c.execute("select id,display_order from school_type_data order by id")]; assert rows==[(1001,"1"),(1002,"2")],rows; c.close(); print("RESTORED_RANK_ORACLE="+json.dumps(rows))';
     await run(['python3','-B','-c',rankOracle,env.TEAQL_GROUPED_MAPPING_DATABASE],'rank-oracle.log');
-    assert.deepEqual(files(path.join(__dirname,'lib')),receipt.generatedFiles);receipt.generatedLibraryUnchanged=true;receipt.sameDatabase=true;
+    assert.deepEqual(files(path.join(__dirname,'rust-lib-core/lib')),receipt.generatedFiles);receipt.generatedLibraryUnchanged=true;receipt.sameDatabase=true;
     receipt.databaseSha256=sha(fs.readFileSync(env.TEAQL_GROUPED_MAPPING_DATABASE));
     assert.deepEqual(sourceHashes(),receipt.sourceHashes);
     receipt.passed=true;

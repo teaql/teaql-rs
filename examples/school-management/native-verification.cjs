@@ -16,7 +16,7 @@ async function verifySources(run,cargo,repo,example){
     origins[name]={version:p.version,manifest:p.manifest_path,source:p.source};
   }
   const library=metadata.packages.find(p=>p.name==='school-management-service-core');assert(library);
-  assert.equal(library.source,null);assert.equal(fs.realpathSync(library.manifest_path),fs.realpathSync(path.join(example,'lib/Cargo.toml')));
+  assert.equal(library.source,null);assert.equal(fs.realpathSync(library.manifest_path),fs.realpathSync(path.join(example,'rust-lib-core/lib/Cargo.toml')));
   return origins;
 }
 
