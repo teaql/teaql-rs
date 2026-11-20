@@ -2,7 +2,7 @@ use purchase_approval_queue_core::{
     request_support::AuditedSave as _, service_runtime, ServiceRuntimeConfig, E, Q,
 };
 use serde_json::json;
-use teaql_core::Value;
+use teaql_core::{Entity as _, Value};
 use teaql_runtime::{CheckRule, RuntimeError};
 
 #[tokio::main]
