@@ -39,9 +39,17 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-facet-generation/receipt.json",
     "receiptSHA256": "0f5277d5fe7509a2d009ff9d083b503f51341f954b078fa85c70e6b0bbb87f66"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-facet-independent-business.json",
+    "businessReceiptSHA256": "9be8d0a273abeaba20b66363aa6324c31baf6d953c6af41bba1e1e8a1712d4ae",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-facet-public-intent/receipt.json",
+    "nativeReceiptSHA256": "d5385ab601bc42b616ec3361a62d1a7ac2a431785de6205bd29c641c6af91f78",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "2ac64ba72272e8425bfa13fad779a5b0a8a03106"
+  },
   "scene": "School directory Facet browsing and membership counts",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implementation-awaiting-verification",
+  "status": "focused-verified",
   "verification": [
     "bash",
     "verify.sh"
