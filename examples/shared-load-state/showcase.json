@@ -1,0 +1,42 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/shared-load-state",
+  "library": {
+    "generatedFilesManifestSHA256": "67fc165242c7e8b1534766fc2a4e95d6c26acba15bc706b7f228072c3c7559ca",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "0664ef5b32b1126100676782ec5c6c2d56e9e491920bfdfacadb4790a66b9ca9"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/school-inheritance-and-partial-views-generation/receipt.json",
+    "receiptSHA256": "7c8fb5f6c6619d7165638972cdbbe267d68e50cadf33d70065b45a52c68cf84f"
+  },
+  "scene": "Read partial school records and preserve unseen business fields",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "bash",
+    "examples/shared-load-state/verify.sh",
+    "--workspace"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "src/main.rs"
+    ],
+    "generatedFilesManifestSHA256": "5639b0c773fd37ef074f82884d9fc6e1450d85b5679a1f0df9b31fc38180ad07",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}

@@ -5,7 +5,9 @@ const {createOwnedRunner, ownedBytes} = require('../tests/loaded-revert/owned-co
 const {prepareOwnedSubreaper} = require('../tests/loaded-revert/subreaper.cjs');
 const root = path.resolve(__dirname, '../..'), sha = b => crypto.createHash('sha256').update(b).digest('hex');
 async function main() {
-  const release = process.argv.slice(2).includes('--release'); assert(process.argv.slice(2).every(x => x === '--release'));
+  const args = process.argv.slice(2);
+  const release = args.includes('--release'), workspace = args.includes('--workspace');
+  assert(args.every(x => x === '--release' || x === '--workspace'));
   const requested = process.env.TEAQL_MAINSTREAM_EVIDENCE_DIR;
   const output = requested ? path.resolve(requested) : fs.mkdtempSync(path.join(os.tmpdir(), 'teaql-mainstream-evidence-'));
   if (requested) {assert(path.isAbsolute(requested) && !fs.existsSync(output)); fs.mkdirSync(output, {recursive: true});}
@@ -24,7 +26,8 @@ async function main() {
     assert(r.descendantProof?.safe && !r.signal && !r.error); assert.equal(r.status, 0, name + ': see retained log'); return bytes.toString();
   }
   try {
-    const reference = path.join(__dirname, 'diesel-reference/Cargo.toml'), candidate = path.join(__dirname, 'Cargo.toml');
+    const reference = path.join(__dirname, 'diesel-reference/Cargo.toml');
+    const candidate = path.join(__dirname, workspace ? 'rust-app-console/Cargo.toml' : 'Cargo.toml');
     // Explicit preparation is separate from offline, locked execution.
     await run('fetch-reference', ['cargo', 'fetch', '--locked', '--manifest-path', reference], true);
     await run('fetch-candidate', ['cargo', 'fetch', '--locked', '--manifest-path', candidate]);
@@ -34,7 +37,16 @@ async function main() {
       if (isReference) assert.equal(sqlite[0].version, '0.38.1');
       else assert(/^0\.39\.[0-9]+$/.test(sqlite[0].version));
       if (isReference) assert(!metadata.packages.some(p => ['teaql-core', 'teaql-runtime', 'rusqlite'].includes(p.name)));
-      else assert(!metadata.packages.some(p => p.name === 'diesel'));
+      else {
+        assert(!metadata.packages.some(p => p.name === 'diesel'));
+        if (workspace) {
+          const domain = metadata.packages.filter(p => p.name === 'school-management-service-core');
+          assert.equal(domain.length, 1);
+          assert.equal(domain[0].source, null);
+          assert.equal(domain[0].manifest_path, path.join(__dirname, 'rust-lib-core/lib/Cargo.toml'));
+          report.domainManifest = path.relative(root, domain[0].manifest_path);
+        }
+      }
       report[name + 'SqliteBinding'] = sqlite[0].version;
     }
     const profile = release ? ['--release'] : [];

@@ -3,28 +3,42 @@ set -euo pipefail
 example_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 runtime_dir="$(cd "$example_dir/../.." && pwd)"
 generate=false
+workspace=false
 wide=false
 inheritance=false
 for argument in "$@"; do
   case "$argument" in
+    --workspace) workspace=true ;;
     --generate) generate=true ;;
     --wide) wide=true ;;
     --inheritance) inheritance=true ;;
-    *) printf 'Usage: bash verify.sh [--generate] [--wide] [--inheritance]\n' >&2; exit 2 ;;
+    *) printf 'Usage: bash verify.sh --workspace | [--generate] [--wide] [--inheritance]\n' >&2; exit 2 ;;
   esac
 done
-if [[ "$generate" == false && ! -f "$example_dir/target/generated/lib/Cargo.toml" ]]; then
+fixture_dir="$example_dir/target/generated"
+if [[ "$workspace" == true ]]; then
+  if [[ "$generate" == true || "$wide" == true || "$inheritance" == true ]]; then
+    printf 'Choose the narrow workspace or a separate generated fixture.\n' >&2
+    exit 2
+  fi
+  fixture_dir="$example_dir/rust-lib-core"
+fi
+manifest="$example_dir/Cargo.toml"
+if [[ "$workspace" == true ]]; then
+  manifest="$example_dir/rust-app-console/Cargo.toml"
+fi
+if [[ "$workspace" == false && "$generate" == false && ! -f "$fixture_dir/lib/Cargo.toml" ]]; then
   # Frozen output from the qualified local producer is an immutable CI input,
   # not a handwritten replacement for generated APIs. Parent patch entries
   # resolve all TeaQL dependencies to this runtime checkout.
   fixture="$example_dir/fixtures/narrow"
   (cd "$fixture" && sha256sum --check --quiet SHA256SUMS)
-  mkdir -p "$example_dir/target/generated"
-  cp -R "$fixture/lib" "$example_dir/target/generated/"
+  mkdir -p "$fixture_dir"
+  cp -R "$fixture/lib" "$fixture_dir/"
   node "$runtime_dir/scripts/pin-local-example-library.cjs" \
-    "$example_dir/target/generated/lib" "$runtime_dir" "$example_dir/target"
+    "$fixture_dir/lib" "$runtime_dir" "$example_dir/target"
   cp "$fixture/model-under-test.xml" "$fixture/fixture-mode.txt" \
-    "$fixture/fixture-inheritance.txt" "$example_dir/target/generated/"
+    "$fixture/fixture-inheritance.txt" "$fixture_dir/"
 fi
 if [[ "$generate" == true ]]; then
   : "${TEAQL_CODEGEN_DIR:?Set TEAQL_CODEGEN_DIR to the local generator checkout}"
@@ -34,8 +48,8 @@ if [[ "$generate" == true ]]; then
     "-Dteaql.rs.dir=$runtime_dir" test
 fi
 fixture_mode=narrow
-if [[ -f "$example_dir/target/generated/fixture-mode.txt" ]]; then
-  IFS= read -r fixture_mode <"$example_dir/target/generated/fixture-mode.txt"
+if [[ -f "$fixture_dir/fixture-mode.txt" ]]; then
+  IFS= read -r fixture_mode <"$fixture_dir/fixture-mode.txt"
 fi
 if [[ "$wide" == true && "$fixture_mode" != wide ]]; then
   printf 'Wide verification requires a newly generated wide fixture.\n' >&2
@@ -47,8 +61,8 @@ case "$fixture_mode" in
   *) printf 'Invalid generated fixture mode\n' >&2; exit 1 ;;
 esac
 fixture_inheritance=false
-if [[ -f "$example_dir/target/generated/fixture-inheritance.txt" ]]; then
-  IFS= read -r fixture_inheritance <"$example_dir/target/generated/fixture-inheritance.txt"
+if [[ -f "$fixture_dir/fixture-inheritance.txt" ]]; then
+  IFS= read -r fixture_inheritance <"$fixture_dir/fixture-inheritance.txt"
 fi
 if [[ "$inheritance" == true && "$fixture_inheritance" != true ]]; then
   printf 'Inheritance verification requires a newly generated inherited fixture.\n' >&2
@@ -60,23 +74,37 @@ case "$fixture_inheritance" in
   false) ;;
   *) printf 'Invalid generated inheritance mode\n' >&2; exit 1 ;;
 esac
-if [[ ! -f "$example_dir/target/generated/lib/Cargo.toml" ]]; then
+if [[ ! -f "$fixture_dir/lib/Cargo.toml" ]]; then
   printf 'Generate first: see the generator test generatedRustSharedLoadStateRuntimeExample with -Dteaql.rs.dir=<this repository>\n' >&2
   exit 1
 fi
-run_dir="$(mktemp -d -t teaql-generated-load-state.XXXXXXXX)"
-printf 'Evidence retained at %s\n' "$run_dir"
-cargo metadata --locked --manifest-path "$example_dir/Cargo.toml" --format-version 1 >"$run_dir/dependencies.json"
+if [[ -n "${TEAQL_LOAD_STATE_EVIDENCE_DIR:-}" ]]; then
+  run_dir="$TEAQL_LOAD_STATE_EVIDENCE_DIR"
+  [[ "$run_dir" == /* ]]
+  mkdir -- "$run_dir"
+else
+  run_dir="$(mktemp -d -t teaql-generated-state.XXXXXXXX)"
+  if [[ "$workspace" == true ]]; then
+    trap 'rm -rf -- "$run_dir"' EXIT
+  fi
+fi
+printf 'School load-state evidence: %s\n' "$run_dir"
+cargo metadata --locked --manifest-path "$manifest" --format-version 1 >"$run_dir/dependencies.json"
 jq -e --arg root "$runtime_dir/" '
   [.packages[] | select(.name | startswith("teaql-"))] |
   length > 0 and all(.[]; .source == null and (.manifest_path | startswith($root)))
 ' "$run_dir/dependencies.json" >"$run_dir/local-dependencies-check.txt"
-rg --files --hidden --no-ignore "$example_dir/target/generated/lib/src" -0 |
+if [[ "$workspace" == true ]]; then
+  jq -e --arg manifest "$fixture_dir/lib/Cargo.toml" '
+    [.packages[] | select(.name == "school-management-service-core" and .source == null and .manifest_path == $manifest)] | length == 1
+  ' "$run_dir/dependencies.json" >"$run_dir/local-generated-library-check.txt"
+fi
+rg --files --hidden --no-ignore "$fixture_dir/lib/src" -0 |
   sort -z | xargs -0 sha256sum >"$run_dir/generated-source.sha256"
 export TEAQL_LOAD_STATE_DATABASE="$run_dir/school.sqlite"
 for round in first second; do
   export TEAQL_LOAD_STATE_ROUND="$round"
-  cargo test --locked --manifest-path "$example_dir/Cargo.toml" "${test_targets[@]}" -- --nocapture \
+  cargo test --locked --manifest-path "$manifest" "${test_targets[@]}" -- --nocapture \
     >"$run_dir/$round.log" 2>&1 || {
       tail -80 "$run_dir/$round.log" >&2
       exit 1
