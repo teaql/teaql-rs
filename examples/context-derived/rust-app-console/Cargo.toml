@@ -1,0 +1,15 @@
+[package]
+name = "context-derived-example"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+
+[dependencies]
+context-fix-service-core = { path = "../rust-lib-core/lib" }
+teaql-core = "8.1.0"
+teaql-runtime = "8.1.0"
+teaql-data-service = "8.1.0"
+chrono = "0.4"
+rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "column_decltype"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

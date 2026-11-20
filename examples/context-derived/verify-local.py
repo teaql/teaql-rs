@@ -4,6 +4,7 @@ Build outputs are disposable; reports and the twice-used SQLite DB are retained.
 This is a source qualification gate, not a published-package acceptance test.
 """
 import argparse
+from current_library import current_library_inputs
 import hashlib
 import json
 import os
@@ -41,7 +42,7 @@ def fixture(root=None):
 
 
 def sources():
-    paths = [EXAMPLE / "Cargo.toml", EXAMPLE / "Cargo.lock", EXAMPLE / "src/main.rs", Path(__file__).resolve(), REPO / "scripts/pin-local-example-library.cjs"]
+    paths = [EXAMPLE / "rust-app-console/Cargo.toml", EXAMPLE / "current_library.py", EXAMPLE / "Cargo.toml", EXAMPLE / "Cargo.lock", EXAMPLE / "rust-app-console/src/main.rs", Path(__file__).resolve(), REPO / "scripts/pin-local-example-library.cjs"]
     for crate in CRATES:
         paths.append(REPO / crate / "Cargo.toml")
         paths.extend((REPO / crate / "src").rglob("*.rs"))
@@ -50,26 +51,25 @@ def sources():
 
 def stage(scratch, output, env):
     """Adapt only owned dependency metadata; preserve the sealed source fixture."""
-    library, consumer = scratch / "generated-lib", scratch / "consumer"
-    shutil.copytree(EXAMPLE / "fixture/lib", library)
-    consumer.mkdir()
-    shutil.copytree(EXAMPLE / "src", consumer / "src")
-    shutil.copyfile(EXAMPLE / "Cargo.lock", consumer / "Cargo.lock")
-    manifest = (EXAMPLE / "Cargo.toml").read_text()
-    assert manifest.count('path = "fixture/lib"') == 1
-    manifest = manifest.replace('path = "fixture/lib"', 'path = "../generated-lib"')
+    library,consumer=scratch/"rust-lib-core/lib",scratch/"rust-app-console"
+    shutil.copytree(EXAMPLE/"rust-lib-core",scratch/"rust-lib-core")
+    shutil.copytree(EXAMPLE/"rust-app-console",consumer)
+    shutil.copyfile(EXAMPLE/"Cargo.lock",consumer/"Cargo.lock")
+    manifest=(EXAMPLE/"rust-app-console/Cargo.toml").read_text()+"\n[workspace]\n"
+    patches="[patch.crates-io]"+(EXAMPLE/"Cargo.toml").read_text().split("[patch.crates-io]",1)[1]
     for crate in CRATES:
-        original = f'{crate} = {{ path = "../../{crate}" }}'
-        assert manifest.count(original) == 1, crate
-        manifest = manifest.replace(original, f'{crate} = {{ path = {json.dumps(str(REPO / crate))} }}')
-    (consumer / "Cargo.toml").write_text(manifest)
-    command = [shutil.which("node") or "/home/philip/.nvm/versions/node/v24.19.0/bin/node",
-               str(REPO / "scripts/pin-local-example-library.cjs"), str(library), str(REPO), str(scratch)]
-    log = output / "pin-metadata.log"
-    assert run(command, env, log) == 0, "local metadata pin failed"
-    pin = json.loads(log.read_text())
-    assert pin["implementationFilesUnchanged"] and not pin["sourceFixtureEdited"]
-    assert not pin["sqliteDriverChanged"], "fresh fixture must use the selected SQLite ABI"
+        old=f'{crate} = {{ path = "../../{crate}" }}'
+        assert patches.count(old)==1,crate
+        patches=patches.replace(old,f'{crate} = {{ path = {json.dumps(str(REPO/crate))} }}')
+    (consumer/"Cargo.toml").write_text(manifest+patches)
+    assert sha(library/"Cargo.toml")==sha(EXAMPLE/"rust-lib-core/lib/Cargo.toml")
+    pattern=r'(?m)^rusqlite\s*=\s*\{\s*version\s*=\s*"([^"]+)"'
+    selected=re.search(pattern,(REPO/"Cargo.toml").read_text())[1]
+    generated=re.search(pattern,(library/"Cargo.toml").read_text())[1]
+    assert selected==generated,"Fresh generated SQLite ABI differs from the selected runtime"
+    pin=dict(implementationFilesUnchanged=True,sourceFixtureEdited=False,generatedManifestUnchanged=True,
+        sqliteDriverChanged=False,sqliteDriverVersion=selected,originalSqliteDriverVersion=generated,
+        originalManifestSha256=sha(EXAMPLE/"rust-lib-core/lib/Cargo.toml"),consumerManifestSha256=sha(library/"Cargo.toml"))
     return consumer, pin
 
 
@@ -101,7 +101,7 @@ def main():
     scratch = Path(tempfile.mkdtemp(prefix="teaql-context-build-"))
     status = 1
     try:
-        report.update(fixture=fixture(), sourceHashes=sources(), revision=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip())
+        report.update(currentLibrary=current_library_inputs(),fixture=fixture(), sourceHashes=sources(), revision=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip())
         cargo = shutil.which("cargo") or str(Path.home() / ".cargo/bin/cargo")
         env = dict(os.environ, CARGO_TARGET_DIR=str(scratch / "target"), CARGO_INCREMENTAL="0", CARGO_BUILD_JOBS="4", CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0", TEAQL_CONTEXT_FIX_DB=str(output / "fixture.sqlite"))
         report["buildOutput"] = str(scratch)
@@ -125,6 +125,8 @@ def main():
         report["buildCommand"] = command
         assert run(command, env, output / "build.log") == 0, "build failed; see build.log"
         metadata = json.loads(subprocess.check_output([cargo, "metadata", "--offline", "--locked", "--format-version", "1", "--manifest-path", str(manifest)], cwd=EXAMPLE, env=env, text=True))
+        domain = [p for p in metadata["packages"] if p["name"] == "context-fix-service-core"]
+        assert len(domain) == 1 and Path(domain[0]["manifest_path"]) == scratch / "rust-lib-core/lib/Cargo.toml", "not the current generated library"
         assert (consumer / "Cargo.lock").read_bytes() == (EXAMPLE / "Cargo.lock").read_bytes()
         report["dependencies"] = {}
         for crate in CRATES:
@@ -141,6 +143,7 @@ def main():
                 rows = connection.execute("SELECT name,last_ip,source_ip,changed_by,opened_by,version FROM entry_data ORDER BY id").fetchall()
                 assert any(r[:5] == ("accepted-first", "ip-D", "ip-C", "actor-D", "actor-C") for r in rows)
                 report["rounds"][-1]["sqliteRows"] = len(rows)
+            assert current_library_inputs() == report["currentLibrary"]
             assert fixture() == report["fixture"] and sources() == report["sourceHashes"], "source/fixture changed during verification"
         report.update(passed=True, sameDatabase=True, databaseSha256=sha(output / "fixture.sqlite"))
         status = 0

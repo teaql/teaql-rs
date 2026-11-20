@@ -1,19 +1,7 @@
-[package]
-name = "context-derived-example"
-version = "0.0.0"
-edition = "2024"
-publish = false
-
 [workspace]
-
-[dependencies]
-context-fix-service-core = { path = "fixture/lib" }
-teaql-core = "8.0.0"
-teaql-runtime = "8.0.0"
-teaql-data-service = "8.0.0"
-chrono = "0.4"
-rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "column_decltype"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+members=["rust-lib-core/lib","rust-app-console"]
+default-members=["rust-app-console"]
+resolver="2"
 
 [patch.crates-io]
 teaql-core = { path = "../../teaql-core" }

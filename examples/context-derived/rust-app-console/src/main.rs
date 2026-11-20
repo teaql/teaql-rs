@@ -197,7 +197,8 @@ fn new(context: &UserContext, catalog: u64, name: &str) -> Entry {
     let mut entry = Q::entries()
         .comment("Prepare a typed Context Fix subject")
         .purpose("Verify generated audited Save")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("Context example must allocate its entry identity");
     entry.update_catalog_id(catalog).update_name(name);
     entry
 }
@@ -388,7 +389,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut parent = Q::catalogs()
         .comment("Prepare a parent")
         .purpose("Verify per-entity graph boundaries")
-        .new_entity(&context);
+        .new_entity(&context)?;
     parent.update_name(format!("graph-{suffix}"));
     parent = parent.audit_as("Create graph owner").save(&context).await?;
     for name in ["first", "second"] {

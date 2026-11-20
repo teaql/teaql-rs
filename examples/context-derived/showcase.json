@@ -1,0 +1,40 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/context-derived",
+  "library": {
+    "generatedFilesManifestSHA256": "a72fe8f4d4bb0667ac852d6a20d3bc38bbadcb94ee4b87d0f69d24ea17bba0ea",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "c999381a5e3051e5b6ab9e5b027a2f1f5b568adf32d97c2accec5a4fb4472c0a"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build; not a public release",
+      "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+      "qualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
+      "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+      "tag": "unreleased-source-021b1ed8"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/context-field-qualified-generation/receipt.json",
+    "receiptSHA256": "fd8c37aeb5622a41a2dd8768724e432d5f97b58bf720f39217a8f31a8f4c1d90"
+  },
+  "scene": "Catalog entry edits with trusted Context defaults, no-op saves and rollback",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "node",
+    "verify-local.cjs"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "src/main.rs"
+    ],
+    "generatedFilesManifestSHA256": "45f23a95b2158525217e5e57e3d7a9023116ed7762eb141f45f018510e0555b4",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}
