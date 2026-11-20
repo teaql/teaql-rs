@@ -97,9 +97,15 @@ async fn read_approved(
         .await?
         .ok_or("The approved purchase order is missing")?;
     let order_expr = E::purchase_order(&order);
-    assert_eq!(order_expr.get_reference().eval().as_deref(), Some(APPROVED));
+    assert_eq!(
+        order_expr.clone().get_reference().eval().as_deref(),
+        Some(APPROVED)
+    );
     assert_eq!(order.version(), 1);
-    assert_eq!(order_expr.get_purchase_line_list().size().eval(), Some(3));
+    assert_eq!(
+        order_expr.clone().get_purchase_line_list().size().eval(),
+        Some(3)
+    );
 
     let mut lines = Vec::new();
     for (index, (code, product_id, label, quantity)) in [
@@ -110,15 +116,25 @@ async fn read_approved(
     .into_iter()
     .enumerate()
     {
-        let line = order_expr.get_purchase_line_list().get(index);
-        let line_id = line.get_id().eval().ok_or("Missing purchase line ID")?;
-        assert_eq!(line.get_line_code().eval().as_deref(), Some(code));
-        assert_eq!(line.get_quantity().eval(), Some(quantity));
-        assert_eq!(line.get_version().eval(), Some(1));
-        assert_eq!(line.get_purchase_order_id().eval(), Some(order.id()));
-        assert_eq!(line.get_catalog_product_id().eval(), Some(product_id));
+        let line = order_expr.clone().get_purchase_line_list().get(index);
+        let line_id = line
+            .clone()
+            .get_id()
+            .eval()
+            .ok_or("Missing purchase line ID")?;
+        assert_eq!(line.clone().get_line_code().eval().as_deref(), Some(code));
+        assert_eq!(line.clone().get_quantity().eval(), Some(quantity));
+        assert_eq!(line.clone().get_version().eval(), Some(1));
+        assert_eq!(
+            line.clone().get_purchase_order_id().eval(),
+            Some(order.id())
+        );
+        assert_eq!(
+            line.clone().get_catalog_product_id().eval(),
+            Some(product_id)
+        );
         let product = line.get_catalog_product();
-        assert_eq!(product.get_id().eval(), Some(product_id));
+        assert_eq!(product.clone().get_id().eval(), Some(product_id));
         assert_eq!(product.get_label().eval().as_deref(), Some(label));
         lines.push(json!({"id": line_id, "code": code, "productId": product_id, "label": label, "quantity": quantity}));
     }

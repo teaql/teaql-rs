@@ -47,6 +47,7 @@ async fn create(context: &impl TeaqlRuntime) -> AppResult<WorkItem> {
         .ok_or("The new work item is missing")?;
     assert_eq!(read.version(), 1);
     assert_eq!(E::work_item(&read).get_priority().eval(), Some(2));
+    assert!(read.is_field_loaded("inspection_note"));
     assert_eq!(E::work_item(&read).get_inspection_note().eval(), None);
     Ok(read)
 }
@@ -90,7 +91,11 @@ async fn amend(context: &impl TeaqlRuntime) -> AppResult<(WorkItem, String)> {
         .ok_or("The updated work item did not match the maintenance queue")?;
     assert_eq!((read.id(), read.version()), (saved.id(), 2));
     assert_eq!(
-        E::work_item(&read).get_inspection_note().eval().as_deref(),
+        E::work_item(&read)
+            .get_inspection_note()
+            .eval()
+            .flatten()
+            .as_deref(),
         Some(INSPECTION)
     );
     Ok((read, error.to_string()))
@@ -150,8 +155,8 @@ async fn main() -> AppResult<()> {
         "MAINTENANCE_WORK_ITEM={}",
         json!({
             "phase": args[2], "id": item.id(), "version": item.version(),
-            "ticket": item_expr.get_ticket().eval(), "title": item_expr.get_title().eval(),
-            "priority": item_expr.get_priority().eval(),
+            "ticket": item_expr.clone().get_ticket().eval(), "title": item_expr.clone().get_title().eval(),
+            "priority": item_expr.clone().get_priority().eval(),
             "inspection": item_expr.get_inspection_note().eval(), "conflict": conflict
         })
     );
