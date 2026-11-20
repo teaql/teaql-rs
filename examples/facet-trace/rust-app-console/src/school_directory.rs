@@ -106,10 +106,18 @@ pub async fn run(database: PathBuf) -> Result<(), Box<dyn Error>> {
         .update_student_capacity(800)
         .update_active(true);
     rejected.update_school_type_to_primary();
-    let error = rejected
-        .audit_as("")
-        .save(&context)
-        .await
+    // Validate caller-supplied intent before the fluent audited wrapper, whose
+    // native contract intentionally panics when given a blank constant reason.
+    let attempted = match teaql_core::MutationIntent::new("") {
+        Ok(intent) => {
+            rejected
+                .audit_as(intent.into_comment())
+                .save(&context)
+                .await
+        }
+        Err(error) => Err(teaql_runtime::RuntimeError::from(error)),
+    };
+    let error = attempted
         .err()
         .ok_or("an unaudited school was unexpectedly published")?;
     match error {
