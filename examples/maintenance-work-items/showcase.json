@@ -21,9 +21,17 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-sqlite-business-generation/receipt.json",
     "receiptSHA256": "2fdda83fd38eba3f66c06031d502e133994446bf607d1e7dfd566039201ef585"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-maintenance-work-items-calibrated-tombstone/runtime/maintenance-work-items/receipt.json",
+    "businessReceiptSHA256": "212cadd6a75f25ae3b06f4b46657e633ee5fb698911d16bcce992a88169b6b1b",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-maintenance-work-items-calibrated-tombstone/receipt.json",
+    "nativeReceiptSHA256": "9cabb267599f63fd86c00128bda0e492c1cfc2a3be7c00010c11f1aa042e0017",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "3d920b182a6d676aa8f8dac8b2208841ef2c4cc0"
+  },
   "scene": "File, escalate and close a lift inspection with versioned SQLite work items",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "bash",
     "scripts/verify-sqlite-business-example.sh",
