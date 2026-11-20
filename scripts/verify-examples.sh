@@ -39,6 +39,8 @@ TEAQL_SQLITE_EXAMPLE_EVIDENCE_DIR="$verification_dir/maintenance-work-items" \
   bash scripts/verify-sqlite-business-example.sh maintenance-work-items
 cargo test -p teaql-provider-sqlite --test relation_membership -- --nocapture
 cargo test -p teaql-examples --all-targets
+TEAQL_ORDER_PRIVACY_EVIDENCE_DIR="$verification_dir/order-privacy" bash examples/src/bin/merchant-order-privacy/verify-privacy.sh
+cargo run --offline --locked -p teaql-examples --bin security_foundations
 TEAQL_RUST_ENROLLMENT_EVIDENCE_DIR="$verification_dir/school-enrollment" \
   bash examples/src/bin/school_enrollment/verify.sh
 TEAQL_SHIPPING_LOG_EVIDENCE_DIR="$verification_dir/order-logging" \

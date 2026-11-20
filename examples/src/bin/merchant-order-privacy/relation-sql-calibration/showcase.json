@@ -1,0 +1,51 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/tests/sql_relation_masking.rs",
+  "library": {
+    "generatedFilesManifestSHA256": "edb122f0a73f13ceb0a1eff47f08bd0686e042e6cafabbd52dce38d95a648d32",
+    "root": "../rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "../model.xml",
+    "sha256": "4bd3524659417a530665b6bcbfec928ee3e5845f2e96570346193fd64981551a"
+  },
+  "originalCalibration": [
+    "cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "-p",
+    "teaql-examples",
+    "--test",
+    "sql_relation_masking"
+  ],
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/order-privacy-and-federation-generation/receipt.json",
+    "receiptSHA256": "0ae62ffb613692c2d0922b4da1b1dbb9ca6081e8a36a5786a27029a614b711d1"
+  },
+  "scene": "View one authorized merchant order while protecting customer data in SQL diagnostics",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "implemented-pending-native-qualification",
+  "verification": [
+    "bash",
+    "examples/src/bin/merchant-order-privacy/verify-privacy.sh"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "src/main.rs"
+    ],
+    "generatedFilesManifestSHA256": "25246f00126e7d4237d07751fcae7b044f444f95cc237998514a3f04ad65b21e",
+    "root": "../rust-app-console",
+    "scope": "rust-app-console"
+  }
+}
