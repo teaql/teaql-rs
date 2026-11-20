@@ -1,5 +1,9 @@
 # Inherited save example
 
+The scene starts from `model.xml`. The generated domain lives in
+`rust-lib-core`. The `rust-app-console` workspace runs the lifecycle
+against that library with the runtime from this checkout.
+
 Save an Academy once, then load and edit the same object through Academy and
 School Q APIs. Generated E expressions verify the inherited values. No
 application code inserts a parent row or writes SQL. Tests alone may create
