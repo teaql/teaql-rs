@@ -34,7 +34,7 @@ bash examples/object-storage/verify.sh
 bash examples/trace-chain/verify-standard-telemetry.sh
 cargo test -p teaql-provider-sqlite --test relation_membership -- --nocapture
 cargo test -p teaql-examples --all-targets
-cargo run --quiet --manifest-path examples/conformance/Cargo.toml
+TEAQL_CONFORMANCE_EVIDENCE_DIR="$verification_dir/conformance" bash examples/conformance/verify.sh
 cargo run --quiet --manifest-path examples/school-management/Cargo.toml
 bash scripts/verify-school-bootstrap-example.sh
 SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL="$verification_dir/env-helper.db" \

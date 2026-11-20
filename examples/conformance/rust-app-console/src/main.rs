@@ -11,13 +11,10 @@ const PURPOSE: &str = "Run the retained Rust minimum conformance example";
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     verify_same_id_version_isolation()?;
-    let database = std::env::temp_dir().join(format!(
-        "teaql-conformance-rust-{}.sqlite",
-        std::process::id()
-    ));
-    if database.exists() {
-        std::fs::remove_file(&database)?;
-    }
+    let database = std::env::var_os("TEAQL_CONFORMANCE_DB")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join(format!(
+            "teaql-conformance-rust-{}.sqlite", std::process::id())));
     let context = service_runtime(ServiceRuntimeConfig {
         database_url: database.to_string_lossy().into_owned(),
     })
@@ -173,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!("PASS Delete (default Q excludes deleted rows)");
     println!("PASS Rust minimum runtime conformance: 8/8");
-    std::fs::remove_file(database)?;
+    println!("Retained WorkItem database: {}", database.display());
     Ok(())
 }
 
