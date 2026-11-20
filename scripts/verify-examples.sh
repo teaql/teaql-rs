@@ -28,6 +28,7 @@ TEAQL_PURCHASE_APPROVAL_EVIDENCE_DIR="${verification_dir%/runtime}/purchase-appr
 TEAQL_DISPATCH_PROFILE_EVIDENCE_DIR="${verification_dir%/runtime}/expression-profiles" bash "examples/expression-profiles/verify-dispatch.sh"
 node examples/tests/loaded-revert/verify-local.cjs
 node examples/tests/loaded-revert/verify-views.cjs
+TEAQL_ORDER_EDIT_EVIDENCE_DIR="${verification_dir%/runtime}/order-line-edit" bash examples/tests/loaded-revert/verify-order-edit.sh
 bash examples/http-resilience/verify.sh
 bash examples/object-storage/verify.sh
 bash examples/trace-chain/verify-standard-telemetry.sh

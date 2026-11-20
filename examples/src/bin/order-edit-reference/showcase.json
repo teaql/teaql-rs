@@ -1,0 +1,32 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/src/bin/round_trip_references.rs",
+  "library": {
+    "generatedFilesManifestSHA256": "cdc1af07417a1b731a0d46ddfd85bb73994133ce82b8ad3fa5833d26bef7c4d7",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "065bad2b9154a08abbec48549e60cc907e6f2889e9a005b428d902a1cbd0999f"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/order-reference-and-line-restoration-evaluated-generation/receipt.json",
+    "receiptSHA256": "21eae4c57d59881287106fe7871d0958e6596ab455f9e7e095580b0b03a05dc8"
+  },
+  "scene": "Resolve a scoped order-line reference before accepting an edit",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "generation-prepared",
+  "workspace": {
+    "generatedFilesManifestSHA256": "88fd2cac03ac892da36d8e764e1cfeeaf6cfecdf3cea222363d118e196e5e6a6",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}
