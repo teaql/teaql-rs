@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="merchant-order-privacy-service" org="teaql" data_service="sqlite">
+  <merchant _name="Merchant" _module="Sales" _module_key="sales" name="Harbour Retail"/>
+  <customer_profile _name="Customer Profile" _module="Sales" _module_key="sales"
+                    merchant="merchant()" email="customer@example.test" _audit_mask_fields="email"/>
+  <customer_order _name="Customer Order" _module="Sales" _module_key="sales"
+                  merchant="merchant()" customer_profile="customer_profile()"
+                  order_number="SHIP-APRIL-042" fulfillment_status="ready"/>
+</root>
