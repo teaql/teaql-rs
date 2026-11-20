@@ -21,9 +21,17 @@
     "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/purchase-order-numbering-generation/receipt.json",
     "receiptSHA256": "e65136b27d5640fa4cdd62b13413148a267ea25ae0c7947adbea2ad9121c84b4"
   },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-purchase-order-numbering-audit-admission/runtime/business-id/receipt.json",
+    "businessReceiptSHA256": "84500f897a2babf020dd2b1e0a6e29dcd1ec09cfce10d1a1ac818d53b424d2c7",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-purchase-order-numbering-audit-admission/receipt.json",
+    "nativeReceiptSHA256": "000a1d0745ec042a6a0ab9f1aea2ee5d3599a43fa6414ecdab72f45846e563e8",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "7481f872cd023cda4ae429d656c0ad12338436a3"
+  },
   "scene": "Procurement numbering with shared console and original allocator and Ledger calibration",
   "schema": "teaql.model-workspace-showcase/v1",
-  "status": "implemented-pending-native-qualification",
+  "status": "focused-verified",
   "verification": [
     "rust-app-console/src/main.rs",
     "cargo test -p teaql-examples --test business_id_runtime"
