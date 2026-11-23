@@ -2157,7 +2157,7 @@ where
             outcome.dynamic_readbacks = Some(Box::new(DynamicReadbacks {
                 rows: Box::pin(self.persist_dynamic_writes(
                     &root,
-                    &change_set,
+                    change_set,
                     &dynamic_keys,
                     &dynamic_writes,
                 ))

@@ -597,7 +597,7 @@ pub(crate) fn ledger_policy_plan_from(
                 kind,
                 original_version: root.get_original_version(&key),
                 entity: key,
-                changed_values: changed_values.into(),
+                changed_values,
             }
         })
         .collect();

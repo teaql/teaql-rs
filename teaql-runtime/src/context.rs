@@ -1346,7 +1346,7 @@ impl UserContext {
             .iter()
             .filter_map(|field| {
                 values
-                    .get(*field)
+                    .get(field)
                     .cloned()
                     .map(|value| ((*field).to_owned(), value))
             })

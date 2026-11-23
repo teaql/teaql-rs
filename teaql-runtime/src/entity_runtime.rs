@@ -1166,13 +1166,13 @@ impl EntityRuntimeState {
     fn context(&self) -> &Arc<Mutex<EntityMutationLedger>> {
         self.inner.get_or_init(|| {
             let mut ledger = EntityMutationLedger::default();
-            if let Some(snapshot) = self.loaded_snapshot.shared() {
-                if let Some(id) = snapshot.row.get("id") {
-                    ledger.original_snapshots.insert(
-                        EntityKey::new(snapshot.entity.as_ref(), id.clone()),
-                        OriginalSnapshot::Compact(snapshot),
-                    );
-                }
+            if let Some(snapshot) = self.loaded_snapshot.shared()
+                && let Some(id) = snapshot.row.get("id")
+            {
+                ledger.original_snapshots.insert(
+                    EntityKey::new(snapshot.entity.as_ref(), id.clone()),
+                    OriginalSnapshot::Compact(snapshot),
+                );
             }
             Arc::new(Mutex::new(ledger))
         })

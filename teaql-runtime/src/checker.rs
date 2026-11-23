@@ -657,7 +657,7 @@ where
                     let changed: teaql_core::MutationValues = after
                         .iter()
                         .filter(|(field, value)| {
-                            before_intent.as_ref().and_then(|before| before.get(*field))
+                            before_intent.as_ref().and_then(|before| before.get(field))
                                 != Some(*value)
                         })
                         .map(|(field, value)| (field.clone(), value.clone()))

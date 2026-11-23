@@ -187,10 +187,10 @@ impl MutationValues {
         self.get(name).is_some()
     }
     pub fn insert(&mut self, name: String, value: Value) -> Option<Value> {
-        if let Some(symbols) = self.symbols() {
-            if let Some(slot) = symbols.slot(&name) {
-                return self.insert_slot(symbols, slot, value);
-            }
+        if let Some(symbols) = self.symbols()
+            && let Some(slot) = symbols.slot(&name)
+        {
+            return self.insert_slot(symbols, slot, value);
         }
         match &mut self.0 {
             Storage::Named(v) => v.insert(name, value),
@@ -201,10 +201,10 @@ impl MutationValues {
         }
     }
     pub fn insert_named(&mut self, name: &str, value: Value) -> Option<Value> {
-        if let Some(symbols) = self.symbols() {
-            if let Some(slot) = symbols.slot(name) {
-                return self.insert_slot(symbols, slot, value);
-            }
+        if let Some(symbols) = self.symbols()
+            && let Some(slot) = symbols.slot(name)
+        {
+            return self.insert_slot(symbols, slot, value);
         }
         self.insert(name.to_owned(), value)
     }
