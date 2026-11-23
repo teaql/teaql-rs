@@ -57,7 +57,11 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
                 ))?);
             } else if meta.path.is_ident("symbol_fields") {
                 attrs_out.symbol_fields = parse_string_expr(&meta.value()?.parse::<Expr>()?)
-                    .split(',').map(str::trim).filter(|name| !name.is_empty()).map(str::to_owned).collect();
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .collect();
             } else if meta.path.is_ident("symbol_entity") {
                 attrs_out.symbol_entity =
                     Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?);

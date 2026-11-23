@@ -330,7 +330,8 @@ where
                 .unwrap_or(Value::I64(0));
             let root_key = crate::EntityKey::new(entity.clone(), current_id);
             reject_cancelled_new_root(&root, &root_key)?;
-            let policy_plan = crate::mutation_policy::ledger_policy_plan_from(context, &node, &root, &changes)?;
+            let policy_plan =
+                crate::mutation_policy::ledger_policy_plan_from(context, &node, &root, &changes)?;
             let governance = context.review_mutation_plan(&policy_plan)?;
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
@@ -348,7 +349,11 @@ where
                         );
                     let locations = ledger_object_locations(&node);
                     let mut generated_ids = eds
-                        .execute_ledger_plan_internal_with_changes(root.clone(), &locations, &changes)
+                        .execute_ledger_plan_internal_with_changes(
+                            root.clone(),
+                            &locations,
+                            &changes,
+                        )
                         .await?;
                     if let Some(readbacks) = &mut generated_ids.dynamic_readbacks {
                         node.dynamic_fields = readbacks
@@ -1496,7 +1501,10 @@ fn graph_node_from_values(
             Value::Object(record) => {
                 let child =
                     graph_node_from_values(context, &relation.target_entity, record.into())?;
-                node.relations.entry(field.to_owned()).or_default().push(child);
+                node.relations
+                    .entry(field.to_owned())
+                    .or_default()
+                    .push(child);
             }
             Value::List(values) => {
                 let children = node.relations.entry(field.to_owned()).or_default();
@@ -2674,11 +2682,16 @@ where
                         node.comment.as_deref(),
                     )?);
             let locations = ledger_object_locations(&node);
-            let policy_plan = crate::mutation_policy::ledger_policy_plan_from(context, &node, &root, &changes)?;
+            let policy_plan =
+                crate::mutation_policy::ledger_policy_plan_from(context, &node, &root, &changes)?;
             let governance = context.review_mutation_plan(&policy_plan)?;
             let mut generated_ids = crate::with_mutation_governance(
                 governance,
-                data_service.execute_ledger_plan_internal_with_changes(root.clone(), &locations, &changes),
+                data_service.execute_ledger_plan_internal_with_changes(
+                    root.clone(),
+                    &locations,
+                    &changes,
+                ),
             )
             .await
             .map_err(data_service_error_into_runtime)?;
