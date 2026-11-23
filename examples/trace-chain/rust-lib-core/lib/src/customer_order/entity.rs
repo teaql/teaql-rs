@@ -44,23 +44,69 @@ pub struct CustomerOrder {
 }
 
 impl CustomerOrder {
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_id: crate::GeneratedField = crate::GeneratedField {
+        model_key: "id",
+        query_key: "id",
+        member_name: "id",
+        column_name: "id",
+        load_index: 0,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_platform: crate::GeneratedField = crate::GeneratedField {
+        model_key: "platform",
+        query_key: "platform_id",
+        member_name: "platform_id",
+        column_name: "platform",
+        load_index: 1,
+        reference: true,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_order_number: crate::GeneratedField = crate::GeneratedField {
+        model_key: "order_number",
+        query_key: "order_number",
+        member_name: "order_number",
+        column_name: "order_number",
+        load_index: 2,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_description: crate::GeneratedField = crate::GeneratedField {
+        model_key: "description",
+        query_key: "description",
+        member_name: "description",
+        column_name: "description",
+        load_index: 3,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_version: crate::GeneratedField = crate::GeneratedField {
+        model_key: "version",
+        query_key: "version",
+        member_name: "version",
+        column_name: "version",
+        load_index: 4,
+        reference: false,
+    };
+
     pub const ENTITY_NAME: &'static str = "Customer Order";
 
     // Framework metadata: complete fixed layout, including overflow slots.
     pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "f10d535b66998395625745c0c3f6032ed01350e7f851687673b5ff1eb94a4337";
     pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
-        ("id", 0),
-        ("platform", 1),
-        ("order_number", 2),
-        ("description", 3),
-        ("version", 4),
+        (Self::__TEAQL_FIELD_id.model_key, Self::__TEAQL_FIELD_id.load_index),
+        (Self::__TEAQL_FIELD_platform.model_key, Self::__TEAQL_FIELD_platform.load_index),
+        (Self::__TEAQL_FIELD_order_number.model_key, Self::__TEAQL_FIELD_order_number.load_index),
+        (Self::__TEAQL_FIELD_description.model_key, Self::__TEAQL_FIELD_description.load_index),
+        (Self::__TEAQL_FIELD_version.model_key, Self::__TEAQL_FIELD_version.load_index),
     ];
     pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
-        ("id", "id", "id"),
-        ("platform", "platform_id", "platform"),
-        ("order_number", "order_number", "order_number"),
-        ("description", "description", "description"),
-        ("version", "version", "version"),
+        (Self::__TEAQL_FIELD_id.model_key, Self::__TEAQL_FIELD_id.member_name, Self::__TEAQL_FIELD_id.column_name),
+        (Self::__TEAQL_FIELD_platform.model_key, Self::__TEAQL_FIELD_platform.member_name, Self::__TEAQL_FIELD_platform.column_name),
+        (Self::__TEAQL_FIELD_order_number.model_key, Self::__TEAQL_FIELD_order_number.member_name, Self::__TEAQL_FIELD_order_number.column_name),
+        (Self::__TEAQL_FIELD_description.model_key, Self::__TEAQL_FIELD_description.member_name, Self::__TEAQL_FIELD_description.column_name),
+        (Self::__TEAQL_FIELD_version.model_key, Self::__TEAQL_FIELD_version.member_name, Self::__TEAQL_FIELD_version.column_name),
     ];
 
     pub fn with_id(id: u64) -> teaql_core::Value {
@@ -108,17 +154,17 @@ impl CustomerOrder {
     pub fn update_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "id", value);
-        self.__load_state.mark_loaded("id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_id.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_id.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "id")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_id.model_key)
     }
 
     pub fn eval_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_id.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "id".to_string(), attempted_path: "id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.id())
@@ -132,17 +178,17 @@ impl CustomerOrder {
     pub fn update_order_number(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.order_number = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.order_number.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "order_number", value);
-        self.__load_state.mark_loaded("order_number").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_order_number.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_order_number.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_order_number(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "order_number")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_order_number.model_key)
     }
 
     pub fn eval_order_number(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("order_number") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_order_number.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "order_number".to_string(), attempted_path: "order_number".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.order_number())
@@ -156,17 +202,17 @@ impl CustomerOrder {
     pub fn update_description(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.description = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.description.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "description", value);
-        self.__load_state.mark_loaded("description").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_description.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_description.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_description(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "description")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_description.model_key)
     }
 
     pub fn eval_description(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("description") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_description.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "description".to_string(), attempted_path: "description".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.description())
@@ -180,17 +226,17 @@ impl CustomerOrder {
     pub fn update_version(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "version", value);
-        self.__load_state.mark_loaded("version").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_version.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_version.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_version(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "version")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_version.model_key)
     }
 
     pub fn eval_version(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("version") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_version.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "version".to_string(), attempted_path: "version".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.version())
@@ -203,17 +249,17 @@ impl CustomerOrder {
     pub fn update_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.platform_id = value.try_u64().unwrap_or(self.platform_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "platform", value);
-        self.__load_state.mark_loaded("platform_id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_platform.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_platform.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_platform_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "platform")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_platform.model_key)
     }
 
     pub fn eval_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("platform_id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_platform.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "platform_id".to_string(), attempted_path: "platform_id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.platform_id())

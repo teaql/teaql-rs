@@ -63,8 +63,8 @@ impl<R> TrainingAcademyRequest<R> {
     pub(crate) fn new() -> Self {
         Self {
             query: SelectQuery::new("TrainingAcademy")
-                .project("id")
-                .project("version"),
+                .project(crate::School::__TEAQL_FIELD_id.query_key)
+                .project(crate::School::__TEAQL_FIELD_version.query_key),
             relation_selections: Vec::new(),
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
@@ -547,14 +547,14 @@ impl<R> TrainingAcademyRequest<R> {
 
     fn dynamic_json_self_field(field: &str) -> Option<&'static str> {
         match field {
-            "id" => Some("id"),
-            "name" => Some("name"),
-            "student_capacity" => Some("student_capacity"),
-            "version" => Some("version"),
-            "campus_code" => Some("campus_code"),
-            "specialty" => Some("specialty"),
-            "platform" | "platform_id" => Some("platform_id"),
-            "school_type" | "school_type_id" => Some("school_type_id"),
+            "id" => Some(crate::School::__TEAQL_FIELD_id.query_key),
+            "name" => Some(crate::School::__TEAQL_FIELD_name.query_key),
+            "student_capacity" => Some(crate::School::__TEAQL_FIELD_student_capacity.query_key),
+            "version" => Some(crate::School::__TEAQL_FIELD_version.query_key),
+            "campus_code" => Some(crate::Academy::__TEAQL_FIELD_campus_code.query_key),
+            "specialty" => Some(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key),
+            "platform" | "platform_id" => Some(crate::School::__TEAQL_FIELD_platform.query_key),
+            "school_type" | "school_type_id" => Some(crate::School::__TEAQL_FIELD_school_type.query_key),
             _ => None,
         }
     }
@@ -703,14 +703,14 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn select_self(mut self) -> Self {
-        self.query = self.query.project("id");
-        self.query = self.query.project("name");
-        self.query = self.query.project("student_capacity");
-        self.query = self.query.project("version");
-        self.query = self.query.project("campus_code");
-        self.query = self.query.project("specialty");
-        self.query = self.query.project("platform_id");
-        self.query = self.query.project("school_type_id");
+        self.query = self.query.project(crate::School::__TEAQL_FIELD_id.query_key);
+        self.query = self.query.project(crate::School::__TEAQL_FIELD_name.query_key);
+        self.query = self.query.project(crate::School::__TEAQL_FIELD_student_capacity.query_key);
+        self.query = self.query.project(crate::School::__TEAQL_FIELD_version.query_key);
+        self.query = self.query.project(crate::Academy::__TEAQL_FIELD_campus_code.query_key);
+        self.query = self.query.project(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key);
+        self.query = self.query.project(crate::School::__TEAQL_FIELD_platform.query_key);
+        self.query = self.query.project(crate::School::__TEAQL_FIELD_school_type.query_key);
         self.__synced()
     }
 
@@ -885,12 +885,12 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn group_by_id(self) -> Self {
-        self.group_by("id")
+        self.group_by(crate::School::__TEAQL_FIELD_id.query_key)
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
         let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("id"));
+        request.query = request.query.group_by_expr(alias, Expr::column(crate::School::__TEAQL_FIELD_id.query_key));
         request.__synced()
     }
 
@@ -901,7 +901,7 @@ impl<R> TrainingAcademyRequest<R> {
     ) -> Self {
         let mut request = self;
         request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("id")]));
+            Expr::function(function, vec![Expr::column(crate::School::__TEAQL_FIELD_id.query_key)]));
         request.__synced()
     }
 
@@ -910,14 +910,14 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("id", alias)
+        self.aggregate_count_field(crate::School::__TEAQL_FIELD_id.query_key, alias)
     }
     pub fn count_distinct_id(self) -> Self {
         self.count_distinct_id_as("id_distinct_count")
     }
 
     pub fn count_distinct_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("id", alias, AggregateFunction::CountDistinct)
+        self.aggregate_with_function(crate::School::__TEAQL_FIELD_id.query_key, alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_id(self) -> Self {
@@ -925,7 +925,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn sum_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("id", alias)
+        self.aggregate_sum(crate::School::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn avg_id(self) -> Self {
@@ -933,7 +933,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn avg_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("id", alias)
+        self.aggregate_avg(crate::School::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn min_id(self) -> Self {
@@ -941,7 +941,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn min_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("id", alias)
+        self.aggregate_min(crate::School::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn max_id(self) -> Self {
@@ -949,7 +949,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn max_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("id", alias)
+        self.aggregate_max(crate::School::__TEAQL_FIELD_id.query_key, alias)
     }
 
 
@@ -959,7 +959,7 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "id",
+            crate::School::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -971,21 +971,21 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "id",
+            crate::School::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", value));
+        self.query = self.query.and_filter(Expr::eq(crate::School::__TEAQL_FIELD_id.query_key, value));
         self.__synced()
     }
 
 
 
     pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", value));
+        self.query = self.query.and_filter(Expr::ne(crate::School::__TEAQL_FIELD_id.query_key, value));
         self.__synced()
     }
 
@@ -994,7 +994,7 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
-            "id",
+            crate::School::__TEAQL_FIELD_id.query_key,
             values.into_iter().map(Into::into),
         ));
         self.__synced()
@@ -1005,35 +1005,35 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
-            "id",
+            crate::School::__TEAQL_FIELD_id.query_key,
             values.into_iter().map(Into::into),
         ));
         self.__synced()
     }
 
     pub fn order_by_id_asc(mut self) -> Self {
-        self.query = self.query.order_asc("id");
+        self.query = self.query.order_asc(crate::School::__TEAQL_FIELD_id.query_key);
         self.__synced()
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
-        self.query = self.query.order_desc("id");
+        self.query = self.query.order_desc(crate::School::__TEAQL_FIELD_id.query_key);
         self.__synced()
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("id");
+        self.query = self.query.order_gbk_asc(crate::School::__TEAQL_FIELD_id.query_key);
         self.__synced()
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("id");
+        self.query = self.query.order_gbk_desc(crate::School::__TEAQL_FIELD_id.query_key);
         self.__synced()
     }
 
 
     pub fn select_name(mut self) -> Self {
-        self.query = self.query.project("name");
+        self.query = self.query.project(crate::School::__TEAQL_FIELD_name.query_key);
         self.__synced()
     }
 
@@ -1048,17 +1048,17 @@ impl<R> TrainingAcademyRequest<R> {
     pub fn select_name_unsafe_raw(mut self, raw_sql_segment: UnsafeRawSqlSegment) -> Self {
         self.query_options
             .raw_projections
-            .push(RawProjection::new("name", raw_sql_segment));
+            .push(RawProjection::new(crate::School::__TEAQL_FIELD_name.query_key, raw_sql_segment));
         self.__synced()
     }
 
     pub fn group_by_name(self) -> Self {
-        self.group_by("name")
+        self.group_by(crate::School::__TEAQL_FIELD_name.query_key)
     }
 
     pub fn group_by_name_as(self, alias: impl Into<String>) -> Self {
         let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("name"));
+        request.query = request.query.group_by_expr(alias, Expr::column(crate::School::__TEAQL_FIELD_name.query_key));
         request.__synced()
     }
 
@@ -1069,7 +1069,7 @@ impl<R> TrainingAcademyRequest<R> {
     ) -> Self {
         let mut request = self;
         request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("name")]));
+            Expr::function(function, vec![Expr::column(crate::School::__TEAQL_FIELD_name.query_key)]));
         request.__synced()
     }
 
@@ -1078,14 +1078,14 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn count_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("name", alias)
+        self.aggregate_count_field(crate::School::__TEAQL_FIELD_name.query_key, alias)
     }
     pub fn count_distinct_name(self) -> Self {
         self.count_distinct_name_as("name_distinct_count")
     }
 
     pub fn count_distinct_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("name", alias, AggregateFunction::CountDistinct)
+        self.aggregate_with_function(crate::School::__TEAQL_FIELD_name.query_key, alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_name(self) -> Self {
@@ -1093,7 +1093,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn sum_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("name", alias)
+        self.aggregate_sum(crate::School::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn avg_name(self) -> Self {
@@ -1101,7 +1101,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn avg_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("name", alias)
+        self.aggregate_avg(crate::School::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn min_name(self) -> Self {
@@ -1109,7 +1109,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn min_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("name", alias)
+        self.aggregate_min(crate::School::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn max_name(self) -> Self {
@@ -1117,12 +1117,12 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn max_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("name", alias)
+        self.aggregate_max(crate::School::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn unselect_name(mut self) -> Self {
-        self.query.projection.retain(|field| field != "name");
-        self.query_options.raw_projections.retain(|projection| projection.property_name != "name");
+        self.query.projection.retain(|field| field != crate::School::__TEAQL_FIELD_name.query_key);
+        self.query_options.raw_projections.retain(|projection| projection.property_name != crate::School::__TEAQL_FIELD_name.query_key);
         self.__synced()
     }
 
@@ -1133,7 +1133,7 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "name",
+            crate::School::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1145,41 +1145,41 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "name",
+            crate::School::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_name_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("name", value));
+        self.query = self.query.and_filter(Expr::eq(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
 
 
     pub fn with_name_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("name", value));
+        self.query = self.query.and_filter(Expr::ne(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
+        self.query = self.query.and_filter(Expr::gt(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("name", value));
+        self.query = self.query.and_filter(Expr::gte(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
+        self.query = self.query.and_filter(Expr::lt(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("name", value));
+        self.query = self.query.and_filter(Expr::lte(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
@@ -1188,7 +1188,7 @@ impl<R> TrainingAcademyRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("name", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::School::__TEAQL_FIELD_name.query_key, lower, upper));
         self.__synced()
     }
 
@@ -1197,7 +1197,7 @@ impl<R> TrainingAcademyRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "name",
+            crate::School::__TEAQL_FIELD_name.query_key,
             range.start,
             range.end,
         ));
@@ -1209,7 +1209,7 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
-            "name",
+            crate::School::__TEAQL_FIELD_name.query_key,
             values.into_iter().map(Into::into),
         ));
         self.__synced()
@@ -1220,92 +1220,92 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
-            "name",
+            crate::School::__TEAQL_FIELD_name.query_key,
             values.into_iter().map(Into::into),
         ));
         self.__synced()
     }
 
     pub fn with_name_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("name", value));
+        self.query = self.query.and_filter(Expr::contain(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("name", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("name", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_not_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_begin_with("name", value));
+        self.query = self.query.and_filter(Expr::not_begin_with(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("name", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_not_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_end_with("name", value));
+        self.query = self.query.and_filter(Expr::not_end_with(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("name", value));
+        self.query = self.query.and_filter(Expr::sound_like(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
     pub fn with_name_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
+        self.query = self.query.and_filter(Expr::lt(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
+        self.query = self.query.and_filter(Expr::gt(crate::School::__TEAQL_FIELD_name.query_key, value));
         self.__synced()
     }
 
     pub fn with_name_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("name"));
+        self.query = self.query.and_filter(Expr::is_null(crate::School::__TEAQL_FIELD_name.query_key));
         self.__synced()
     }
 
 
 
     pub fn with_name_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("name"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::School::__TEAQL_FIELD_name.query_key));
         self.__synced()
     }
 
 
     pub fn order_by_name_asc(mut self) -> Self {
-        self.query = self.query.order_asc("name");
+        self.query = self.query.order_asc(crate::School::__TEAQL_FIELD_name.query_key);
         self.__synced()
     }
 
     pub fn order_by_name_desc(mut self) -> Self {
-        self.query = self.query.order_desc("name");
+        self.query = self.query.order_desc(crate::School::__TEAQL_FIELD_name.query_key);
         self.__synced()
     }
 
     pub fn order_by_name_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("name");
+        self.query = self.query.order_gbk_asc(crate::School::__TEAQL_FIELD_name.query_key);
         self.__synced()
     }
 
     pub fn order_by_name_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("name");
+        self.query = self.query.order_gbk_desc(crate::School::__TEAQL_FIELD_name.query_key);
         self.__synced()
     }
 
 
     pub fn select_student_capacity(mut self) -> Self {
-        self.query = self.query.project("student_capacity");
+        self.query = self.query.project(crate::School::__TEAQL_FIELD_student_capacity.query_key);
         self.__synced()
     }
 
@@ -1320,12 +1320,12 @@ impl<R> TrainingAcademyRequest<R> {
     pub fn select_student_capacity_unsafe_raw(mut self, raw_sql_segment: UnsafeRawSqlSegment) -> Self {
         self.query_options
             .raw_projections
-            .push(RawProjection::new("student_capacity", raw_sql_segment));
+            .push(RawProjection::new(crate::School::__TEAQL_FIELD_student_capacity.query_key, raw_sql_segment));
         self.__synced()
     }
 
     pub fn select_student_capacity_with_function(self, function: AggregateFunction) -> Self {
-        self.select_student_capacity_as_with_function("student_capacity", function)
+        self.select_student_capacity_as_with_function(crate::School::__TEAQL_FIELD_student_capacity.query_key, function)
     }
 
     pub fn select_student_capacity_as_with_function(
@@ -1333,16 +1333,16 @@ impl<R> TrainingAcademyRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.aggregate_with_function("student_capacity", alias, function)
+        self.aggregate_with_function(crate::School::__TEAQL_FIELD_student_capacity.query_key, alias, function)
     }
 
     pub fn group_by_student_capacity(self) -> Self {
-        self.group_by("student_capacity")
+        self.group_by(crate::School::__TEAQL_FIELD_student_capacity.query_key)
     }
 
     pub fn group_by_student_capacity_as(self, alias: impl Into<String>) -> Self {
         let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("student_capacity"));
+        request.query = request.query.group_by_expr(alias, Expr::column(crate::School::__TEAQL_FIELD_student_capacity.query_key));
         request.__synced()
     }
 
@@ -1353,7 +1353,7 @@ impl<R> TrainingAcademyRequest<R> {
     ) -> Self {
         let mut request = self;
         request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("student_capacity")]));
+            Expr::function(function, vec![Expr::column(crate::School::__TEAQL_FIELD_student_capacity.query_key)]));
         request.__synced()
     }
 
@@ -1362,14 +1362,14 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn count_student_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("student_capacity", alias)
+        self.aggregate_count_field(crate::School::__TEAQL_FIELD_student_capacity.query_key, alias)
     }
     pub fn count_distinct_student_capacity(self) -> Self {
         self.count_distinct_student_capacity_as("student_capacity_distinct_count")
     }
 
     pub fn count_distinct_student_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("student_capacity", alias, AggregateFunction::CountDistinct)
+        self.aggregate_with_function(crate::School::__TEAQL_FIELD_student_capacity.query_key, alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_student_capacity(self) -> Self {
@@ -1377,7 +1377,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn sum_student_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("student_capacity", alias)
+        self.aggregate_sum(crate::School::__TEAQL_FIELD_student_capacity.query_key, alias)
     }
 
     pub fn avg_student_capacity(self) -> Self {
@@ -1385,7 +1385,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn avg_student_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("student_capacity", alias)
+        self.aggregate_avg(crate::School::__TEAQL_FIELD_student_capacity.query_key, alias)
     }
 
     pub fn min_student_capacity(self) -> Self {
@@ -1393,7 +1393,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn min_student_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("student_capacity", alias)
+        self.aggregate_min(crate::School::__TEAQL_FIELD_student_capacity.query_key, alias)
     }
 
     pub fn max_student_capacity(self) -> Self {
@@ -1401,7 +1401,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn max_student_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("student_capacity", alias)
+        self.aggregate_max(crate::School::__TEAQL_FIELD_student_capacity.query_key, alias)
     }
 
     pub fn standard_deviation_student_capacity(self) -> Self {
@@ -1409,7 +1409,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn standard_deviation_student_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_stddev("student_capacity", alias)
+        self.aggregate_stddev(crate::School::__TEAQL_FIELD_student_capacity.query_key, alias)
     }
 
     pub fn square_root_of_population_standard_deviation_student_capacity(self) -> Self {
@@ -1417,7 +1417,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn square_root_of_population_standard_deviation_student_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_stddev_pop("student_capacity", alias)
+        self.aggregate_stddev_pop(crate::School::__TEAQL_FIELD_student_capacity.query_key, alias)
     }
 
     pub fn sample_variance_student_capacity(self) -> Self {
@@ -1425,7 +1425,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn sample_variance_student_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_var_samp("student_capacity", alias)
+        self.aggregate_var_samp(crate::School::__TEAQL_FIELD_student_capacity.query_key, alias)
     }
 
     pub fn sample_population_variance_student_capacity(self) -> Self {
@@ -1433,12 +1433,12 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn sample_population_variance_student_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_var_pop("student_capacity", alias)
+        self.aggregate_var_pop(crate::School::__TEAQL_FIELD_student_capacity.query_key, alias)
     }
 
     pub fn unselect_student_capacity(mut self) -> Self {
-        self.query.projection.retain(|field| field != "student_capacity");
-        self.query_options.raw_projections.retain(|projection| projection.property_name != "student_capacity");
+        self.query.projection.retain(|field| field != crate::School::__TEAQL_FIELD_student_capacity.query_key);
+        self.query_options.raw_projections.retain(|projection| projection.property_name != crate::School::__TEAQL_FIELD_student_capacity.query_key);
         self.__synced()
     }
 
@@ -1449,7 +1449,7 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "student_capacity",
+            crate::School::__TEAQL_FIELD_student_capacity.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1461,41 +1461,41 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "student_capacity",
+            crate::School::__TEAQL_FIELD_student_capacity.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_student_capacity_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("student_capacity", value));
+        self.query = self.query.and_filter(Expr::eq(crate::School::__TEAQL_FIELD_student_capacity.query_key, value));
         self.__synced()
     }
 
 
 
     pub fn with_student_capacity_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("student_capacity", value));
+        self.query = self.query.and_filter(Expr::ne(crate::School::__TEAQL_FIELD_student_capacity.query_key, value));
         self.__synced()
     }
 
     pub fn with_student_capacity_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("student_capacity", value));
+        self.query = self.query.and_filter(Expr::gt(crate::School::__TEAQL_FIELD_student_capacity.query_key, value));
         self.__synced()
     }
 
     pub fn with_student_capacity_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("student_capacity", value));
+        self.query = self.query.and_filter(Expr::gte(crate::School::__TEAQL_FIELD_student_capacity.query_key, value));
         self.__synced()
     }
 
     pub fn with_student_capacity_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("student_capacity", value));
+        self.query = self.query.and_filter(Expr::lt(crate::School::__TEAQL_FIELD_student_capacity.query_key, value));
         self.__synced()
     }
 
     pub fn with_student_capacity_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("student_capacity", value));
+        self.query = self.query.and_filter(Expr::lte(crate::School::__TEAQL_FIELD_student_capacity.query_key, value));
         self.__synced()
     }
 
@@ -1504,7 +1504,7 @@ impl<R> TrainingAcademyRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("student_capacity", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::School::__TEAQL_FIELD_student_capacity.query_key, lower, upper));
         self.__synced()
     }
 
@@ -1513,7 +1513,7 @@ impl<R> TrainingAcademyRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "student_capacity",
+            crate::School::__TEAQL_FIELD_student_capacity.query_key,
             range.start,
             range.end,
         ));
@@ -1525,7 +1525,7 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
-            "student_capacity",
+            crate::School::__TEAQL_FIELD_student_capacity.query_key,
             values.into_iter().map(Into::into),
         ));
         self.__synced()
@@ -1536,62 +1536,62 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
-            "student_capacity",
+            crate::School::__TEAQL_FIELD_student_capacity.query_key,
             values.into_iter().map(Into::into),
         ));
         self.__synced()
     }
 
     pub fn with_student_capacity_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("student_capacity", value));
+        self.query = self.query.and_filter(Expr::lt(crate::School::__TEAQL_FIELD_student_capacity.query_key, value));
         self.__synced()
     }
 
     pub fn with_student_capacity_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("student_capacity", value));
+        self.query = self.query.and_filter(Expr::gt(crate::School::__TEAQL_FIELD_student_capacity.query_key, value));
         self.__synced()
     }
 
     pub fn with_student_capacity_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("student_capacity"));
+        self.query = self.query.and_filter(Expr::is_null(crate::School::__TEAQL_FIELD_student_capacity.query_key));
         self.__synced()
     }
 
 
 
     pub fn with_student_capacity_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("student_capacity"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::School::__TEAQL_FIELD_student_capacity.query_key));
         self.__synced()
     }
 
 
     pub fn order_by_student_capacity_asc(mut self) -> Self {
-        self.query = self.query.order_asc("student_capacity");
+        self.query = self.query.order_asc(crate::School::__TEAQL_FIELD_student_capacity.query_key);
         self.__synced()
     }
 
     pub fn order_by_student_capacity_desc(mut self) -> Self {
-        self.query = self.query.order_desc("student_capacity");
+        self.query = self.query.order_desc(crate::School::__TEAQL_FIELD_student_capacity.query_key);
         self.__synced()
     }
 
     pub fn order_by_student_capacity_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("student_capacity");
+        self.query = self.query.order_gbk_asc(crate::School::__TEAQL_FIELD_student_capacity.query_key);
         self.__synced()
     }
 
     pub fn order_by_student_capacity_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("student_capacity");
+        self.query = self.query.order_gbk_desc(crate::School::__TEAQL_FIELD_student_capacity.query_key);
         self.__synced()
     }
 
     pub fn group_by_version(self) -> Self {
-        self.group_by("version")
+        self.group_by(crate::School::__TEAQL_FIELD_version.query_key)
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
         let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("version"));
+        request.query = request.query.group_by_expr(alias, Expr::column(crate::School::__TEAQL_FIELD_version.query_key));
         request.__synced()
     }
 
@@ -1602,7 +1602,7 @@ impl<R> TrainingAcademyRequest<R> {
     ) -> Self {
         let mut request = self;
         request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("version")]));
+            Expr::function(function, vec![Expr::column(crate::School::__TEAQL_FIELD_version.query_key)]));
         request.__synced()
     }
 
@@ -1611,14 +1611,14 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("version", alias)
+        self.aggregate_count_field(crate::School::__TEAQL_FIELD_version.query_key, alias)
     }
     pub fn count_distinct_version(self) -> Self {
         self.count_distinct_version_as("version_distinct_count")
     }
 
     pub fn count_distinct_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("version", alias, AggregateFunction::CountDistinct)
+        self.aggregate_with_function(crate::School::__TEAQL_FIELD_version.query_key, alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_version(self) -> Self {
@@ -1626,7 +1626,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn sum_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("version", alias)
+        self.aggregate_sum(crate::School::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn avg_version(self) -> Self {
@@ -1634,7 +1634,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn avg_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("version", alias)
+        self.aggregate_avg(crate::School::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn min_version(self) -> Self {
@@ -1642,7 +1642,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn min_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("version", alias)
+        self.aggregate_min(crate::School::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn max_version(self) -> Self {
@@ -1650,32 +1650,32 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn max_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("version", alias)
+        self.aggregate_max(crate::School::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn order_by_version_asc(mut self) -> Self {
-        self.query = self.query.order_asc("version");
+        self.query = self.query.order_asc(crate::School::__TEAQL_FIELD_version.query_key);
         self.__synced()
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
-        self.query = self.query.order_desc("version");
+        self.query = self.query.order_desc(crate::School::__TEAQL_FIELD_version.query_key);
         self.__synced()
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("version");
+        self.query = self.query.order_gbk_asc(crate::School::__TEAQL_FIELD_version.query_key);
         self.__synced()
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("version");
+        self.query = self.query.order_gbk_desc(crate::School::__TEAQL_FIELD_version.query_key);
         self.__synced()
     }
 
 
     pub fn select_campus_code(mut self) -> Self {
-        self.query = self.query.project("campus_code");
+        self.query = self.query.project(crate::Academy::__TEAQL_FIELD_campus_code.query_key);
         self.__synced()
     }
 
@@ -1690,17 +1690,17 @@ impl<R> TrainingAcademyRequest<R> {
     pub fn select_campus_code_unsafe_raw(mut self, raw_sql_segment: UnsafeRawSqlSegment) -> Self {
         self.query_options
             .raw_projections
-            .push(RawProjection::new("campus_code", raw_sql_segment));
+            .push(RawProjection::new(crate::Academy::__TEAQL_FIELD_campus_code.query_key, raw_sql_segment));
         self.__synced()
     }
 
     pub fn group_by_campus_code(self) -> Self {
-        self.group_by("campus_code")
+        self.group_by(crate::Academy::__TEAQL_FIELD_campus_code.query_key)
     }
 
     pub fn group_by_campus_code_as(self, alias: impl Into<String>) -> Self {
         let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("campus_code"));
+        request.query = request.query.group_by_expr(alias, Expr::column(crate::Academy::__TEAQL_FIELD_campus_code.query_key));
         request.__synced()
     }
 
@@ -1711,7 +1711,7 @@ impl<R> TrainingAcademyRequest<R> {
     ) -> Self {
         let mut request = self;
         request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("campus_code")]));
+            Expr::function(function, vec![Expr::column(crate::Academy::__TEAQL_FIELD_campus_code.query_key)]));
         request.__synced()
     }
 
@@ -1720,14 +1720,14 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn count_campus_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("campus_code", alias)
+        self.aggregate_count_field(crate::Academy::__TEAQL_FIELD_campus_code.query_key, alias)
     }
     pub fn count_distinct_campus_code(self) -> Self {
         self.count_distinct_campus_code_as("campus_code_distinct_count")
     }
 
     pub fn count_distinct_campus_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("campus_code", alias, AggregateFunction::CountDistinct)
+        self.aggregate_with_function(crate::Academy::__TEAQL_FIELD_campus_code.query_key, alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_campus_code(self) -> Self {
@@ -1735,7 +1735,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn sum_campus_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("campus_code", alias)
+        self.aggregate_sum(crate::Academy::__TEAQL_FIELD_campus_code.query_key, alias)
     }
 
     pub fn avg_campus_code(self) -> Self {
@@ -1743,7 +1743,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn avg_campus_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("campus_code", alias)
+        self.aggregate_avg(crate::Academy::__TEAQL_FIELD_campus_code.query_key, alias)
     }
 
     pub fn min_campus_code(self) -> Self {
@@ -1751,7 +1751,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn min_campus_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("campus_code", alias)
+        self.aggregate_min(crate::Academy::__TEAQL_FIELD_campus_code.query_key, alias)
     }
 
     pub fn max_campus_code(self) -> Self {
@@ -1759,12 +1759,12 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn max_campus_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("campus_code", alias)
+        self.aggregate_max(crate::Academy::__TEAQL_FIELD_campus_code.query_key, alias)
     }
 
     pub fn unselect_campus_code(mut self) -> Self {
-        self.query.projection.retain(|field| field != "campus_code");
-        self.query_options.raw_projections.retain(|projection| projection.property_name != "campus_code");
+        self.query.projection.retain(|field| field != crate::Academy::__TEAQL_FIELD_campus_code.query_key);
+        self.query_options.raw_projections.retain(|projection| projection.property_name != crate::Academy::__TEAQL_FIELD_campus_code.query_key);
         self.__synced()
     }
 
@@ -1775,7 +1775,7 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "campus_code",
+            crate::Academy::__TEAQL_FIELD_campus_code.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1787,41 +1787,41 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "campus_code",
+            crate::Academy::__TEAQL_FIELD_campus_code.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_campus_code_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("campus_code", value));
+        self.query = self.query.and_filter(Expr::eq(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
 
 
     pub fn with_campus_code_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("campus_code", value));
+        self.query = self.query.and_filter(Expr::ne(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("campus_code", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("campus_code", value));
+        self.query = self.query.and_filter(Expr::gte(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("campus_code", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("campus_code", value));
+        self.query = self.query.and_filter(Expr::lte(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
@@ -1830,7 +1830,7 @@ impl<R> TrainingAcademyRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("campus_code", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::Academy::__TEAQL_FIELD_campus_code.query_key, lower, upper));
         self.__synced()
     }
 
@@ -1839,7 +1839,7 @@ impl<R> TrainingAcademyRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "campus_code",
+            crate::Academy::__TEAQL_FIELD_campus_code.query_key,
             range.start,
             range.end,
         ));
@@ -1851,7 +1851,7 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
-            "campus_code",
+            crate::Academy::__TEAQL_FIELD_campus_code.query_key,
             values.into_iter().map(Into::into),
         ));
         self.__synced()
@@ -1862,92 +1862,92 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
-            "campus_code",
+            crate::Academy::__TEAQL_FIELD_campus_code.query_key,
             values.into_iter().map(Into::into),
         ));
         self.__synced()
     }
 
     pub fn with_campus_code_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("campus_code", value));
+        self.query = self.query.and_filter(Expr::contain(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("campus_code", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("campus_code", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_not_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_begin_with("campus_code", value));
+        self.query = self.query.and_filter(Expr::not_begin_with(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("campus_code", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_not_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_end_with("campus_code", value));
+        self.query = self.query.and_filter(Expr::not_end_with(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("campus_code", value));
+        self.query = self.query.and_filter(Expr::sound_like(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
     pub fn with_campus_code_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("campus_code", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("campus_code", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Academy::__TEAQL_FIELD_campus_code.query_key, value));
         self.__synced()
     }
 
     pub fn with_campus_code_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("campus_code"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Academy::__TEAQL_FIELD_campus_code.query_key));
         self.__synced()
     }
 
 
 
     pub fn with_campus_code_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("campus_code"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Academy::__TEAQL_FIELD_campus_code.query_key));
         self.__synced()
     }
 
 
     pub fn order_by_campus_code_asc(mut self) -> Self {
-        self.query = self.query.order_asc("campus_code");
+        self.query = self.query.order_asc(crate::Academy::__TEAQL_FIELD_campus_code.query_key);
         self.__synced()
     }
 
     pub fn order_by_campus_code_desc(mut self) -> Self {
-        self.query = self.query.order_desc("campus_code");
+        self.query = self.query.order_desc(crate::Academy::__TEAQL_FIELD_campus_code.query_key);
         self.__synced()
     }
 
     pub fn order_by_campus_code_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("campus_code");
+        self.query = self.query.order_gbk_asc(crate::Academy::__TEAQL_FIELD_campus_code.query_key);
         self.__synced()
     }
 
     pub fn order_by_campus_code_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("campus_code");
+        self.query = self.query.order_gbk_desc(crate::Academy::__TEAQL_FIELD_campus_code.query_key);
         self.__synced()
     }
 
 
     pub fn select_specialty(mut self) -> Self {
-        self.query = self.query.project("specialty");
+        self.query = self.query.project(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key);
         self.__synced()
     }
 
@@ -1962,17 +1962,17 @@ impl<R> TrainingAcademyRequest<R> {
     pub fn select_specialty_unsafe_raw(mut self, raw_sql_segment: UnsafeRawSqlSegment) -> Self {
         self.query_options
             .raw_projections
-            .push(RawProjection::new("specialty", raw_sql_segment));
+            .push(RawProjection::new(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, raw_sql_segment));
         self.__synced()
     }
 
     pub fn group_by_specialty(self) -> Self {
-        self.group_by("specialty")
+        self.group_by(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key)
     }
 
     pub fn group_by_specialty_as(self, alias: impl Into<String>) -> Self {
         let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("specialty"));
+        request.query = request.query.group_by_expr(alias, Expr::column(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key));
         request.__synced()
     }
 
@@ -1983,7 +1983,7 @@ impl<R> TrainingAcademyRequest<R> {
     ) -> Self {
         let mut request = self;
         request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("specialty")]));
+            Expr::function(function, vec![Expr::column(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key)]));
         request.__synced()
     }
 
@@ -1992,14 +1992,14 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn count_specialty_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("specialty", alias)
+        self.aggregate_count_field(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, alias)
     }
     pub fn count_distinct_specialty(self) -> Self {
         self.count_distinct_specialty_as("specialty_distinct_count")
     }
 
     pub fn count_distinct_specialty_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("specialty", alias, AggregateFunction::CountDistinct)
+        self.aggregate_with_function(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, alias, AggregateFunction::CountDistinct)
     }
 
     pub fn sum_specialty(self) -> Self {
@@ -2007,7 +2007,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn sum_specialty_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("specialty", alias)
+        self.aggregate_sum(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, alias)
     }
 
     pub fn avg_specialty(self) -> Self {
@@ -2015,7 +2015,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn avg_specialty_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("specialty", alias)
+        self.aggregate_avg(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, alias)
     }
 
     pub fn min_specialty(self) -> Self {
@@ -2023,7 +2023,7 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn min_specialty_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("specialty", alias)
+        self.aggregate_min(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, alias)
     }
 
     pub fn max_specialty(self) -> Self {
@@ -2031,12 +2031,12 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn max_specialty_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("specialty", alias)
+        self.aggregate_max(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, alias)
     }
 
     pub fn unselect_specialty(mut self) -> Self {
-        self.query.projection.retain(|field| field != "specialty");
-        self.query_options.raw_projections.retain(|projection| projection.property_name != "specialty");
+        self.query.projection.retain(|field| field != crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key);
+        self.query_options.raw_projections.retain(|projection| projection.property_name != crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key);
         self.__synced()
     }
 
@@ -2047,7 +2047,7 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "specialty",
+            crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -2059,41 +2059,41 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "specialty",
+            crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_specialty_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("specialty", value));
+        self.query = self.query.and_filter(Expr::eq(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
 
 
     pub fn with_specialty_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("specialty", value));
+        self.query = self.query.and_filter(Expr::ne(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("specialty", value));
+        self.query = self.query.and_filter(Expr::gt(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("specialty", value));
+        self.query = self.query.and_filter(Expr::gte(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("specialty", value));
+        self.query = self.query.and_filter(Expr::lt(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("specialty", value));
+        self.query = self.query.and_filter(Expr::lte(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
@@ -2102,7 +2102,7 @@ impl<R> TrainingAcademyRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("specialty", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, lower, upper));
         self.__synced()
     }
 
@@ -2111,7 +2111,7 @@ impl<R> TrainingAcademyRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "specialty",
+            crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key,
             range.start,
             range.end,
         ));
@@ -2123,7 +2123,7 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
-            "specialty",
+            crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key,
             values.into_iter().map(Into::into),
         ));
         self.__synced()
@@ -2134,97 +2134,97 @@ impl<R> TrainingAcademyRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
-            "specialty",
+            crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key,
             values.into_iter().map(Into::into),
         ));
         self.__synced()
     }
 
     pub fn with_specialty_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("specialty", value));
+        self.query = self.query.and_filter(Expr::contain(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("specialty", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("specialty", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_not_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_begin_with("specialty", value));
+        self.query = self.query.and_filter(Expr::not_begin_with(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("specialty", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_not_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_end_with("specialty", value));
+        self.query = self.query.and_filter(Expr::not_end_with(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("specialty", value));
+        self.query = self.query.and_filter(Expr::sound_like(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
     pub fn with_specialty_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("specialty", value));
+        self.query = self.query.and_filter(Expr::lt(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("specialty", value));
+        self.query = self.query.and_filter(Expr::gt(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key, value));
         self.__synced()
     }
 
     pub fn with_specialty_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("specialty"));
+        self.query = self.query.and_filter(Expr::is_null(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key));
         self.__synced()
     }
 
 
 
     pub fn with_specialty_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("specialty"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key));
         self.__synced()
     }
 
 
     pub fn order_by_specialty_asc(mut self) -> Self {
-        self.query = self.query.order_asc("specialty");
+        self.query = self.query.order_asc(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key);
         self.__synced()
     }
 
     pub fn order_by_specialty_desc(mut self) -> Self {
-        self.query = self.query.order_desc("specialty");
+        self.query = self.query.order_desc(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key);
         self.__synced()
     }
 
     pub fn order_by_specialty_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("specialty");
+        self.query = self.query.order_gbk_asc(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key);
         self.__synced()
     }
 
     pub fn order_by_specialty_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("specialty");
+        self.query = self.query.order_gbk_desc(crate::TrainingAcademy::__TEAQL_FIELD_specialty.query_key);
         self.__synced()
     }
     pub fn filter_by_platform(mut self, value: impl EntityReference) -> Self {
-        self.query = self.query.and_filter(Expr::eq("platform_id", value.entity_id_value()));
+        self.query = self.query.and_filter(Expr::eq(crate::School::__TEAQL_FIELD_platform.query_key, value.entity_id_value()));
         self.__synced()
     }
 
     pub fn with_platform_matching(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         self.query = self.query.and_filter(Expr::in_subquery(
-            "platform_id",
+            crate::School::__TEAQL_FIELD_platform.query_key,
             <crate::Platform as teaql_core::TeaqlEntity>::entity_descriptor(),
             selection.clone().into_query(),
             "id",
@@ -2237,7 +2237,7 @@ impl<R> TrainingAcademyRequest<R> {
     pub fn without_platform_matching(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         self.query = self.query.and_filter(Expr::not_in_subquery(
-            "platform_id",
+            crate::School::__TEAQL_FIELD_platform.query_key,
             <crate::Platform as teaql_core::TeaqlEntity>::entity_descriptor(),
             selection.clone().into_query(),
             "id",
@@ -2248,33 +2248,33 @@ impl<R> TrainingAcademyRequest<R> {
 
 
     pub fn have_platform(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("platform_id"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::School::__TEAQL_FIELD_platform.query_key));
         self.__synced()
     }
 
     pub fn have_no_platform(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("platform_id"));
+        self.query = self.query.and_filter(Expr::is_null(crate::School::__TEAQL_FIELD_platform.query_key));
         self.__synced()
     }
 
     pub fn order_by_platform_asc(mut self) -> Self {
-        self.query = self.query.order_asc("platform_id");
+        self.query = self.query.order_asc(crate::School::__TEAQL_FIELD_platform.query_key);
         self.__synced()
     }
 
     pub fn order_by_platform_desc(mut self) -> Self {
-        self.query = self.query.order_desc("platform_id");
+        self.query = self.query.order_desc(crate::School::__TEAQL_FIELD_platform.query_key);
         self.__synced()
     }
 
 
     pub fn group_by_platform(self) -> Self {
-        self.group_by("platform_id")
+        self.group_by(crate::School::__TEAQL_FIELD_platform.query_key)
     }
 
     pub fn group_by_platform_as(self, alias: impl Into<String>) -> Self {
         let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("platform_id"));
+        request.query = request.query.group_by_expr(alias, Expr::column(crate::School::__TEAQL_FIELD_platform.query_key));
         request.__synced()
     }
 
@@ -2285,7 +2285,7 @@ impl<R> TrainingAcademyRequest<R> {
     ) -> Self {
         let mut request = self;
         request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("platform_id")]));
+            Expr::function(function, vec![Expr::column(crate::School::__TEAQL_FIELD_platform.query_key)]));
         request.__synced()
     }
 
@@ -2294,10 +2294,10 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     fn __group_by_platform_with_operation(mut self, request: impl Into<QuerySelection>, method: &str) -> Self {
-        self.query = self.query.group_by("platform_id");
+        self.query = self.query.group_by(crate::School::__TEAQL_FIELD_platform.query_key);
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "platform",
-            "platform_id",
+            crate::School::__TEAQL_FIELD_platform.query_key,
             request,
         ).with_operation(
             QueryOperation::new(QueryOperationKind::Aggregate, method)
@@ -2337,13 +2337,13 @@ impl<R> TrainingAcademyRequest<R> {
         self.roll_up_links.retain(|link| link.property != "platform");
         self.roll_up_links.push(RollupLink {
             property: "platform".into(),
-            storage: "platform_id".into(),
+            storage: crate::School::__TEAQL_FIELD_platform.query_key.into(),
             descriptor: <crate::Platform as teaql_core::TeaqlEntity>::entity_descriptor(),
             operation,
             target,
         });
-        if !self.query.group_by.iter().any(|field| field == "platform_id") {
-            self.query.group_by.push("platform_id".into());
+        if !self.query.group_by.iter().any(|field| field == crate::School::__TEAQL_FIELD_platform.query_key) {
+            self.query.group_by.push(crate::School::__TEAQL_FIELD_platform.query_key.into());
         }
         self.__publish_roll_up();
         request
@@ -2354,18 +2354,18 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn count_platform_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("platform_id", alias)
+        self.aggregate_count_field(crate::School::__TEAQL_FIELD_platform.query_key, alias)
     }
     pub fn count_distinct_platform(self) -> Self {
         self.count_distinct_platform_as("platform_distinct_count")
     }
 
     pub fn count_distinct_platform_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("platform_id", alias, AggregateFunction::CountDistinct)
+        self.aggregate_with_function(crate::School::__TEAQL_FIELD_platform.query_key, alias, AggregateFunction::CountDistinct)
     }
 
     pub fn unselect_platform(mut self) -> Self {
-        self.query.projection.retain(|field| field != "platform_id");
+        self.query.projection.retain(|field| field != crate::School::__TEAQL_FIELD_platform.query_key);
         self.query.relations.retain(|relation| relation.name != "platform");
         self.__synced()
     }
@@ -2373,7 +2373,7 @@ impl<R> TrainingAcademyRequest<R> {
 
     /// Please use `with_school_type_is` instead
     pub(crate) fn filter_by_school_type(mut self, value: impl EntityReference) -> Self {
-        self.query = self.query.and_filter(Expr::eq("school_type_id", value.entity_id_value()));
+        self.query = self.query.and_filter(Expr::eq(crate::School::__TEAQL_FIELD_school_type.query_key, value.entity_id_value()));
         self.__synced()
     }
     /// Complex relation filter for `school_type`.
@@ -2396,7 +2396,7 @@ impl<R> TrainingAcademyRequest<R> {
     pub fn with_school_type_matching(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         self.query = self.query.and_filter(Expr::in_subquery(
-            "school_type_id",
+            crate::School::__TEAQL_FIELD_school_type.query_key,
             <crate::SchoolType as teaql_core::TeaqlEntity>::entity_descriptor(),
             selection.clone().into_query(),
             "id",
@@ -2426,7 +2426,7 @@ impl<R> TrainingAcademyRequest<R> {
     pub fn without_school_type_matching(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         self.query = self.query.and_filter(Expr::not_in_subquery(
-            "school_type_id",
+            crate::School::__TEAQL_FIELD_school_type.query_key,
             <crate::SchoolType as teaql_core::TeaqlEntity>::entity_descriptor(),
             selection.clone().into_query(),
             "id",
@@ -2437,33 +2437,33 @@ impl<R> TrainingAcademyRequest<R> {
 
 
     pub fn have_school_type(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("school_type_id"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::School::__TEAQL_FIELD_school_type.query_key));
         self.__synced()
     }
 
     pub fn have_no_school_type(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("school_type_id"));
+        self.query = self.query.and_filter(Expr::is_null(crate::School::__TEAQL_FIELD_school_type.query_key));
         self.__synced()
     }
 
     pub fn order_by_school_type_asc(mut self) -> Self {
-        self.query = self.query.order_asc("school_type_id");
+        self.query = self.query.order_asc(crate::School::__TEAQL_FIELD_school_type.query_key);
         self.__synced()
     }
 
     pub fn order_by_school_type_desc(mut self) -> Self {
-        self.query = self.query.order_desc("school_type_id");
+        self.query = self.query.order_desc(crate::School::__TEAQL_FIELD_school_type.query_key);
         self.__synced()
     }
 
 
     pub fn group_by_school_type(self) -> Self {
-        self.group_by("school_type_id")
+        self.group_by(crate::School::__TEAQL_FIELD_school_type.query_key)
     }
 
     pub fn group_by_school_type_as(self, alias: impl Into<String>) -> Self {
         let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("school_type_id"));
+        request.query = request.query.group_by_expr(alias, Expr::column(crate::School::__TEAQL_FIELD_school_type.query_key));
         request.__synced()
     }
 
@@ -2474,7 +2474,7 @@ impl<R> TrainingAcademyRequest<R> {
     ) -> Self {
         let mut request = self;
         request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("school_type_id")]));
+            Expr::function(function, vec![Expr::column(crate::School::__TEAQL_FIELD_school_type.query_key)]));
         request.__synced()
     }
 
@@ -2483,10 +2483,10 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     fn __group_by_school_type_with_operation(mut self, request: impl Into<QuerySelection>, method: &str) -> Self {
-        self.query = self.query.group_by("school_type_id");
+        self.query = self.query.group_by(crate::School::__TEAQL_FIELD_school_type.query_key);
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "school_type",
-            "school_type_id",
+            crate::School::__TEAQL_FIELD_school_type.query_key,
             request,
         ).with_operation(
             QueryOperation::new(QueryOperationKind::Aggregate, method)
@@ -2526,13 +2526,13 @@ impl<R> TrainingAcademyRequest<R> {
         self.roll_up_links.retain(|link| link.property != "school_type");
         self.roll_up_links.push(RollupLink {
             property: "school_type".into(),
-            storage: "school_type_id".into(),
+            storage: crate::School::__TEAQL_FIELD_school_type.query_key.into(),
             descriptor: <crate::SchoolType as teaql_core::TeaqlEntity>::entity_descriptor(),
             operation,
             target,
         });
-        if !self.query.group_by.iter().any(|field| field == "school_type_id") {
-            self.query.group_by.push("school_type_id".into());
+        if !self.query.group_by.iter().any(|field| field == crate::School::__TEAQL_FIELD_school_type.query_key) {
+            self.query.group_by.push(crate::School::__TEAQL_FIELD_school_type.query_key.into());
         }
         self.__publish_roll_up();
         request
@@ -2543,18 +2543,18 @@ impl<R> TrainingAcademyRequest<R> {
     }
 
     pub fn count_school_type_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("school_type_id", alias)
+        self.aggregate_count_field(crate::School::__TEAQL_FIELD_school_type.query_key, alias)
     }
     pub fn count_distinct_school_type(self) -> Self {
         self.count_distinct_school_type_as("school_type_distinct_count")
     }
 
     pub fn count_distinct_school_type_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("school_type_id", alias, AggregateFunction::CountDistinct)
+        self.aggregate_with_function(crate::School::__TEAQL_FIELD_school_type.query_key, alias, AggregateFunction::CountDistinct)
     }
 
     pub fn unselect_school_type(mut self) -> Self {
-        self.query.projection.retain(|field| field != "school_type_id");
+        self.query.projection.retain(|field| field != crate::School::__TEAQL_FIELD_school_type.query_key);
         self.query.relations.retain(|relation| relation.name != "school_type");
         self.__synced()
     }
@@ -2565,7 +2565,7 @@ impl<R> TrainingAcademyRequest<R> {
 
 
     pub fn with_school_type_is_not_primary(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::ne("school_type_id", 1001_u64));
+        self.query = self.query.and_filter(Expr::ne(crate::School::__TEAQL_FIELD_school_type.query_key, 1001_u64));
         self.__synced()
     }
 
@@ -2577,7 +2577,7 @@ impl<R> TrainingAcademyRequest<R> {
 
 
     pub fn with_school_type_is_not_secondary(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::ne("school_type_id", 1002_u64));
+        self.query = self.query.and_filter(Expr::ne(crate::School::__TEAQL_FIELD_school_type.query_key, 1002_u64));
         self.__synced()
     }
 

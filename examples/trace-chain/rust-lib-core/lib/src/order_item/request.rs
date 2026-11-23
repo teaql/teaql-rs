@@ -46,8 +46,8 @@ impl<R> OrderItemRequest<R> {
     pub(crate) fn new() -> Self {
         Self {
             query: SelectQuery::new("OrderItem")
-                .project("id")
-                .project("version"),
+                .project(crate::OrderItem::__TEAQL_FIELD_id.query_key)
+                .project(crate::OrderItem::__TEAQL_FIELD_version.query_key),
             relation_selections: Vec::new(),
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
@@ -301,7 +301,7 @@ impl<R> OrderItemRequest<R> {
 
     pub fn deleted_rows_only(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self.query = self.query.and_filter(Expr::lte("version", 0_i64));
+        self.query = self.query.and_filter(Expr::lte(crate::OrderItem::__TEAQL_FIELD_version.query_key, 0_i64));
         self
     }
 
@@ -612,10 +612,10 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn select_self(mut self) -> Self {
-        self.query = self.query.project("id");
-        self.query = self.query.project("name");
-        self.query = self.query.project("version");
-        self.query = self.query.project("customer_order_id");
+        self.query = self.query.project(crate::OrderItem::__TEAQL_FIELD_id.query_key);
+        self.query = self.query.project(crate::OrderItem::__TEAQL_FIELD_name.query_key);
+        self.query = self.query.project(crate::OrderItem::__TEAQL_FIELD_version.query_key);
+        self.query = self.query.project(crate::OrderItem::__TEAQL_FIELD_customer_order.query_key);
         self
     }
 
@@ -753,15 +753,15 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn group_by_id(self) -> Self {
-        self.group_by("id")
+        self.group_by(crate::OrderItem::__TEAQL_FIELD_id.query_key)
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("id");
+        let mut request = self.group_by(crate::OrderItem::__TEAQL_FIELD_id.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("id"));
+            .project_expr(alias, Expr::column(crate::OrderItem::__TEAQL_FIELD_id.query_key));
         request
     }
 
@@ -770,8 +770,8 @@ impl<R> OrderItemRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("id")
-            .aggregate_with_function("id", alias, function)
+        self.group_by(crate::OrderItem::__TEAQL_FIELD_id.query_key)
+            .aggregate_with_function(crate::OrderItem::__TEAQL_FIELD_id.query_key, alias, function)
     }
 
     pub fn count_id(self) -> Self {
@@ -779,7 +779,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("id", alias)
+        self.aggregate_count_field(crate::OrderItem::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn sum_id(self) -> Self {
@@ -787,7 +787,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn sum_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("id", alias)
+        self.aggregate_sum(crate::OrderItem::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn avg_id(self) -> Self {
@@ -795,7 +795,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn avg_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("id", alias)
+        self.aggregate_avg(crate::OrderItem::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn min_id(self) -> Self {
@@ -803,7 +803,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn min_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("id", alias)
+        self.aggregate_min(crate::OrderItem::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn max_id(self) -> Self {
@@ -811,7 +811,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn max_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("id", alias)
+        self.aggregate_max(crate::OrderItem::__TEAQL_FIELD_id.query_key, alias)
     }
 
 
@@ -821,7 +821,7 @@ impl<R> OrderItemRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "id",
+            crate::OrderItem::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -833,41 +833,41 @@ impl<R> OrderItemRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "id",
+            crate::OrderItem::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_id_is(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::eq(crate::OrderItem::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
 
 
     pub fn with_id_is_not(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::ne(crate::OrderItem::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
     pub fn with_id_greater_than(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::gt(crate::OrderItem::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
     pub fn with_id_greater_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::gte(crate::OrderItem::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
     pub fn with_id_less_than(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::lt(crate::OrderItem::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
     pub fn with_id_less_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::lte(crate::OrderItem::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
@@ -876,7 +876,7 @@ impl<R> OrderItemRequest<R> {
         lower: impl Into<u64>,
         upper: impl Into<u64>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("id", Into::<u64>::into(lower), Into::<u64>::into(upper)));
+        self.query = self.query.and_filter(Expr::between(crate::OrderItem::__TEAQL_FIELD_id.query_key, Into::<u64>::into(lower), Into::<u64>::into(upper)));
         self
     }
 
@@ -885,7 +885,7 @@ impl<R> OrderItemRequest<R> {
         T: Into<u64>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "id",
+            crate::OrderItem::__TEAQL_FIELD_id.query_key,
             Into::<u64>::into(range.start),
             Into::<u64>::into(range.end),
         ));
@@ -915,41 +915,41 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn with_id_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("id"));
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderItem::__TEAQL_FIELD_id.query_key));
         self
     }
 
 
 
     pub fn with_id_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("id"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderItem::__TEAQL_FIELD_id.query_key));
         self
     }
 
 
     pub fn order_by_id_asc(mut self) -> Self {
-        self.query = self.query.order_asc("id");
+        self.query = self.query.order_asc(crate::OrderItem::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
-        self.query = self.query.order_desc("id");
+        self.query = self.query.order_desc(crate::OrderItem::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("id");
+        self.query = self.query.order_gbk_asc(crate::OrderItem::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("id");
+        self.query = self.query.order_gbk_desc(crate::OrderItem::__TEAQL_FIELD_id.query_key);
         self
     }
 
 
     pub fn select_name(mut self) -> Self {
-        self.query = self.query.project("name");
+        self.query = self.query.project(crate::OrderItem::__TEAQL_FIELD_name.query_key);
         self
     }
 
@@ -969,15 +969,15 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn group_by_name(self) -> Self {
-        self.group_by("name")
+        self.group_by(crate::OrderItem::__TEAQL_FIELD_name.query_key)
     }
 
     pub fn group_by_name_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("name");
+        let mut request = self.group_by(crate::OrderItem::__TEAQL_FIELD_name.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("name"));
+            .project_expr(alias, Expr::column(crate::OrderItem::__TEAQL_FIELD_name.query_key));
         request
     }
 
@@ -986,8 +986,8 @@ impl<R> OrderItemRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("name")
-            .aggregate_with_function("name", alias, function)
+        self.group_by(crate::OrderItem::__TEAQL_FIELD_name.query_key)
+            .aggregate_with_function(crate::OrderItem::__TEAQL_FIELD_name.query_key, alias, function)
     }
 
     pub fn count_name(self) -> Self {
@@ -995,7 +995,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn count_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("name", alias)
+        self.aggregate_count_field(crate::OrderItem::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn sum_name(self) -> Self {
@@ -1003,7 +1003,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn sum_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("name", alias)
+        self.aggregate_sum(crate::OrderItem::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn avg_name(self) -> Self {
@@ -1011,7 +1011,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn avg_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("name", alias)
+        self.aggregate_avg(crate::OrderItem::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn min_name(self) -> Self {
@@ -1019,7 +1019,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn min_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("name", alias)
+        self.aggregate_min(crate::OrderItem::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn max_name(self) -> Self {
@@ -1027,7 +1027,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn max_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("name", alias)
+        self.aggregate_max(crate::OrderItem::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn unselect_name(mut self) -> Self {
@@ -1043,7 +1043,7 @@ impl<R> OrderItemRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "name",
+            crate::OrderItem::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1055,41 +1055,41 @@ impl<R> OrderItemRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "name",
+            crate::OrderItem::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_name_is(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("name", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::eq(crate::OrderItem::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
 
 
     pub fn with_name_is_not(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("name", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::ne(crate::OrderItem::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_name_greater_than(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::gt(crate::OrderItem::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("name", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::gte(crate::OrderItem::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_name_less_than(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::lt(crate::OrderItem::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("name", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::lte(crate::OrderItem::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
@@ -1098,7 +1098,7 @@ impl<R> OrderItemRequest<R> {
         lower: impl Into<String>,
         upper: impl Into<String>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("name", Into::<String>::into(lower), Into::<String>::into(upper)));
+        self.query = self.query.and_filter(Expr::between(crate::OrderItem::__TEAQL_FIELD_name.query_key, Into::<String>::into(lower), Into::<String>::into(upper)));
         self
     }
 
@@ -1107,7 +1107,7 @@ impl<R> OrderItemRequest<R> {
         T: Into<String>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "name",
+            crate::OrderItem::__TEAQL_FIELD_name.query_key,
             Into::<String>::into(range.start),
             Into::<String>::into(range.end),
         ));
@@ -1137,17 +1137,17 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn with_name_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("name", value));
+        self.query = self.query.and_filter(Expr::contain(crate::OrderItem::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("name", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::OrderItem::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("name", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::OrderItem::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
@@ -1157,7 +1157,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn with_name_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("name", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::OrderItem::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
@@ -1167,62 +1167,62 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn with_name_sounding_like(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("name", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::sound_like(crate::OrderItem::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
     pub fn with_name_before(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::lt(crate::OrderItem::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_name_after(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::gt(crate::OrderItem::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_name_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("name"));
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderItem::__TEAQL_FIELD_name.query_key));
         self
     }
 
 
 
     pub fn with_name_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("name"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderItem::__TEAQL_FIELD_name.query_key));
         self
     }
 
 
     pub fn order_by_name_asc(mut self) -> Self {
-        self.query = self.query.order_asc("name");
+        self.query = self.query.order_asc(crate::OrderItem::__TEAQL_FIELD_name.query_key);
         self
     }
 
     pub fn order_by_name_desc(mut self) -> Self {
-        self.query = self.query.order_desc("name");
+        self.query = self.query.order_desc(crate::OrderItem::__TEAQL_FIELD_name.query_key);
         self
     }
 
     pub fn order_by_name_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("name");
+        self.query = self.query.order_gbk_asc(crate::OrderItem::__TEAQL_FIELD_name.query_key);
         self
     }
 
     pub fn order_by_name_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("name");
+        self.query = self.query.order_gbk_desc(crate::OrderItem::__TEAQL_FIELD_name.query_key);
         self
     }
 
     pub fn group_by_version(self) -> Self {
-        self.group_by("version")
+        self.group_by(crate::OrderItem::__TEAQL_FIELD_version.query_key)
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("version");
+        let mut request = self.group_by(crate::OrderItem::__TEAQL_FIELD_version.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("version"));
+            .project_expr(alias, Expr::column(crate::OrderItem::__TEAQL_FIELD_version.query_key));
         request
     }
 
@@ -1231,8 +1231,8 @@ impl<R> OrderItemRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("version")
-            .aggregate_with_function("version", alias, function)
+        self.group_by(crate::OrderItem::__TEAQL_FIELD_version.query_key)
+            .aggregate_with_function(crate::OrderItem::__TEAQL_FIELD_version.query_key, alias, function)
     }
 
     pub fn count_version(self) -> Self {
@@ -1240,7 +1240,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("version", alias)
+        self.aggregate_count_field(crate::OrderItem::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn sum_version(self) -> Self {
@@ -1248,7 +1248,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn sum_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("version", alias)
+        self.aggregate_sum(crate::OrderItem::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn avg_version(self) -> Self {
@@ -1256,7 +1256,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn avg_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("version", alias)
+        self.aggregate_avg(crate::OrderItem::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn min_version(self) -> Self {
@@ -1264,7 +1264,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn min_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("version", alias)
+        self.aggregate_min(crate::OrderItem::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn max_version(self) -> Self {
@@ -1272,30 +1272,30 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn max_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("version", alias)
+        self.aggregate_max(crate::OrderItem::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn order_by_version_asc(mut self) -> Self {
-        self.query = self.query.order_asc("version");
+        self.query = self.query.order_asc(crate::OrderItem::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
-        self.query = self.query.order_desc("version");
+        self.query = self.query.order_desc(crate::OrderItem::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("version");
+        self.query = self.query.order_gbk_asc(crate::OrderItem::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("version");
+        self.query = self.query.order_gbk_desc(crate::OrderItem::__TEAQL_FIELD_version.query_key);
         self
     }
     pub fn filter_by_customer_order(mut self, value: impl EntityReference) -> Self {
-        self.query = self.query.and_filter(Expr::eq("customer_order_id", value.entity_id_value()));
+        self.query = self.query.and_filter(Expr::eq(crate::OrderItem::__TEAQL_FIELD_customer_order.query_key, value.entity_id_value()));
         self
     }
 
@@ -1326,26 +1326,26 @@ impl<R> OrderItemRequest<R> {
 
 
     pub fn have_customer_order(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("customer_order_id"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderItem::__TEAQL_FIELD_customer_order.query_key));
         self
     }
 
     pub fn have_no_customer_order(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("customer_order_id"));
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderItem::__TEAQL_FIELD_customer_order.query_key));
         self
     }
 
 
     pub fn group_by_customer_order(self) -> Self {
-        self.group_by("customer_order_id")
+        self.group_by(crate::OrderItem::__TEAQL_FIELD_customer_order.query_key)
     }
 
     pub fn group_by_customer_order_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("customer_order_id");
+        let mut request = self.group_by(crate::OrderItem::__TEAQL_FIELD_customer_order.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("customer_order_id"));
+            .project_expr(alias, Expr::column(crate::OrderItem::__TEAQL_FIELD_customer_order.query_key));
         request
     }
 
@@ -1354,12 +1354,12 @@ impl<R> OrderItemRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("customer_order_id")
-            .aggregate_with_function("customer_order_id", alias, function)
+        self.group_by(crate::OrderItem::__TEAQL_FIELD_customer_order.query_key)
+            .aggregate_with_function(crate::OrderItem::__TEAQL_FIELD_customer_order.query_key, alias, function)
     }
 
     pub fn group_by_customer_order_with(mut self, request: impl Into<QuerySelection>) -> Self {
-        self.query = self.query.group_by("customer_order_id");
+        self.query = self.query.group_by(crate::OrderItem::__TEAQL_FIELD_customer_order.query_key);
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "customer_order",
             "customer_order_id",
@@ -1392,7 +1392,7 @@ impl<R> OrderItemRequest<R> {
     }
 
     pub fn count_customer_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("customer_order_id", alias)
+        self.aggregate_count_field(crate::OrderItem::__TEAQL_FIELD_customer_order.query_key, alias)
     }
 
     pub fn unselect_customer_order(mut self) -> Self {

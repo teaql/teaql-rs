@@ -49,6 +49,88 @@ pub struct OrderSearchPreset {
 }
 
 impl OrderSearchPreset {
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_id: crate::GeneratedField = crate::GeneratedField {
+        model_key: "id",
+        query_key: "id",
+        member_name: "id",
+        column_name: "id",
+        load_index: 0,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_name: crate::GeneratedField = crate::GeneratedField {
+        model_key: "name",
+        query_key: "name",
+        member_name: "name",
+        column_name: "name",
+        load_index: 1,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_filter_json: crate::GeneratedField = crate::GeneratedField {
+        model_key: "filter_json",
+        query_key: "filter_json",
+        member_name: "filter_json",
+        column_name: "filter_json",
+        load_index: 2,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_request_id: crate::GeneratedField = crate::GeneratedField {
+        model_key: "request_id",
+        query_key: "request_id",
+        member_name: "request_id",
+        column_name: "request_id",
+        load_index: 3,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_owner_user_id: crate::GeneratedField = crate::GeneratedField {
+        model_key: "owner_user_id",
+        query_key: "owner_user_id",
+        member_name: "owner_user_id",
+        column_name: "owner_user_id",
+        load_index: 4,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_commerce_platform: crate::GeneratedField = crate::GeneratedField {
+        model_key: "commerce_platform",
+        query_key: "commerce_platform_id",
+        member_name: "commerce_platform_id",
+        column_name: "commerce_platform",
+        load_index: 5,
+        reference: true,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_create_time: crate::GeneratedField = crate::GeneratedField {
+        model_key: "create_time",
+        query_key: "create_time",
+        member_name: "create_time",
+        column_name: "create_time",
+        load_index: 6,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_update_time: crate::GeneratedField = crate::GeneratedField {
+        model_key: "update_time",
+        query_key: "update_time",
+        member_name: "update_time",
+        column_name: "update_time",
+        load_index: 7,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_version: crate::GeneratedField = crate::GeneratedField {
+        model_key: "version",
+        query_key: "version",
+        member_name: "version",
+        column_name: "version",
+        load_index: 8,
+        reference: false,
+    };
+
     pub const ENTITY_NAME: &'static str = "order_search_preset";
 
     pub fn with_id(id: u64) -> teaql_core::Value {
@@ -96,16 +178,16 @@ impl OrderSearchPreset {
     pub fn update_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_id.model_key, value);
         self
     }
 
     pub fn changed_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "id")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_id.model_key)
     }
 
     pub fn eval_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_id.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "id".to_string(), attempted_path: "id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.id())
@@ -118,16 +200,16 @@ impl OrderSearchPreset {
     pub fn update_name(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.name = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.name.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "name", value);
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_name.model_key, value);
         self
     }
 
     pub fn changed_name(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "name")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_name.model_key)
     }
 
     pub fn eval_name(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("name") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_name.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "name".to_string(), attempted_path: "name".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.name())
@@ -140,16 +222,16 @@ impl OrderSearchPreset {
     pub fn update_filter_json(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.filter_json = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.filter_json.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "filter_json", value);
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_filter_json.model_key, value);
         self
     }
 
     pub fn changed_filter_json(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "filter_json")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_filter_json.model_key)
     }
 
     pub fn eval_filter_json(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("filter_json") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_filter_json.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "filter_json".to_string(), attempted_path: "filter_json".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.filter_json())
@@ -162,16 +244,16 @@ impl OrderSearchPreset {
     pub fn update_request_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.request_id = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.request_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "request_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_request_id.model_key, value);
         self
     }
 
     pub fn changed_request_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "request_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_request_id.model_key)
     }
 
     pub fn eval_request_id(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("request_id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_request_id.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "request_id".to_string(), attempted_path: "request_id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.request_id())
@@ -184,16 +266,16 @@ impl OrderSearchPreset {
     pub fn update_owner_user_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.owner_user_id = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.owner_user_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "owner_user_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_owner_user_id.model_key, value);
         self
     }
 
     pub fn changed_owner_user_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "owner_user_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_owner_user_id.model_key)
     }
 
     pub fn eval_owner_user_id(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("owner_user_id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_owner_user_id.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "owner_user_id".to_string(), attempted_path: "owner_user_id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.owner_user_id())
@@ -206,15 +288,15 @@ impl OrderSearchPreset {
     pub fn update_create_time(&mut self, value: teaql_core::time::Timestamp) -> &mut Self {
         self.create_time = value;
         let value = teaql_core::Value::from(value);
-        self.__teaql_runtime_state().set(self.entity_key(), "create_time", value);
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_create_time.model_key, value);
         self
     }
     pub fn changed_create_time(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "create_time")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_create_time.model_key)
     }
 
     pub fn eval_create_time(&self) -> teaql_core::eval::EvalResult<teaql_core::time::Timestamp> {
-        if !self.is_loaded("create_time") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_create_time.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "create_time".to_string(), attempted_path: "create_time".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.create_time())
@@ -227,15 +309,15 @@ impl OrderSearchPreset {
     pub fn update_update_time(&mut self, value: teaql_core::time::Timestamp) -> &mut Self {
         self.update_time = value;
         let value = teaql_core::Value::from(value);
-        self.__teaql_runtime_state().set(self.entity_key(), "update_time", value);
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_update_time.model_key, value);
         self
     }
     pub fn changed_update_time(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "update_time")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_update_time.model_key)
     }
 
     pub fn eval_update_time(&self) -> teaql_core::eval::EvalResult<teaql_core::time::Timestamp> {
-        if !self.is_loaded("update_time") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_update_time.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "update_time".to_string(), attempted_path: "update_time".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.update_time())
@@ -248,16 +330,16 @@ impl OrderSearchPreset {
     pub fn update_version(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "version", value);
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_version.model_key, value);
         self
     }
 
     pub fn changed_version(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "version")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_version.model_key)
     }
 
     pub fn eval_version(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("version") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_version.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "version".to_string(), attempted_path: "version".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.version())
@@ -269,16 +351,16 @@ impl OrderSearchPreset {
     pub fn update_commerce_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.commerce_platform_id = value.try_u64().unwrap_or(self.commerce_platform_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "commerce_platform_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_commerce_platform.query_key, value);
         self
     }
 
     pub fn changed_commerce_platform_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "commerce_platform_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_commerce_platform.query_key)
     }
 
     pub fn eval_commerce_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("commerce_platform_id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_commerce_platform.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "commerce_platform_id".to_string(), attempted_path: "commerce_platform_id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.commerce_platform_id())
