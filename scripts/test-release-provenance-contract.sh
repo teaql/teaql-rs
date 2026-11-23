@@ -12,6 +12,8 @@ expected="$({
         teaql-provider-postgres \
         teaql-provider-sqlite \
         teaql-provider-mysql \
+        teaql-http-reqwest \
+        teaql-object-storage-s3 \
         teaql-tfp-endpoint \
         teaql-web-integration-axum
 })"
@@ -23,8 +25,8 @@ if [[ "$actual" != "$expected" ]]; then
     exit 1
 fi
 
-if [[ "$(wc -l <<<"$actual")" -ne 10 ]]; then
-    printf 'FAIL expected exactly ten public release crates\n' >&2
+if [[ "$(wc -l <<<"$actual")" -ne 12 ]]; then
+    printf 'FAIL expected exactly twelve public release crates\n' >&2
     exit 1
 fi
 
@@ -53,4 +55,4 @@ done < <(jq -r '
     | @tsv
 ' <<<"$metadata")
 
-printf 'PASS release provenance contract: 10/10 public crates in dependency order\n'
+printf 'PASS release provenance contract: 12/12 public crates in dependency order\n'

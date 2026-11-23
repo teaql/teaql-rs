@@ -2,7 +2,7 @@
 #[path = "../../../teaql-runtime/tests/support/allocation_counter.rs"]
 mod allocation_counter;
 use allocation_counter::measured;
-use diesel::prelude::*;
+use std::io::{BufRead, Write};
 use std::sync::Arc;
 use teaql_core::{Entity, EntityDescriptor, Expr, OrderBy, SelectQuery, TeaqlEntity as _};
 use teaql_data_service::SchemaProvider;
@@ -11,26 +11,14 @@ use teaql_provider_sqlite::{SqliteDialect, SqliteMutationExecutor, SqliteProvide
 use teaql_runtime::{InMemoryMetadataStore, PurposedSelectQuery, UserContext};
 use teaql_sql::SqlDataServiceExecutor;
 
-diesel::table! {
-    driver_probe (id) {
-        id -> BigInt,
-        version -> BigInt,
-        name -> Text,
-        note -> Nullable<Text>,
-    }
-}
-#[derive(Debug, diesel::Queryable, diesel::Selectable)]
-#[diesel(table_name = driver_probe)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[derive(Debug, serde::Deserialize)]
 struct Full {
     id: i64,
     version: i64,
     name: String,
     note: Option<String>,
 }
-#[derive(Debug, diesel::Queryable, diesel::Selectable)]
-#[diesel(table_name = driver_probe)]
-#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+#[derive(Debug, serde::Deserialize)]
 struct Sparse {
     id: i64,
     version: i64,
@@ -69,21 +57,73 @@ impl SchemaProvider for Schema {
 }
 type Executor = SqlDataServiceExecutor<SqliteDialect, SqliteMutationExecutor, Schema>;
 
+#[derive(serde::Deserialize)]
 enum Rows {
     Full(Vec<Full>),
     Sparse(Vec<Sparse>),
 }
-fn diesel_query(connection: &mut SqliteConnection, full: bool, count: i64) -> Rows {
-    use crate::driver_probe::dsl::*;
-    let query = driver_probe
-        .filter(version.gt(0))
-        .filter(name.like("row-%"))
-        .order(id.asc())
-        .limit(count);
-    if full {
-        Rows::Full(query.select(Full::as_select()).load(connection).unwrap())
-    } else {
-        Rows::Sparse(query.select(Sparse::as_select()).load(connection).unwrap())
+#[derive(serde::Deserialize)]
+struct ReferenceSample {
+    rows: Rows,
+    calls: u64,
+    bytes: u64,
+    nanos: u128,
+    engine: String,
+}
+struct DieselReference {
+    child: std::process::Child,
+    input: Option<std::io::BufWriter<std::process::ChildStdin>>,
+    output: std::io::BufReader<std::process::ChildStdout>,
+}
+impl DieselReference {
+    fn open(database: &std::path::Path) -> Self {
+        let executable = std::env::var_os("TEAQL_DIESEL_REFERENCE_BIN")
+            .expect("Run benchmark-mainstream.sh or verify-mainstream-reference.cjs to build the isolated reference");
+        let mut child = std::process::Command::new(executable)
+            .arg(database)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = Some(std::io::BufWriter::new(child.stdin.take().unwrap()));
+        let output = std::io::BufReader::new(child.stdout.take().unwrap());
+        Self {
+            child,
+            input,
+            output,
+        }
+    }
+    fn query(&mut self, full: bool, count: usize) -> (Rows, u64, u64, u128) {
+        let input = self.input.as_mut().unwrap();
+        writeln!(
+            input,
+            "{}",
+            serde_json::json!({"full": full, "count": count})
+        )
+        .unwrap();
+        input.flush().unwrap();
+        let mut line = String::new();
+        assert!(
+            self.output.read_line(&mut line).unwrap() > 0,
+            "reference process ended early"
+        );
+        let sample: ReferenceSample = serde_json::from_str(&line).unwrap();
+        if full && count == 1 {
+            println!("ENGINE_VERSION,diesel-sqlite,{}", sample.engine);
+        }
+        (sample.rows, sample.calls, sample.bytes, sample.nanos)
+    }
+    fn finish(&mut self) {
+        drop(self.input.take());
+        assert!(self.child.wait().unwrap().success());
+    }
+}
+impl Drop for DieselReference {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
     }
 }
 fn teaql_query(context: &UserContext, request: &PurposedSelectQuery) -> Vec<Probe> {
@@ -216,8 +256,9 @@ fn mainstream_diesel_and_teaql_queries_agree() {
             .unwrap();
         println!("ENGINE_VERSION,sqlite,{version}");
     }
-    let mut connection = SqliteConnection::establish(database.to_str().unwrap()).unwrap();
-    println!("FRAMEWORK,diesel,2.3.13");
+    let mut reference = DieselReference::open(&database);
+    println!("FRAMEWORK,diesel,2.3.14");
+    println!("ORM_PROCESS_POLICY,separate-processes-query-only-timing-IPC-excluded");
     println!("ORM_LOG_MODE,off");
     println!("ORM_CONNECTION_POLICY,same-file-reused-connection-both-lanes");
     for full in [false, true] {
@@ -237,7 +278,7 @@ fn mainstream_diesel_and_teaql_queries_agree() {
             let request =
                 PurposedSelectQuery::new(query, "why: compare mainstream SQLite typed retrieval");
             for _ in 0..20 {
-                std::hint::black_box(diesel_query(&mut connection, full, count as i64));
+                std::hint::black_box(reference.query(full, count));
                 std::hint::black_box(teaql_query(&context, &request));
             }
             let mut native_samples = Vec::new();
@@ -246,13 +287,11 @@ fn mainstream_diesel_and_teaql_queries_agree() {
                 let (raw, calls, bytes, nanos);
                 let (typed, tcalls, tbytes, tnanos);
                 if index % 2 == 0 {
-                    (raw, calls, bytes, nanos) =
-                        measured(|| diesel_query(&mut connection, full, count as i64));
+                    (raw, calls, bytes, nanos) = reference.query(full, count);
                     (typed, tcalls, tbytes, tnanos) = measured(|| teaql_query(&context, &request));
                 } else {
                     (typed, tcalls, tbytes, tnanos) = measured(|| teaql_query(&context, &request));
-                    (raw, calls, bytes, nanos) =
-                        measured(|| diesel_query(&mut connection, full, count as i64));
+                    (raw, calls, bytes, nanos) = reference.query(full, count);
                 }
                 validate(&raw, &typed, full, count);
                 native_samples.push((calls, bytes, nanos));
@@ -262,6 +301,7 @@ fn mainstream_diesel_and_teaql_queries_agree() {
             report("teaql", full, count, &teaql_samples);
         }
     }
+    reference.finish();
     println!(
         "PASS mainstream Diesel and TeaQL bounded typed results with independent version and prefix filters"
     );

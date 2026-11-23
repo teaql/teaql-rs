@@ -259,7 +259,7 @@ impl InMemoryEntityGraphDecoderRegistry {
             // known. Reserve the exact row count and decode directly into the
             // final SmartList allocation.
             let entities = decode_compact_rows_with_read_metadata::<T>(rows.data, &graph_root)?;
-            graph.install_relation_list(
+            graph.install_typed_relation_list(
                 owner_entity,
                 owner_id,
                 relation,
@@ -466,6 +466,17 @@ pub trait MetadataStore: Send + Sync {
         None
     }
     fn entity(&self, name: &str) -> Option<&EntityDescriptor>;
+    /// Handwritten registries retain a checked name adapter. Generated stores use array offsets.
+    fn entity_by_symbols(
+        &self,
+        symbols: &'static teaql_core::EntitySymbols,
+    ) -> Option<&EntityDescriptor> {
+        self.entity(symbols.name()?).filter(|descriptor| {
+            descriptor
+                .symbols
+                .is_none_or(|registered| registered.same_layout(symbols))
+        })
+    }
     fn all_entities(&self) -> Vec<&EntityDescriptor>;
     fn record_metadata_log(&self, _metadata: &teaql_data_service::ExecutionMetadata) {}
     #[doc(hidden)]
@@ -588,6 +599,8 @@ pub trait EntityDataServiceBehaviorRegistry: Send + Sync {
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryMetadataStore {
     entities: BTreeMap<String, EntityDescriptor>,
+    // The model pointer is process-local ownership, never a wire/persistent identifier.
+    models: BTreeMap<usize, Vec<Option<EntityDescriptor>>>,
 }
 
 impl InMemoryMetadataStore {
@@ -596,6 +609,25 @@ impl InMemoryMetadataStore {
     }
 
     pub fn register(&mut self, entity: EntityDescriptor) {
+        if let Some(previous) = self.entities.get(&entity.name).and_then(|e| e.symbols) {
+            if let Some(symbols) = entity.symbols {
+                assert!(
+                    previous.same_layout(symbols),
+                    "cannot register different generated models under the same entity name"
+                );
+            }
+            if let Some(entries) = self.models.get_mut(&(previous.model as *const _ as usize)) {
+                entries[previous.entity.0 as usize] = None;
+            }
+        }
+        if let Some(symbols) = entity.symbols {
+            symbols.validate().expect("invalid generated symbols");
+            let entries = self
+                .models
+                .entry(symbols.model as *const _ as usize)
+                .or_insert_with(|| vec![None; symbols.model.entities.len()]);
+            entries[symbols.entity.0 as usize] = Some(entity.clone());
+        }
         self.entities.insert(entity.name.clone(), entity);
     }
 
@@ -606,6 +638,25 @@ impl InMemoryMetadataStore {
 }
 
 impl MetadataStore for InMemoryMetadataStore {
+    fn entity_by_symbols(
+        &self,
+        symbols: &'static teaql_core::EntitySymbols,
+    ) -> Option<&EntityDescriptor> {
+        self.models
+            .get(&(symbols.model as *const _ as usize))
+            .and_then(|entries| entries.get(symbols.entity.0 as usize))
+            .and_then(Option::as_ref)
+            .filter(|descriptor| {
+                descriptor
+                    .symbols
+                    .is_some_and(|registered| registered.same_layout(symbols))
+            })
+            .or_else(|| {
+                self.entities
+                    .get(symbols.name()?)
+                    .filter(|entity| entity.symbols.is_none())
+            })
+    }
     fn entity(&self, name: &str) -> Option<&EntityDescriptor> {
         self.entities.get(name)
     }
@@ -702,6 +753,8 @@ pub struct RuntimeModule {
     root_graphs: Vec<GraphNode>,
     generated_schema_bootstraps: Vec<crate::GeneratedSchemaBootstrap>,
     graph_decoders: InMemoryEntityGraphDecoderRegistry,
+    entity_json_model: Option<crate::entity_json::Model>,
+    checker_presentation_model: Option<Arc<crate::checker_messages::CheckerPresentationModel>>,
 }
 
 impl RuntimeModule {
@@ -794,6 +847,22 @@ impl RuntimeModule {
         self
     }
 
+    /// Install immutable, model-owned JSON metadata in every context built
+    /// from this module. It shares schemas, never entity values or ledgers.
+    pub fn entity_json_model(mut self, model: crate::entity_json::Model) -> Self {
+        self.entity_json_model = Some(model);
+        self
+    }
+
+    /// Passive, immutable model vocabulary, not an invocation or entity ledger.
+    pub fn checker_presentation_model(
+        mut self,
+        model: Arc<crate::checker_messages::CheckerPresentationModel>,
+    ) -> Self {
+        self.checker_presentation_model = Some(model);
+        self
+    }
+
     pub fn apply_to(self, context: &mut UserContext) {
         context.set_metadata(self.metadata);
         context.set_entity_registry(self.entity_registry);
@@ -804,6 +873,12 @@ impl RuntimeModule {
         context.set_root_graphs(self.root_graphs);
         context.set_generated_schema_bootstraps(self.generated_schema_bootstraps);
         context.set_entity_graph_decoder_registry(self.graph_decoders);
+        if let Some(model) = self.entity_json_model {
+            context.insert_resource(model);
+        }
+        if let Some(model) = self.checker_presentation_model {
+            context.set_checker_presentation_model(model);
+        }
         if let Some(language) = self.language {
             context.set_language(language);
         }

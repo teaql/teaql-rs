@@ -5,7 +5,8 @@
 KSML entity: `Payment`  
 KSML field: `reference_code`  
 Type: `string`
-
+Named predicate values use `String` (or values convertible to that type).
+For nullable fields, use the known/unknown predicates rather than passing `None`.
 | Capability | Generated API |
 | --- | --- |
 | Select | `select_reference_code()` |
@@ -13,7 +14,8 @@ Type: `string`
 | Equality/set | `with_reference_code_is(value)`, `with_reference_code_is_not(value)`, `with_reference_code_in(values)`, `with_reference_code_not_in(values)` |
 | Comparison | `with_reference_code_greater_than(value)`, `with_reference_code_greater_than_or_equal_to(value)`, `with_reference_code_less_than(value)`, `with_reference_code_less_than_or_equal_to(value)`, `with_reference_code_between(lower, upper)` |
 | Null state | `with_reference_code_is_known()`, `with_reference_code_is_unknown()` |
-| String | `with_reference_code_containing(value)`, `with_reference_code_not_containing(value)`, `with_reference_code_starting_with(value)`, `with_reference_code_ending_with(value)`, `with_reference_code_sounding_like(value)` |
+| Explicit dynamic operator | `with_reference_code(operator, values)` takes `FieldOperator` and values convertible to `teaql_core::Value`. |
+| String | `with_reference_code_containing(value)`, `with_reference_code_not_containing(value)`, `with_reference_code_starting_with(value)`, `with_reference_code_not_starting_with(value)`, `with_reference_code_ending_with(value)`, `with_reference_code_not_ending_with(value)`, `with_reference_code_sounding_like(value)` |
 | Order | `order_by_reference_code_asc()`, `order_by_reference_code_desc()` |
 | Group | `group_by_reference_code()`, `group_by_reference_code_as(alias)` |
 Apply methods before `.purpose(...)`; execution still requires non-empty

@@ -155,7 +155,8 @@ pub async fn successful_graph_readback(
     let mut order = Q::customer_orders()
         .comment("what: prepare successful graph readback")
         .purpose("why: witness the exact persisted-result SQL for a graph")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     order.update_platform_id(platform.id());
     order.update_order_number("TRACE-SUCCESS-READBACK");
     order.update_description("Successful readback fixture");
@@ -163,7 +164,8 @@ pub async fn successful_graph_readback(
     let mut child = Q::order_items()
         .comment("what: prepare successful child readback")
         .purpose("why: check inherited root and additional local business reason")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     child.update_customer_order_id(order_id);
     child.update_name("Successful readback item");
     let child_id = child.id();

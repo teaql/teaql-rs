@@ -2,15 +2,23 @@ use crate::{DataType, default_table_name};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyDescriptor {
+    /// Logical property key used by query expressions, returned rows and
+    /// mutation values. A mapped database column must not rename this key.
     pub name: String,
     pub data_type: DataType,
     pub nullable: bool,
+    /// Physical database identifier. This may differ from `name`, including
+    /// when a model is mapped onto an existing legacy schema.
     pub column_name: String,
     pub is_id: bool,
     pub is_version: bool,
+    /// Modeled Integer domain; storage/native carrier may remain signed 64-bit.
+    pub is_int32: bool,
     pub max_length: Option<u32>,
     pub numeric_precision: Option<u32>,
     pub numeric_scale: Option<u32>,
+    /// Model-declared contextual ownership; not a tenant or authorization policy.
+    pub context_root_entity: Option<String>,
 }
 
 impl PropertyDescriptor {
@@ -23,9 +31,11 @@ impl PropertyDescriptor {
             nullable: true,
             is_id: false,
             is_version: false,
+            is_int32: false,
             max_length: None,
             numeric_precision: None,
             numeric_scale: None,
+            context_root_entity: None,
         }
     }
 
@@ -40,12 +50,29 @@ impl PropertyDescriptor {
     }
 
     pub fn id(mut self) -> Self {
+        assert!(
+            !self.is_int32,
+            "identity must not use modeled Integer metadata"
+        );
         self.is_id = true;
         self
     }
 
     pub fn version(mut self) -> Self {
+        assert!(
+            !self.is_int32,
+            "version must not use modeled Integer metadata"
+        );
         self.is_version = true;
+        self
+    }
+
+    pub fn int32(mut self) -> Self {
+        assert!(
+            self.data_type == DataType::I64 && !self.is_id && !self.is_version,
+            "Integer metadata requires a non-identity signed integral property"
+        );
+        self.is_int32 = true;
         self
     }
 
@@ -61,6 +88,20 @@ impl PropertyDescriptor {
 
     pub fn numeric_scale(mut self, scale: u32) -> Self {
         self.numeric_scale = Some(scale);
+        self
+    }
+
+    pub fn context_root(mut self, entity: impl Into<String>) -> Self {
+        let entity = entity.into();
+        assert!(
+            !entity.trim().is_empty(),
+            "context root type must not be empty"
+        );
+        assert!(
+            !self.is_id && !self.is_version,
+            "identity/version cannot be a context root"
+        );
+        self.context_root_entity = Some(entity);
         self
     }
 }
@@ -125,9 +166,20 @@ impl RelationDescriptor {
     }
 }
 
+/// Shared model metadata. Cloning this handle never clones field/relationship data.
+/// Builders and mutable field access detach shared data on the first actual mutation,
+/// so context-specific customizations cannot change a generated type's cached schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityDescriptor {
+    shared: std::sync::Arc<EntityDescriptorData>,
+}
+
+/// Immutable descriptor contents shared by generated entities and query clones.
+/// Mutating a descriptor handle detaches its contents through copy-on-write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntityDescriptorData {
     pub name: String,
+    pub symbols: Option<&'static crate::EntitySymbols>,
     pub table_name: String,
     pub data_service: Option<String>,
     pub properties: Vec<PropertyDescriptor>,
@@ -136,21 +188,65 @@ pub struct EntityDescriptor {
     /// False for legacy metadata that never declared a complete field log policy.
     pub audit_mask_fields_declared: bool,
     pub audit_value_max_len: Option<usize>,
+    /// Joined inheritance is storage metadata, not a relation or a second
+    /// logical mutation participant. Inherited values and optimistic version
+    /// belong to their declaring table; identity belongs to the whole family.
+    pub joined_parent: Option<std::sync::Arc<EntityDescriptor>>,
+    /// Direct child storage hints, not recursively embedded child descriptors.
+    /// They identify a typed view's next subtype without changing its Rust type.
+    pub inheritance_children: Vec<InheritanceChild>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InheritanceChild {
+    pub name: String,
+    pub table_name: String,
+    pub id_column: String,
+}
+
+impl std::ops::Deref for EntityDescriptor {
+    type Target = EntityDescriptorData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
+}
+
+impl std::ops::DerefMut for EntityDescriptor {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        std::sync::Arc::make_mut(&mut self.shared)
+    }
 }
 
 impl EntityDescriptor {
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();
         Self {
-            table_name: default_table_name(&name),
-            name,
-            data_service: None,
-            properties: Vec::new(),
-            relations: Vec::new(),
-            audit_mask_fields: Vec::new(),
-            audit_mask_fields_declared: false,
-            audit_value_max_len: None,
+            shared: std::sync::Arc::new(EntityDescriptorData {
+                table_name: default_table_name(&name),
+                name,
+                symbols: None,
+                data_service: None,
+                properties: Vec::new(),
+                relations: Vec::new(),
+                audit_mask_fields: Vec::new(),
+                audit_mask_fields_declared: false,
+                audit_value_max_len: None,
+                joined_parent: None,
+                inheritance_children: Vec::new(),
+            }),
         }
+    }
+
+    pub fn symbols(mut self, symbols: &'static crate::EntitySymbols) -> Self {
+        symbols.validate().expect("invalid generated symbols");
+        assert_eq!(
+            symbols.name(),
+            Some(self.name.as_str()),
+            "entity symbol dictionary mismatch"
+        );
+        self.symbols = Some(symbols);
+        self
     }
 
     pub fn table_name(mut self, table_name: impl Into<String>) -> Self {
@@ -166,6 +262,63 @@ impl EntityDescriptor {
     pub fn property(mut self, property: PropertyDescriptor) -> Self {
         self.properties.push(property);
         self
+    }
+
+    /// Declare a joined parent while retaining the complete logical field
+    /// layout required by Q/E, checkers, row decoding and mutation policies.
+    pub fn inherits(mut self, parent: EntityDescriptor) -> Self {
+        for property in &parent.properties {
+            if self.property_by_name(&property.name).is_none() {
+                self.properties.push(property.clone());
+            }
+        }
+        self.joined_parent = Some(std::sync::Arc::new(parent));
+        self
+    }
+
+    pub fn inheritance_child(
+        mut self,
+        name: impl Into<String>,
+        table_name: impl Into<String>,
+        id_column: impl Into<String>,
+    ) -> Self {
+        self.inheritance_children.push(InheritanceChild {
+            name: name.into(),
+            table_name: table_name.into(),
+            id_column: id_column.into(),
+        });
+        self
+    }
+
+    /// Root table owns the family-wide identity allocator and version.
+    pub fn inheritance_root(&self) -> &EntityDescriptor {
+        let mut root = self;
+        while let Some(parent) = &root.joined_parent {
+            root = parent;
+        }
+        root
+    }
+
+    /// Physical schema/write shape for this table only. Identity is repeated
+    /// as a join key; inherited fields (including version) are not copied.
+    pub fn storage_descriptor(&self) -> EntityDescriptor {
+        let mut storage = self.clone();
+        if let Some(parent) = &self.joined_parent {
+            storage.properties.retain(|property| {
+                property.is_id || parent.property_by_name(&property.name).is_none()
+            });
+            let storage_data = std::sync::Arc::make_mut(&mut storage.shared);
+            storage_data.relations.retain(|relation| {
+                parent.relation_by_name(&relation.name).is_none()
+                    && storage_data
+                        .properties
+                        .iter()
+                        .any(|property| property.name == relation.local_key)
+            });
+        }
+        storage.joined_parent = None;
+        storage.inheritance_children.clear();
+        storage
     }
 
     pub fn relation(mut self, relation: RelationDescriptor) -> Self {
@@ -210,6 +363,43 @@ impl EntityDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer32_metadata_preserves_wide_identity_and_long_fields() {
+        let integer = PropertyDescriptor::new("quantity", DataType::I64).int32();
+        assert!(integer.is_int32);
+        assert_eq!(integer.data_type, DataType::I64);
+        for property in [
+            PropertyDescriptor::new("id", DataType::I64).id(),
+            PropertyDescriptor::new("version", DataType::I64).version(),
+            PropertyDescriptor::new("long_value", DataType::I64),
+        ] {
+            assert!(!property.is_int32);
+        }
+    }
+
+    #[test]
+    fn integer32_metadata_rejects_incompatible_types_and_identity_in_either_order() {
+        let invalid: [fn() -> PropertyDescriptor; 6] = [
+            || PropertyDescriptor::new("value", DataType::Text).int32(),
+            || PropertyDescriptor::new("value", DataType::U64).int32(),
+            || PropertyDescriptor::new("value", DataType::I64).id().int32(),
+            || {
+                PropertyDescriptor::new("value", DataType::I64)
+                    .version()
+                    .int32()
+            },
+            || PropertyDescriptor::new("value", DataType::I64).int32().id(),
+            || {
+                PropertyDescriptor::new("value", DataType::I64)
+                    .int32()
+                    .version()
+            },
+        ];
+        for make in invalid {
+            assert!(std::panic::catch_unwind(make).is_err());
+        }
+    }
 
     #[test]
     fn test_property_descriptor_builder() {

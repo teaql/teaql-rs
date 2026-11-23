@@ -1,4 +1,5 @@
 //! Generated Q/E and audited mutations on a real cursor with durable extensions.
+use crate::reserved_identity::ReservedExampleIdentity as _;
 use futures_util::StreamExt;
 use school_management_service_core::{
     service_runtime, AuditedSave, School, ServiceRuntimeConfig, ServiceRuntimeExecutor, E, Q,
@@ -42,7 +43,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut school = Q::schools()
             .comment("what: allocate an isolated stream School")
             .purpose("why: verify streaming without changing other example fixtures")
-            .new_entity(&context);
+            .new_entity(&context).expect("reserve example identity");
         school.update_platform_id(1);
         school.update_school_type_to_primary();
         school.update_name(name.as_str());

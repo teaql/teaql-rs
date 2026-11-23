@@ -35,6 +35,8 @@ pub struct SqlLogContext {
     pub telemetry: Option<std::sync::Arc<SqlTelemetryState>>,
     /// Business Request ancestry, independent of the executor's physical route.
     pub request_trace_chain: Vec<teaql_core::TraceNode>,
+    /// Real participating requests in one statement; absent for a single chain.
+    pub request_tree: Option<std::sync::Arc<[teaql_core::QueryRequestTraceNode]>>,
     /// Opaque runtime-only state for safe reprojection; never wire data.
     #[doc(hidden)]
     pub projection_state: SqlProjectionState,
@@ -111,22 +113,50 @@ impl SqlIntentRedactions {
         field: &str,
     ) -> SqlParameterLogPolicy {
         use SqlParameterLogPolicy as Policy;
-        let Some(property) = entity.property_by_name(field) else {
-            return Policy::Unknown;
-        };
-        if is_credential_log_name(&property.name) || is_credential_log_name(&property.column_name) {
-            Policy::Credential
-        } else if !entity.audit_mask_fields_declared {
-            Policy::Unknown
-        } else if entity
-            .audit_mask_fields
-            .iter()
-            .any(|name| name == &property.name)
-        {
-            Policy::Masked
-        } else {
-            Policy::Plain
+        fn local(entity: &teaql_core::EntityDescriptor, field: &str) -> Policy {
+            let Some(property) = entity.property_by_name(field) else {
+                return Policy::Unknown;
+            };
+            if is_credential_log_name(&property.name)
+                || is_credential_log_name(&property.column_name)
+            {
+                Policy::Credential
+            } else if !entity.audit_mask_fields_declared {
+                Policy::Unknown
+            } else if entity
+                .audit_mask_fields
+                .iter()
+                .any(|name| name == &property.name)
+            {
+                Policy::Masked
+            } else {
+                Policy::Plain
+            }
         }
+        let mut policy = local(entity, field);
+        let mut parent = entity.joined_parent.as_deref();
+        let mut depth = 0;
+        while let Some(entity) = parent {
+            if entity.property_by_name(field).is_none() {
+                break;
+            }
+            if depth == 64 {
+                return if policy == Policy::Credential {
+                    policy
+                } else {
+                    Policy::Unknown
+                };
+            }
+            policy = match (policy, local(entity, field)) {
+                (Policy::Credential, _) | (_, Policy::Credential) => Policy::Credential,
+                (Policy::Unknown, _) | (_, Policy::Unknown) => Policy::Unknown,
+                (Policy::Masked, _) | (_, Policy::Masked) => Policy::Masked,
+                _ => Policy::Plain,
+            };
+            parent = entity.joined_parent.as_deref();
+            depth += 1;
+        }
+        policy
     }
 
     /// Conservative provider fallback; not a wire-level permission or a retained
@@ -211,19 +241,29 @@ impl SqlIntentRedactions {
     /// Add an ordinary mutation ID only to diagnostic free-text redactions.
     /// It does not change the ID's SQL binding policy or execution value.
     pub fn capture_target_id(&mut self, id: &teaql_core::Value) {
+        if !is_compound_redaction_value(id) {
+            if let Some(text) = scalar_redaction_text(id) {
+                self.capture_forced_text(text);
+            }
+            return;
+        }
         let source = SqlLogContext {
             generated_sql: true,
             parameter_policies: vec![SqlParameterLogPolicy::Masked],
             ..Default::default()
         };
         for (text, _) in Self::from_bindings(&source, std::slice::from_ref(id), "").0 {
-            if !self
-                .0
-                .iter()
-                .any(|(existing, forced)| existing == &text && *forced)
-            {
-                self.0.push((text, true));
-            }
+            self.capture_forced_text(text);
+        }
+    }
+
+    fn capture_forced_text(&mut self, text: String) {
+        if !self
+            .0
+            .iter()
+            .any(|(existing, forced)| existing == &text && *forced)
+        {
+            self.0.push((text, true));
         }
     }
 
@@ -254,9 +294,9 @@ impl SqlIntentRedactions {
                     policy,
                     SqlParameterLogPolicy::Unknown | SqlParameterLogPolicy::Credential
                 );
-            if let teaql_core::Value::Text(text) = value {
-                if !text.is_empty() {
-                    output.0.push((text.clone(), forced));
+            if !is_compound_redaction_value(value) {
+                if let Some(text) = scalar_redaction_text(value) {
+                    output.0.push((text, forced));
                 }
                 continue;
             }
@@ -300,6 +340,25 @@ impl SqlIntentRedactions {
                         continue;
                     }
                     Value::Text(text) => text.clone(),
+                    Value::Binary(bytes) => {
+                        if let Ok(text) = std::str::from_utf8(bytes)
+                            && !text.is_empty()
+                        {
+                            strings.push(text.to_owned());
+                        }
+                        let hex = bytes
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>();
+                        if !hex.is_empty() {
+                            strings.push(hex);
+                        }
+                        strings.push(format!("{bytes:?}"));
+                        item.to_json_value()
+                            .as_str()
+                            .expect("base64 string")
+                            .to_owned()
+                    }
                     Value::Bool(value) => value.to_string(),
                     Value::I64(value) => value.to_string(),
                     Value::U64(value) => value.to_string(),
@@ -342,29 +401,81 @@ impl SqlIntentRedactions {
 
 /// Shared conservative credential classifier for compilation and log projection.
 pub fn is_credential_log_name(name: &str) -> bool {
-    let name: String = name
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    [
-        "password",
-        "passwd",
-        "passphrase",
-        "privatekey",
-        "secret",
-        "accesstoken",
-        "refreshtoken",
-        "idtoken",
-        "apikey",
-        "authorization",
-        "credential",
-        "sessiontoken",
-        "magiclinktoken",
-    ]
-    .iter()
-    .any(|word| name.contains(word))
+    // Keep only a rolling suffix of the normalized ASCII stream. Dropping
+    // non-ASCII UTF-8 bytes is equivalent to filtering non-ASCII chars, so
+    // separators (including Unicode) still cannot hide a credential name.
+    const fn suffix(word: &[u8]) -> (u128, u128) {
+        assert!(word.len() <= 16);
+        let mut pattern = 0;
+        let mut mask = 0;
+        let mut i = 0;
+        while i < word.len() {
+            pattern = (pattern << 8) | word[i] as u128;
+            mask = (mask << 8) | 0xff;
+            i += 1;
+        }
+        (pattern, mask)
+    }
+    const PATTERNS: [(u128, u128); 13] = [
+        suffix(b"password"),
+        suffix(b"passwd"),
+        suffix(b"passphrase"),
+        suffix(b"privatekey"),
+        suffix(b"secret"),
+        suffix(b"accesstoken"),
+        suffix(b"refreshtoken"),
+        suffix(b"idtoken"),
+        suffix(b"apikey"),
+        suffix(b"authorization"),
+        suffix(b"credential"),
+        suffix(b"sessiontoken"),
+        suffix(b"magiclinktoken"),
+    ];
+    let mut tail = 0u128;
+    for byte in name.bytes().filter(u8::is_ascii_alphanumeric) {
+        tail = (tail << 8) | byte.to_ascii_lowercase() as u128;
+        if PATTERNS
+            .iter()
+            .any(|&(pattern, mask)| tail & mask == pattern)
+        {
+            return true;
+        }
+    }
+    false
 }
+
+fn is_compound_redaction_value(value: &teaql_core::Value) -> bool {
+    matches!(
+        value,
+        teaql_core::Value::Object(_)
+            | teaql_core::Value::List(_)
+            | teaql_core::Value::Json(_)
+            | teaql_core::Value::Binary(_)
+    )
+}
+
+/// Scalar formatting matches the compound scanner, without traversal buffers.
+fn scalar_redaction_text(value: &teaql_core::Value) -> Option<String> {
+    use teaql_core::Value;
+    let text = match value {
+        Value::Null | Value::TypedNull(_) => return None,
+        Value::Text(text) if text.is_empty() => return None,
+        Value::Text(text) => text.clone(),
+        Value::Bool(value) => value.to_string(),
+        Value::I64(value) => value.to_string(),
+        Value::U64(value) => value.to_string(),
+        Value::F64(value) => value.to_string(),
+        Value::Decimal(value) => value.to_string(),
+        Value::Date(value) => value.to_string(),
+        Value::Timestamp(value) => value.as_millis().to_string(),
+        Value::Object(_) | Value::List(_) | Value::Json(_) | Value::Binary(_) => return None,
+    };
+    Some(text)
+}
+
+#[cfg(test)]
+#[path = "scalar_redaction_tests.rs"]
+mod scalar_redaction_tests;
 
 #[cfg(test)]
 mod query_intent_tests {

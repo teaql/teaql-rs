@@ -58,7 +58,8 @@ pub async fn rollback_and_retry(database_url: String) -> Outcome<()> {
     let mut root = Q::customer_orders()
         .comment("prepare rollback root")
         .purpose("verify private graph rollback")
-        .new_entity(&context);
+        .new_entity(&context)
+        .expect("reserve trace fixture identity");
     root.update_platform_id(platform.id());
     root.update_order_number("TRACE-PRIVACY-ROLLBACK");
     root.update_description("private graph before retry");
@@ -68,7 +69,8 @@ pub async fn rollback_and_retry(database_url: String) -> Outcome<()> {
     let mut child = Q::order_items()
         .comment("prepare rollback child")
         .purpose("persist a masked original value")
-        .new_entity(&context);
+        .new_entity(&context)
+        .expect("reserve trace fixture identity");
     child.update_customer_order_id(root_id);
     child.update_name(old.clone());
     let child_id = child.id();

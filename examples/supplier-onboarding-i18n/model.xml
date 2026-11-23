@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="supplier-onboarding-service" org="teaql" data_service="sqlite">
+  <warehouse _name="Warehouse" _zh_CN="仓库" name="Central Warehouse"/>
+  <supplier _name="Supplier" _zh_CN="供应商" warehouse="warehouse()"
+            name="Supplier Name|[1,80]"
+            minimum_order_quantity="integer()|[10,10000]"/>
+</root>

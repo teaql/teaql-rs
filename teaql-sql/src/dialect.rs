@@ -224,6 +224,13 @@ pub trait SqlDialect {
     fn quote_ident(&self, ident: &str) -> String;
     fn placeholder(&self, index: usize) -> String;
 
+    /// Result keys are logical API names, not legacy storage identifiers.
+    /// Providers which fold unquoted identifiers must preserve alias spelling
+    /// without changing how existing table/column names bind to storage.
+    fn quote_result_alias(&self, alias: &str) -> String {
+        self.quote_ident(alias)
+    }
+
     /// Whether `IN_LARGE` / `NOT_IN_LARGE` bind the complete value list as a
     /// single dialect-native array parameter instead of scalar placeholders.
     fn large_in_uses_array_param(&self) -> bool {
@@ -245,6 +252,7 @@ pub trait SqlDialect {
     ) -> Result<String, SqlCompileError> {
         match data_type {
             DataType::Bool => Ok("BOOLEAN".to_owned()),
+            DataType::Binary => Ok("BLOB".to_owned()),
             DataType::I64 | DataType::U64 => Ok("INTEGER".to_owned()),
             DataType::F64 => Ok("REAL".to_owned()),
             DataType::Decimal => match (property.numeric_precision, property.numeric_scale) {
@@ -327,6 +335,10 @@ pub trait SqlDialect {
             DataType::Json => "'{}'",
             DataType::Date => "'1970-01-01'",
             DataType::Timestamp => "'1970-01-01 00:00:00Z'",
+            DataType::Binary => match self.kind() {
+                DatabaseKind::PostgreSql => "decode('', 'hex')",
+                DatabaseKind::Sqlite | DatabaseKind::MySql => "X''",
+            },
         }
     }
 
@@ -368,6 +380,7 @@ pub trait SqlDialect {
         query: &SelectQuery,
         params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
+        params.capture_query_scope(query);
         if query.raw_sql.is_some()
             || !query.raw_sql_search_criteria.is_empty()
             || !query.raw_projections.is_empty()
@@ -380,6 +393,14 @@ pub trait SqlDialect {
         }
 
         let mut projection = self.compile_projection(entity, query, params)?;
+        if query.aggregates.is_empty()
+            && query.group_by.is_empty()
+            && !query.has_aggregate_projection()
+            && let Some(subtype) = crate::inheritance::runtime_type_projection(self, entity)?
+        {
+            projection.push_str(", ");
+            projection.push_str(&subtype);
+        }
         let partitioned_slice = query.partition_by.as_deref().zip(query.slice);
         if let Some((partition_by, _)) = partitioned_slice {
             let partition_column = self.column_sql(entity, partition_by)?;
@@ -389,7 +410,18 @@ pub trait SqlDialect {
                 let order_by = query
                     .order_by
                     .iter()
-                    .map(|order| self.order_by_sql(entity, order, params))
+                    .map(|order| {
+                        if query.group_by.is_empty() && query.aggregates.is_empty() {
+                            return self.order_by_sql(entity, order, params);
+                        }
+                        let expression = order
+                            .expr
+                            .clone()
+                            .unwrap_or_else(|| Expr::column(&order.field));
+                        let mut bound = order.clone();
+                        bound.expr = Some(crate::having::bind_order(query, &expression)?);
+                        self.order_by_sql(entity, &bound, params)
+                    })
                     .collect::<Result<Vec<_>, _>>()?
                     .join(", ");
                 format!(" ORDER BY {order_by}")
@@ -402,7 +434,7 @@ pub trait SqlDialect {
 
         let mut sql = format!(
             "SELECT {projection} FROM {}",
-            self.quote_ident(&entity.table_name)
+            crate::inheritance::source(self, entity)?
         );
 
         let mut where_parts = Vec::new();
@@ -444,7 +476,19 @@ pub trait SqlDialect {
             let group_by = query
                 .group_by
                 .iter()
-                .map(|field| self.column_sql(entity, field))
+                .map(|field| {
+                    if let Some(expression) = grouping_projection(query, field)? {
+                        teaql_core::aggregation_plan::grouping_expression_source(
+                            entity, expression,
+                        )
+                        .map_err(|error| {
+                            SqlCompileError::InvalidFunctionArguments(error.to_string())
+                        })?;
+                        self.compile_expr(entity, expression, params)
+                    } else {
+                        self.column_sql(entity, field)
+                    }
+                })
                 .collect::<Result<Vec<_>, _>>()?
                 .join(", ");
             sql.push_str(" GROUP BY ");
@@ -452,7 +496,8 @@ pub trait SqlDialect {
         }
 
         if let Some(having) = &query.having {
-            let having_sql = self.compile_expr(entity, having, params)?;
+            let having = crate::having::bind(query, having)?;
+            let having_sql = self.compile_expr(entity, &having, params)?;
             sql.push_str(" HAVING ");
             sql.push_str(&having_sql);
         }
@@ -476,7 +521,18 @@ pub trait SqlDialect {
             let order_by = query
                 .order_by
                 .iter()
-                .map(|order| self.order_by_sql(entity, order, params))
+                .map(|order| {
+                    if query.group_by.is_empty() && query.aggregates.is_empty() {
+                        return self.order_by_sql(entity, order, params);
+                    }
+                    let expression = order
+                        .expr
+                        .clone()
+                        .unwrap_or_else(|| Expr::column(&order.field));
+                    let mut bound = order.clone();
+                    bound.expr = Some(crate::having::bind_order(query, &expression)?);
+                    self.order_by_sql(entity, &bound, params)
+                })
                 .collect::<Result<Vec<_>, _>>()?
                 .join(", ");
             sql.push_str(" ORDER BY ");
@@ -648,7 +704,7 @@ pub trait SqlDialect {
             params.push_field(
                 entity,
                 &version_property.name,
-                Value::I64(expected_version + 1),
+                Value::I64(teaql_core::mutation_version::updated(expected_version)?),
             );
             assignments.push(format!(
                 "{} = {}",
@@ -774,7 +830,7 @@ pub trait SqlDialect {
                     params.push_field(
                         entity,
                         &version_property.name,
-                        teaql_core::Value::I64(*exp_ver + 1),
+                        teaql_core::Value::I64(teaql_core::mutation_version::updated(*exp_ver)?),
                     );
                     let val_ph = self.placeholder(params.len());
 
@@ -889,14 +945,20 @@ pub trait SqlDialect {
         let mut params = crate::SqlBindings::new();
 
         if command.soft_delete {
+            let deleted_version = command
+                .expected_version
+                .map(teaql_core::mutation_version::deleted)
+                .transpose()?;
             let version_property = entity
                 .version_property()
                 .ok_or_else(|| SqlCompileError::MissingVersionProperty(entity.name.clone()))?;
             params.push_field(
                 entity,
                 &version_property.name,
-                match command.expected_version {
-                    Some(version) => Value::I64(-(version + 1)),
+                match deleted_version {
+                    // Negate before subtracting so i64::MAX maps exactly to
+                    // i64::MIN without a debug overflow or release wrapping.
+                    Some(version) => Value::I64(version),
                     None => Value::I64(-1),
                 },
             );
@@ -914,6 +976,13 @@ pub trait SqlDialect {
                     "{} = {}",
                     self.quote_ident(&version_property.column_name),
                     self.placeholder(params.len())
+                ));
+            } else {
+                // An administrative versionless delete still cannot rewrite
+                // a row already marked as deleted.
+                predicates.push(format!(
+                    "{} >= 1",
+                    self.quote_ident(&version_property.column_name)
                 ));
             }
 
@@ -993,11 +1062,7 @@ pub trait SqlDialect {
         command: &RecoverCommand,
         guard: Option<&Expr>,
     ) -> Result<CompiledQuery, SqlCompileError> {
-        if command.expected_version >= 0 {
-            return Err(SqlCompileError::InvalidRecoverVersion(
-                command.expected_version,
-            ));
-        }
+        let recovered_version = teaql_core::mutation_version::recovered(command.expected_version)?;
 
         let id_property = entity
             .id_property()
@@ -1009,9 +1074,31 @@ pub trait SqlDialect {
         params.push_field(
             entity,
             &version_property.name,
-            Value::I64(-command.expected_version + 1),
+            Value::I64(recovered_version),
         );
+        let mut assignments = vec![format!(
+            "{} = {}",
+            self.quote_ident(&version_property.column_name),
+            self.placeholder(1)
+        )];
+        for (field, value) in &command.values {
+            let property = entity
+                .property_by_name(field)
+                .ok_or_else(|| SqlCompileError::UnknownField(field.clone()))?;
+            if property.is_id || property.is_version {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "recovery cannot change identity or supply its successor version".into(),
+                ));
+            }
+            params.push_field(entity, field, value.clone());
+            assignments.push(format!(
+                "{} = {}",
+                self.quote_ident(&property.column_name),
+                self.placeholder(params.len())
+            ));
+        }
         params.push_field(entity, &id_property.name, command.id.clone());
+        let id_index = params.len();
         params.push_field(
             entity,
             &version_property.name,
@@ -1022,12 +1109,12 @@ pub trait SqlDialect {
             format!(
                 "{} = {}",
                 self.quote_ident(&id_property.column_name),
-                self.placeholder(2)
+                self.placeholder(id_index)
             ),
             format!(
                 "{} = {}",
                 self.quote_ident(&version_property.column_name),
-                self.placeholder(3)
+                self.placeholder(id_index + 1)
             ),
         ];
         if let Some(guard) = guard {
@@ -1037,10 +1124,9 @@ pub trait SqlDialect {
         Ok(CompiledQuery {
             log_context: params.log_context(self.kind()),
             sql: format!(
-                "UPDATE {} SET {} = {} WHERE {}",
+                "UPDATE {} SET {} WHERE {}",
                 self.quote_ident(&entity.table_name),
-                self.quote_ident(&version_property.column_name),
-                self.placeholder(1),
+                assignments.join(", "),
                 predicates.join(" AND "),
             ),
             params: params.into_values(),
@@ -1110,7 +1196,10 @@ pub trait SqlDialect {
         }
         for projection in &query.expr_projection {
             let expr = self.compile_expr(entity, &projection.expr, params)?;
-            parts.push(format!("{expr} AS {}", self.quote_ident(&projection.alias)));
+            parts.push(format!(
+                "{expr} AS {}",
+                self.quote_result_alias(&projection.alias)
+            ));
         }
         for projection in query
             .raw_projections
@@ -1120,7 +1209,7 @@ pub trait SqlDialect {
             parts.push(format!(
                 "{} AS {}",
                 projection.raw_sql_segment,
-                self.quote_ident(&projection.property_name)
+                self.quote_result_alias(&projection.property_name)
             ));
         }
         Ok(parts.join(", "))
@@ -1138,14 +1227,27 @@ pub trait SqlDialect {
         // otherwise generated requests produce invalid SQL such as
         // `SELECT id, COUNT(id) ...` without grouping by `id`.
         for field in &query.group_by {
-            let column = self.column_sql(entity, field)?;
+            if let Some(expression) = grouping_projection(query, field)? {
+                teaql_core::aggregation_plan::grouping_expression_source(entity, expression)
+                    .map_err(|error| {
+                        SqlCompileError::InvalidFunctionArguments(error.to_string())
+                    })?;
+                continue;
+            }
+            let property = entity
+                .property_by_name(field)
+                .ok_or_else(|| SqlCompileError::UnknownField(field.to_owned()))?;
+            // Drivers return SQL result labels, not descriptor keys. Preserve
+            // the same logical-name contract as an ordinary projection; a
+            // grouped relation is assembled using that key after execution.
+            let column = self.column_with_alias(property);
             if !parts.contains(&column) {
                 parts.push(column);
             }
         }
         for projection in &query.expr_projection {
             let expr = self.compile_expr(entity, &projection.expr, params)?;
-            let aliased = format!("{expr} AS {}", self.quote_ident(&projection.alias));
+            let aliased = format!("{expr} AS {}", self.quote_result_alias(&projection.alias));
             if !parts.contains(&aliased) {
                 parts.push(aliased);
             }
@@ -1158,7 +1260,7 @@ pub trait SqlDialect {
             let aliased = format!(
                 "{} AS {}",
                 projection.raw_sql_segment,
-                self.quote_ident(&projection.property_name)
+                self.quote_result_alias(&projection.property_name)
             );
             if !parts.contains(&aliased) {
                 parts.push(aliased);
@@ -1170,8 +1272,11 @@ pub trait SqlDialect {
                 .iter()
                 .map(|aggregate| {
                     let field = self.resolve_aggregate_field(entity, aggregate)?;
-                    let call = self.aggregate_call_sql(aggregate.function, &field);
-                    Ok(format!("{call} AS {}", self.quote_ident(&aggregate.alias)))
+                    let call = self.aggregate_call_sql_for(entity, aggregate, &field)?;
+                    Ok::<_, SqlCompileError>(format!(
+                        "{call} AS {}",
+                        self.quote_result_alias(&aggregate.alias)
+                    ))
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         );
@@ -1179,13 +1284,45 @@ pub trait SqlDialect {
     }
 
     fn aggregate_call_sql(&self, function: AggregateFunction, field: &str) -> String {
+        if function == AggregateFunction::CountDistinct {
+            return format!("COUNT(DISTINCT {field})");
+        }
         let function_sql = self.aggregate_function_sql(function);
         format!("{function_sql}({field})")
+    }
+
+    /// Provider-specific aggregate spelling, with access to the modeled field
+    /// type before a driver can silently coerce an exact value.
+    fn aggregate_call_sql_for(
+        &self,
+        entity: &EntityDescriptor,
+        aggregate: &Aggregate,
+        field: &str,
+    ) -> Result<String, SqlCompileError> {
+        self.validate_aggregate_field_type(entity, aggregate)?;
+        Ok(self.aggregate_call_sql(aggregate.function, field))
+    }
+
+    /// Validate modeled input types independently of storage coercions and
+    /// provider-specific aggregate spelling. Diagnostics never include values.
+    fn validate_aggregate_field_type(
+        &self,
+        entity: &EntityDescriptor,
+        aggregate: &Aggregate,
+    ) -> Result<(), SqlCompileError> {
+        if matches!(
+            aggregate.function,
+            AggregateFunction::BitAnd | AggregateFunction::BitOr | AggregateFunction::BitXor
+        ) {
+            crate::integer_operand::field(entity, &aggregate.field)?;
+        }
+        Ok(())
     }
 
     fn aggregate_function_sql(&self, function: AggregateFunction) -> &'static str {
         match function {
             AggregateFunction::Count => "COUNT",
+            AggregateFunction::CountDistinct => "COUNT",
             AggregateFunction::Sum => "SUM",
             AggregateFunction::Avg => "AVG",
             AggregateFunction::Min => "MIN",
@@ -1198,6 +1335,18 @@ pub trait SqlDialect {
             AggregateFunction::BitOr => "BIT_OR",
             AggregateFunction::BitXor => "BIT_XOR",
         }
+    }
+
+    /// Compile a row-grain scalar for a statistical input projection. Providers
+    /// may add a typed cast or exact-value collation without changing bindings.
+    fn compile_statistical_operand(
+        &self,
+        entity: &EntityDescriptor,
+        operand: &Expr,
+        _data_type: DataType,
+        params: &mut crate::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        self.compile_expr(entity, operand, params)
     }
 
     fn compile_expr(
@@ -1231,7 +1380,9 @@ pub trait SqlDialect {
                 ) {
                     return self.compile_in(entity, left, *op, right, params);
                 }
+                let peers = [left.as_ref(), right.as_ref()];
                 let lhs = self.compile_expr(entity, left, params)?;
+                let lhs = self.comparison_operand_sql(entity, left, &peers, lhs)?;
                 let rhs =
                     if let Some((pattern, original)) = crate::bindings::like_operand(*op, right) {
                         params.push_like_pattern(pattern, original);
@@ -1239,6 +1390,7 @@ pub trait SqlDialect {
                     } else {
                         self.compile_expr(entity, right, params)?
                     };
+                let rhs = self.comparison_operand_sql(entity, right, &peers, rhs)?;
                 let op = match op {
                     BinaryOp::Eq => "=",
                     BinaryOp::Ne => "!=",
@@ -1261,10 +1413,14 @@ pub trait SqlDialect {
                 query,
             } => self.compile_subquery(entity, left, *op, sub_entity, query, params),
             Expr::Between { expr, lower, upper } => {
-                let expr = self.compile_expr(entity, expr, params)?;
-                let lower = self.compile_expr(entity, lower, params)?;
-                let upper = self.compile_expr(entity, upper, params)?;
-                Ok(format!("({expr} BETWEEN {lower} AND {upper})"))
+                let peers = [expr.as_ref(), lower.as_ref(), upper.as_ref()];
+                let value = self.compile_expr(entity, expr, params)?;
+                let value = self.comparison_operand_sql(entity, expr, &peers, value)?;
+                let low = self.compile_expr(entity, lower, params)?;
+                let low = self.comparison_operand_sql(entity, lower, &peers, low)?;
+                let high = self.compile_expr(entity, upper, params)?;
+                let high = self.comparison_operand_sql(entity, upper, &peers, high)?;
+                Ok(format!("({value} BETWEEN {low} AND {high})"))
             }
             Expr::IsNull(expr) => {
                 let expr = self.compile_expr(entity, expr, params)?;
@@ -1285,6 +1441,18 @@ pub trait SqlDialect {
         result
     }
 
+    /// Preserve a provider's exact comparison domain without changing the
+    /// parameter values or their field-aware logging provenance.
+    fn comparison_operand_sql(
+        &self,
+        _entity: &EntityDescriptor,
+        _operand: &Expr,
+        _peers: &[&Expr],
+        sql: String,
+    ) -> Result<String, SqlCompileError> {
+        Ok(sql)
+    }
+
     fn compile_function(
         &self,
         entity: &EntityDescriptor,
@@ -1293,6 +1461,14 @@ pub trait SqlDialect {
         params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         match function {
+            ExprFunction::Identity => {
+                let [argument] = args else {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "IDENTITY expects exactly one argument".into(),
+                    ));
+                };
+                self.compile_expr(entity, argument, params)
+            }
             ExprFunction::Soundex => {
                 let [arg] = args else {
                     return Err(SqlCompileError::InvalidFunctionArguments(
@@ -1305,6 +1481,15 @@ pub trait SqlDialect {
             ExprFunction::Gbk => self.compile_gbk_function(entity, args, params),
             ExprFunction::Count if args.is_empty() => Ok("COUNT(*)".to_owned()),
             ExprFunction::Count => self.compile_single_arg_function(entity, "COUNT", args, params),
+            ExprFunction::CountDistinct => {
+                let [arg] = args else {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "COUNT DISTINCT expects exactly one argument".into(),
+                    ));
+                };
+                let arg = self.compile_expr(entity, arg, params)?;
+                Ok(format!("COUNT(DISTINCT {arg})"))
+            }
             ExprFunction::Sum => self.compile_single_arg_function(entity, "SUM", args, params),
             ExprFunction::Avg => self.compile_single_arg_function(entity, "AVG", args, params),
             ExprFunction::Min => self.compile_single_arg_function(entity, "MIN", args, params),
@@ -1321,14 +1506,37 @@ pub trait SqlDialect {
             ExprFunction::VarPop => {
                 self.compile_single_arg_function(entity, "VAR_POP", args, params)
             }
-            ExprFunction::BitAnd => {
-                self.compile_single_arg_function(entity, "BIT_AND", args, params)
-            }
-            ExprFunction::BitOr => self.compile_single_arg_function(entity, "BIT_OR", args, params),
-            ExprFunction::BitXor => {
-                self.compile_single_arg_function(entity, "BIT_XOR", args, params)
-            }
+            ExprFunction::BitAnd => self.compile_bitwise_function(entity, "BIT_AND", args, params),
+            ExprFunction::BitOr => self.compile_bitwise_function(entity, "BIT_OR", args, params),
+            ExprFunction::BitXor => self.compile_bitwise_function(entity, "BIT_XOR", args, params),
         }
+    }
+
+    fn compile_bitwise_function(
+        &self,
+        entity: &EntityDescriptor,
+        function: &str,
+        args: &[Expr],
+        params: &mut crate::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let [argument] = args else {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "bitwise aggregate expects one operand".into(),
+            ));
+        };
+        let parameter = crate::integer_operand::expression(entity, argument)?;
+        let sql = self.compile_expr(entity, argument, params)?;
+        let sql = if parameter {
+            self.bitwise_parameter_sql(&sql)
+        } else {
+            sql
+        };
+        Ok(format!("{function}({sql})"))
+    }
+
+    /// Providers with overloaded integer aggregates may need a typed parameter.
+    fn bitwise_parameter_sql(&self, sql: &str) -> String {
+        sql.to_owned()
     }
 
     fn compile_single_arg_function(
@@ -1352,19 +1560,63 @@ pub trait SqlDialect {
     /// should override this to use `convert_to(arg, 'GBK')`.
     fn compile_gbk_function(
         &self,
-        entity: &EntityDescriptor,
+        _entity: &EntityDescriptor,
         args: &[Expr],
-        params: &mut crate::SqlBindings,
+        _params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
-        let [arg] = args else {
+        let [_] = args else {
             return Err(SqlCompileError::InvalidFunctionArguments(
                 "GBK expects exactly one argument".to_owned(),
             ));
         };
-        // Default: pass through the column as-is (no GBK conversion).
-        // Dialects with GBK support (e.g. PostgreSQL) should override this method.
-        let arg = self.compile_expr(entity, arg, params)?;
-        Ok(arg)
+        Err(SqlCompileError::InvalidFunctionArguments(
+            "GBK is unsupported by this SQL dialect".into(),
+        ))
+    }
+
+    /// Validate the text domain before a provider encodes a GBK operand. No
+    /// implicit numeric-to-text casts or approximate fallback are permitted.
+    fn compile_gbk_text_operand(
+        &self,
+        entity: &EntityDescriptor,
+        args: &[Expr],
+        params: &mut crate::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        fn text(entity: &EntityDescriptor, expression: &Expr, depth: usize) -> bool {
+            if depth > 64 {
+                return false;
+            }
+            match expression {
+                Expr::Column(name) => entity
+                    .property_by_name(name)
+                    .is_some_and(|p| matches!(p.data_type, DataType::Text | DataType::LargeText)),
+                Expr::Value(
+                    Value::Text(_)
+                    | Value::Null
+                    | Value::TypedNull(DataType::Text | DataType::LargeText),
+                ) => true,
+                Expr::Function {
+                    function:
+                        ExprFunction::Identity
+                        | ExprFunction::Soundex
+                        | ExprFunction::Min
+                        | ExprFunction::Max,
+                    args,
+                } => matches!(args.as_slice(), [arg] if text(entity,arg,depth+1)),
+                _ => false,
+            }
+        }
+        let [argument] = args else {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "GBK expects exactly one argument".into(),
+            ));
+        };
+        if !text(entity, argument, 0) {
+            return Err(SqlCompileError::InvalidFunctionArguments(
+                "GBK requires a text operand".into(),
+            ));
+        }
+        self.compile_expr(entity, argument, params)
     }
 
     fn compile_subquery(
@@ -1382,10 +1634,126 @@ pub trait SqlDialect {
             BinaryOp::NotIn | BinaryOp::NotInLarge => "NOT IN",
             _ => return Err(SqlCompileError::InvalidSubQueryOperator(format!("{op:?}"))),
         };
+        let statistical = !query.group_by.is_empty()
+            || !query.aggregates.is_empty()
+            || query.has_aggregate_projection();
+        if let Some(metadata) = &params.metadata {
+            let descriptor = metadata
+                .get(&query.entity)
+                .ok_or_else(|| SqlCompileError::UnknownEntity(query.entity.clone()))?;
+            if descriptor.as_ref() != sub_entity {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "statistical membership descriptor does not match registered metadata".into(),
+                ));
+            }
+        }
+        if query.requires_statistical_plan() {
+            let metadata = match &params.metadata {
+                Some(metadata) => metadata.clone(),
+                None if query.object_group_bys.is_empty() => {
+                    std::sync::Arc::new(std::collections::BTreeMap::from([(
+                        sub_entity.name.clone(),
+                        std::sync::Arc::new(sub_entity.clone()),
+                    )]))
+                }
+                None => {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "layered statistical membership requires registered metadata".into(),
+                    ));
+                }
+            };
+            let plan = teaql_core::aggregation_plan::StatisticalPlan::build(query, |name| {
+                metadata.get(name).map(AsRef::as_ref)
+            })
+            .map_err(|error| SqlCompileError::InvalidFunctionArguments(error.to_string()))?;
+            let key = match query.projection.as_slice() {
+                [key] => key.clone(),
+                [] if plan.layers.len() == 1
+                    && plan.dimensions.is_empty()
+                    && plan.measures.len() == 1 =>
+                {
+                    plan.measures[0].output_path.join(".")
+                }
+                _ => {
+                    return Err(SqlCompileError::InvalidFunctionArguments(
+                        "statistical membership requires exactly one selected result key".into(),
+                    ));
+                }
+            };
+            let candidates = plan
+                .dimensions
+                .iter()
+                .enumerate()
+                .filter(|(_, binding)| binding.output_path.join(".") == key)
+                .map(|(index, _)| format!("__teaql_d{index}"))
+                .chain(
+                    plan.measures
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, binding)| binding.output_path.join(".") == key)
+                        .map(|(index, _)| format!("__teaql_m{index}")),
+                )
+                .collect::<Vec<_>>();
+            let [column] = candidates.as_slice() else {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "membership key is not an unambiguous selected statistical result".into(),
+                ));
+            };
+            let outer_scope = params.scope.take();
+            let subquery = crate::statistical::compile_statistical_plan_sql(self, &plan, params);
+            params.scope = outer_scope;
+            let subquery = subquery?;
+            let alias = self.quote_ident("__teaql_membership");
+            let key = format!("{alias}.{}", self.quote_ident(column));
+            return Ok(format!(
+                "({lhs} {operator} (SELECT {key} FROM ({subquery}) AS {alias} WHERE {key} IS NOT NULL))"
+            ));
+        }
+        let key = if statistical {
+            let [key] = query.projection.as_slice() else {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "statistical membership requires exactly one selected result key".into(),
+                ));
+            };
+            let matches = usize::from(query.group_by.contains(key))
+                + query
+                    .aggregates
+                    .iter()
+                    .filter(|aggregate| &aggregate.alias == key)
+                    .count();
+            if matches != 1 {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "membership key is not an unambiguous selected statistical result".into(),
+                ));
+            }
+            Some(key)
+        } else {
+            None
+        };
         let outer_scope = params.scope.take();
         let subquery = self.compile_select_sql(sub_entity, query, params);
         params.scope = outer_scope;
-        let subquery = subquery?;
+        let mut subquery = subquery?;
+        if let Some(key) = key {
+            // Project from completed cells: HAVING/order/page must run before
+            // NULL removal, and aggregate columns must not become IN operands.
+            let alias = self.quote_ident("__teaql_membership");
+            let key = format!("{alias}.{}", self.quote_result_alias(key));
+            subquery = format!("SELECT {key} FROM ({subquery}) AS {alias} WHERE {key} IS NOT NULL");
+        } else if !sub_entity.inheritance_children.is_empty() {
+            let [key] = query.projection.as_slice() else {
+                return Err(SqlCompileError::InvalidFunctionArguments(
+                    "entity membership requires one selected key".into(),
+                ));
+            };
+            // Readonly subtype metadata is never a second IN operand. Retain
+            // ordinary NULL semantics; statistical NULL handling stays above.
+            let alias = self.quote_ident("__teaql_membership");
+            subquery = format!(
+                "SELECT {alias}.{} FROM ({subquery}) AS {alias}",
+                self.quote_result_alias(key)
+            );
+        }
         Ok(format!("({lhs} {operator} ({subquery}))"))
     }
 
@@ -1411,7 +1779,9 @@ pub trait SqlDialect {
         right: &Expr,
         params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
+        let peers = [left, right];
         let lhs = self.compile_expr(entity, left, params)?;
+        let lhs = self.comparison_operand_sql(entity, left, &peers, lhs)?;
         let operator = match op {
             BinaryOp::In | BinaryOp::InLarge => "IN",
             BinaryOp::NotIn | BinaryOp::NotInLarge => "NOT IN",
@@ -1425,12 +1795,18 @@ pub trait SqlDialect {
                 let mut placeholders = Vec::with_capacity(values.len());
                 for value in values {
                     params.push(value.clone());
-                    placeholders.push(self.placeholder(params.len()));
+                    placeholders.push(self.comparison_operand_sql(
+                        entity,
+                        &Expr::Value(value.clone()),
+                        &peers,
+                        self.placeholder(params.len()),
+                    )?);
                 }
                 Ok(format!("({lhs} {operator} ({}))", placeholders.join(", ")))
             }
             _ => {
                 let rhs = self.compile_expr(entity, right, params)?;
+                let rhs = self.comparison_operand_sql(entity, right, &peers, rhs)?;
                 Ok(format!("({lhs} {operator} ({rhs}))"))
             }
         }
@@ -1442,7 +1818,7 @@ pub trait SqlDialect {
         query: &SelectQuery,
         params: &mut crate::SqlBindings,
     ) -> Result<String, SqlCompileError> {
-        match query.aggregates.is_empty() {
+        match query.aggregates.is_empty() && query.group_by.is_empty() {
             true => self.select_projection(entity, query, params),
             false => self.aggregate_projection(entity, query, params),
         }
@@ -1464,7 +1840,7 @@ pub trait SqlDialect {
         let column = self.quote_ident(&property.column_name);
         match property.column_name == property.name {
             true => column,
-            false => format!("{column} AS {}", self.quote_ident(&property.name)),
+            false => format!("{column} AS {}", self.quote_result_alias(&property.name)),
         }
     }
 
@@ -1478,6 +1854,28 @@ pub trait SqlDialect {
             false => self.column_sql(entity, &aggregate.field),
         }
     }
+}
+
+fn grouping_projection<'a>(
+    query: &'a SelectQuery,
+    field: &str,
+) -> Result<Option<&'a Expr>, SqlCompileError> {
+    let mut matches = query
+        .expr_projection
+        .iter()
+        .filter(|item| item.alias == field);
+    let first = matches.next();
+    if matches.next().is_some()
+        || query
+            .aggregates
+            .iter()
+            .any(|measure| measure.alias == field)
+    {
+        return Err(SqlCompileError::InvalidFunctionArguments(format!(
+            "ambiguous grouping result alias: {field}"
+        )));
+    }
+    Ok(first.map(|projection| &projection.expr))
 }
 
 fn validate_schema_shape(property: &PropertyDescriptor) -> Result<(), SqlCompileError> {
