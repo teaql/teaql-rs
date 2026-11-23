@@ -8,6 +8,7 @@ use teaql_core::{
     BinaryOp, CompactRow, Expr,
     RelationAggregate as RuntimeRelationAggregate, SelectQuery, SmartList,
 };
+pub use teaql_core::{QueryOperation, QueryOperationKind};
 use teaql_runtime::{ContextError, GraphNode, EntityDataServiceBehavior, DataServiceError, PurposedSelectQuery, RuntimeError, UserContext};
 
 pub type TeaqlEntityStream<'a, T, E> = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<T, E>> + 'a>>;
@@ -148,22 +149,25 @@ pub type TeaqlDataServiceError<R> = DataServiceError<<R as TeaqlQueryRepository>
 
 pub(crate) fn authorize_query(mut query: SelectQuery) -> Result<PurposedSelectQuery, RuntimeError> {
     if query.comment.as_deref().map(str::trim).filter(|value| !value.is_empty()).is_none() {
-        return Err(RuntimeError::Graph(
-            "generated query reached the repository without .comment(...)".to_owned()
-        ));
+        return Err(teaql_core::RequestIntentError {
+            request_kind: teaql_core::RequestKind::Query,
+            field: "comment",
+        }.into());
     }
     let purpose_index = query
         .trace_chain
         .iter()
         .rposition(|node| node.kind == teaql_core::TraceKind::Purpose)
-        .ok_or_else(|| RuntimeError::Graph(
-            "generated query reached the repository without .purpose(...)".to_owned()
-        ))?;
+        .ok_or_else(|| teaql_core::RequestIntentError {
+            request_kind: teaql_core::RequestKind::Query,
+            field: "purpose",
+        })?;
     let purpose = query.trace_chain.remove(purpose_index).comment;
     if purpose.trim().is_empty() {
-        return Err(RuntimeError::Graph(
-            "generated query reached the repository without .purpose(...)".to_owned()
-        ));
+        return Err(teaql_core::RequestIntentError {
+            request_kind: teaql_core::RequestKind::Query,
+            field: "purpose",
+        }.into());
     }
     Ok(PurposedSelectQuery::new(query, purpose))
 }
@@ -509,6 +513,20 @@ where
     }
 }
 
+// Provider wiring only: ownership, defaults, facet recursion and evidence are
+// implemented once by teaql-runtime, not copied into a generated library.
+struct GeneratedFacetAdapter<'a, C: ?Sized>(&'a C);
+
+impl<C: TeaqlRuntime + ?Sized> teaql_runtime::TeaqlRuntime for GeneratedFacetAdapter<'_, C> {
+    fn user_context(&self) -> &UserContext { self.0.user_context() }
+
+    async fn fetch_facet_smart_list(&self, entity: &str, query: &PurposedSelectQuery,
+        relation_aggregates: &[RuntimeRelationAggregate], trace_context: Vec<teaql_core::TraceNode>)
+        -> Result<SmartList<CompactRow>, RuntimeError> {
+        self.0.fetch_facet_smart_list(entity, query, relation_aggregates, trace_context).await
+    }
+}
+
 pub(crate) async fn execute_facets<C>(
     context: &C,
     outer_query: &SelectQuery,
@@ -517,35 +535,7 @@ pub(crate) async fn execute_facets<C>(
 where
     C: TeaqlRuntime + ?Sized,
 {
-    let mut facets = BTreeMap::new();
-    for facet in &options.facets {
-        let mut selection = facet.query.clone();
-        merge_outer_filter_into_facet_aggregates(&mut selection, outer_query);
-        if !facet.include_all_facets {
-            selection = restrict_facet_to_outer_query(context, selection, outer_query, &facet.relation_name)?;
-        }
-        let relation_aggregates = runtime_relation_aggregates(&selection.query_options);
-        let query = apply_runtime_metadata(
-            selection.query,
-            &selection.query_options,
-            &selection.child_enhancements,
-        );
-        let entity = query.entity.clone();
-        let mut chain = outer_query.trace_chain.clone();
-        chain.push(teaql_core::TraceNode::new(
-            query.entity.clone(),
-            None,
-            facet.facet_name.clone(),
-        ));
-
-        let query = PurposedSelectQuery::new(
-            query,
-            format!("Calculate facet {}", facet.facet_name),
-        );
-        let facet_rows = context.fetch_facet_smart_list(&entity, &query, &relation_aggregates, chain).await?;
-        facets.insert(facet.facet_name.clone(), facet_rows);
-    }
-    Ok(facets)
+    teaql_runtime::execute_facets(&GeneratedFacetAdapter(context), outer_query, options).await
 }
 
 pub(crate) fn restrict_facet_to_outer_query<C>(
@@ -557,31 +547,5 @@ pub(crate) fn restrict_facet_to_outer_query<C>(
 where
     C: TeaqlRuntime + ?Sized,
 {
-    let descriptor = context
-        .user_context()
-        .entity(&outer_query.entity)
-        .cloned()
-        .ok_or_else(|| RuntimeError::Graph(format!("missing entity: {}", outer_query.entity)))?;
-    let relation = descriptor
-        .relation_by_name(relation_name)
-        .cloned()
-        .ok_or_else(|| RuntimeError::MissingRelation {
-            entity: outer_query.entity.clone(),
-            relation: relation_name.to_owned(),
-        })?;
-    let mut subquery = outer_query.clone();
-    subquery.projection.clear();
-    subquery.expr_projection.clear();
-    subquery.order_by.clear();
-    subquery.slice = None;
-    subquery.aggregates.clear();
-    subquery.group_by.clear();
-    subquery.relations.clear();
-    selection.query = selection.query.and_filter(Expr::in_subquery(
-        relation.foreign_key,
-        descriptor,
-        subquery,
-        relation.local_key,
-    ));
-    Ok(selection)
+    teaql_runtime::restrict_facet_to_outer_query(&GeneratedFacetAdapter(context), selection, outer_query, relation_name)
 }

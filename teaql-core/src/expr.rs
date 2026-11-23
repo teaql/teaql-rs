@@ -18,9 +18,12 @@ pub enum BinaryOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExprFunction {
+    /// Java SELF: return one scalar operand without converting its value.
+    Identity,
     Soundex,
     Gbk,
     Count,
+    CountDistinct,
     Sum,
     Avg,
     Min,
@@ -97,6 +100,10 @@ impl Expr {
         Self::function(ExprFunction::Soundex, [expr])
     }
 
+    pub fn identity(expr: Expr) -> Self {
+        Self::function(ExprFunction::Identity, [expr])
+    }
+
     pub fn gbk(expr: Expr) -> Self {
         Self::function(ExprFunction::Gbk, [expr])
     }
@@ -107,6 +114,10 @@ impl Expr {
 
     pub fn count_expr(expr: Expr) -> Self {
         Self::function(ExprFunction::Count, [expr])
+    }
+
+    pub fn count_distinct(expr: Expr) -> Self {
+        Self::function(ExprFunction::CountDistinct, [expr])
     }
 
     pub fn sum_expr(expr: Expr) -> Self {
@@ -332,7 +343,11 @@ impl Expr {
         // SQL `NOT IN` becomes UNKNOWN for every outer row when the projected
         // set contains NULL. Relation non-existence and negative matching must
         // ignore orphan child rows instead of poisoning the entire predicate.
-        if matches!(op, BinaryOp::NotIn | BinaryOp::NotInLarge) {
+        if matches!(op, BinaryOp::NotIn | BinaryOp::NotInLarge)
+            && query.group_by.is_empty()
+            && query.aggregates.is_empty()
+            && !query.has_layered_statistics()
+        {
             query = query.and_filter(Self::is_not_null(field.clone()));
         }
         query.projection = vec![field];

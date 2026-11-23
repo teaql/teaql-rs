@@ -83,10 +83,23 @@ fn readonly_property_schema_survives_typed_decode_without_presence_or_fixed_slot
         &state,
         &second.loaded_state_snapshot().unwrap()
     ));
-    assert!(Arc::ptr_eq(
-        state.dynamic_property_definitions().unwrap(),
-        &definitions
-    ));
+    // Equivalent readonly schemas may be canonicalized across requests. The
+    // caller's Arc allocation is not identity; rows still share one immutable
+    // snapshot and must retain the complete declared types.
+    assert_eq!(state.dynamic_property_definitions().unwrap(), &definitions);
+    let equivalent = DynamicPropertyDefinitions::new([
+        ("_count".into(), DataType::I64),
+        ("_missing".into(), DataType::I64),
+    ])
+    .unwrap();
+    let other = School::from_compact_row(CompactRow::with_layout(
+        columns.with_dynamic_property_definitions(equivalent),
+        vec![Value::U64(4), Value::I64(1), "other".into(), Value::I64(2)],
+    ))
+    .unwrap();
+    assert!(Arc::ptr_eq(&state, &other.loaded_state_snapshot().unwrap()));
+    assert_eq!(other.dynamic_property("_count"), Some(&Value::I64(2)));
+    assert_eq!(first.dynamic_property("_count"), Some(&Value::I64(0)));
     assert_eq!(first.dynamic_property("_count"), Some(&Value::I64(0)));
     assert!(second.dynamic_property("_count").is_none());
     assert!(second.has_dynamic_property("_count"));

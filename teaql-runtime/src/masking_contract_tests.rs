@@ -62,6 +62,7 @@ fn entry(value: &str) -> SqlLogEntry {
         purpose: Some("why: verify mask contract".into()),
         audit_reason: Some("verify mask contract".into()),
         trace_path: vec![],
+        trace_chain: vec![],
         sql: "UPDATE customer SET name = ?".into(),
         params: vec![Value::Text(value.into())],
         debug_sql: sql.clone(),

@@ -133,6 +133,17 @@ approval emits a warning; it is not automatic rejection. Marking for deletion
 stages a change—the audited Save performs it. Atomicity is provider/route scoped,
 not a distributed transaction across unrelated databases.
 
+Optimistic versions are signed 64-bit values with checked lifecycle transitions:
+updates require a live positive version; soft deletion maps `v` to `-v-1`, and
+explicit recovery maps a negative version to `-v+1`. Exhausted successors reject
+with a structured `version_exhausted` check at `/version`, before customer graph
+policy or provider execution, while retaining pending changes. No transition
+wraps, saturates or silently resets the version. Low-level SQL compilers enforce
+the same domains; physical hard deletion remains a separate operation. The
+`RawAuditEvent::recovered_with_old_values` helper is now fallible: callers handle
+its `Result` instead of risking an overflow while constructing recovery evidence.
+The local Fix/E example includes exact-boundary generated Q/E/Save probes.
+
 ## Automatic logs without handwritten logging code
 
 **Debuggability and operability are core design goals.** The Q and Save
@@ -315,7 +326,10 @@ Request JSON is not allowed to replace those trusted capabilities.
 - [Runtime guide: modules, SPI and advanced verification](RUNTIME_GUIDE.md)
 - [Workspace and provider details](RUNTIME_GUIDE.md#workspace-layout)
 - [SQLite transactions](teaql-provider-sqlite/README.md)
+- [Inherited saves through generated Q and E APIs](examples/inheritance-save/README.md)
 - [Shared load state](examples/shared-load-state/README.md)
+- [Binary object storage and temporary S3 URLs](examples/object-storage/README.md)
+- [Context-owned HTTP with bounded retries and safe diagnostics](examples/http-resilience/README.md)
 - [Trace Chain example](examples/trace-chain/README.md)
 - [Benchmarks and reproduction](https://github.com/teaql/teaql-runtime-benchmark)
 

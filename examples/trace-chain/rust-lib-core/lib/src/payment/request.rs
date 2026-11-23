@@ -106,11 +106,23 @@ impl<R> PaymentRequest<R> {
     {
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
-        let query = authorize_query(apply_runtime_metadata(
+        let mut query = authorize_query(apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
-        ))?.with_facet_diagnostics(&query_options);
+        ))?;
+        let requested_count = query.take_requested_list_count(&query_options);
+        let use_id_set = query.as_query().id_set_pagination.is_some();
+        context.user_context().observe_generated_list("Payment", async {
+        let mut total = None;
+        if !use_id_set {
+            if let Some((alias, count_query)) = &requested_count {
+                let count_rows = context.fetch_compact_rows("Payment", count_query).await?;
+                total = Some(count_rows.first().and_then(|row| row.get(alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+            }
+        }
         let (mut rows, facets) = if query_options.facets.is_empty() {
             let rows = context.fetch_entity_smart_list::<R>(
                 "Payment",
@@ -128,8 +140,20 @@ impl<R> PaymentRequest<R> {
                 .await?;
             (rows, facets)
         };
+        if let Some((alias, count_query)) = requested_count {
+            if total.is_none() { total = rows.total_count; }
+            if total.is_none() {
+                let count_rows = context.fetch_compact_rows("Payment", &count_query).await?;
+                total = Some(count_rows.first().and_then(|row| row.get(&alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+            }
+            rows.total_count = total;
+            rows.aggregations.insert(alias, teaql_core::Value::U64(total.expect("requested count resolved")));
+        }
         attach_facets(&mut rows, facets);
         Ok(rows)
+        }).await
     }
 
     pub(crate) async fn _execute_for_rows<'a, C>(
@@ -159,8 +183,10 @@ impl<R> PaymentRequest<R> {
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?.with_facet_diagnostics(&self.query_options);
-        Ok(context.fetch_entity_stream("Payment", query))
+        ))?;
+        Ok(context.user_context().observe_generated_stream(
+            "Payment", context.fetch_entity_stream("Payment", query),
+        ))
     }
 
     pub(crate) async fn _execute_for_first<'a, C>(
@@ -187,33 +213,6 @@ impl<R> PaymentRequest<R> {
     }
 
 
-    pub(crate) async fn _execute_for_page<'a, C>(
-        self,
-        context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<SmartList<R>, RuntimeError>
-    where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        if self.query.id_set_pagination.is_some() {
-            let mut rows = self
-                .clone()
-                .page_offset(offset, limit)
-                ._execute_for_list(context)
-                .await?;
-            if rows.total_count.is_none() {
-                rows.total_count = Some(self._execute_for_count(context).await?);
-            }
-            return Ok(rows);
-        }
-        let total_count = self.clone()._execute_for_count(context).await?;
-        let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
-        rows.total_count = Some(total_count);
-        Ok(rows)
-    }
-
     pub(crate) async fn _execute_for_count<'a, C>(
         self,
         context: &'a C,
@@ -227,11 +226,14 @@ impl<R> PaymentRequest<R> {
             &query_options,
             &self.child_enhancements,
         );
-        let query = authorize_query(query)?.for_exact_count(COUNT_ALIAS)
-            .with_facet_diagnostics(&query_options);
+        let operation = query_options.page_count_operation.clone().unwrap_or_else(||
+            QueryOperation::new(QueryOperationKind::NamedCount, "execute_for_count"));
+        let alias = operation.alias().unwrap_or(COUNT_ALIAS).to_owned();
+        let query = authorize_query(query)?.with_facet_diagnostics(&query_options)
+            .for_exact_count_with_operation(&alias, operation);
         let rows = context.fetch_compact_rows("Payment", &query).await?;
         rows.first()
-            .and_then(|row| row.get(COUNT_ALIAS))
+            .and_then(|row| row.get(&alias))
             .and_then(teaql_core::Value::try_u64)
             .ok_or_else(|| RuntimeError::Graph(format!("count result for Payment is missing or not numeric")))
     }
@@ -623,6 +625,11 @@ impl<R> PaymentRequest<R> {
         self
     }
 
+    pub fn select_dynamic_fields_with(mut self, selection: teaql_core::dynamic_fields::DynamicFieldSelection) -> Self {
+        self.query = self.query.select_dynamic_fields(selection);
+        self
+    }
+
     pub fn select_self_fields(self) -> Self {
         self.select_self()
     }
@@ -652,11 +659,14 @@ impl<R> PaymentRequest<R> {
         self
     }
 
-    pub fn count(self) -> Self {
-        self.count_as("count")
+    pub fn count(mut self) -> Self {
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count"));
+        self.aggregate_count("count")
     }
 
-    pub fn count_as(self, alias: impl Into<String>) -> Self {
+    pub fn count_as(mut self, alias: impl Into<String>) -> Self {
+        let alias = alias.into();
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count_as").with_alias(&alias));
         self.aggregate_count(alias)
     }
 
@@ -837,39 +847,93 @@ impl<R> PaymentRequest<R> {
         )
     }
 
-    pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", value));
+    pub fn with_id_is(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("id", Into::<u64>::into(value)));
         self
     }
 
 
 
-    pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", value));
+    pub fn with_id_is_not(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_greater_than(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_greater_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_less_than(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_less_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_between(
+        mut self,
+        lower: impl Into<u64>,
+        upper: impl Into<u64>,
+    ) -> Self {
+        self.query = self.query.and_filter(Expr::between("id", Into::<u64>::into(lower), Into::<u64>::into(upper)));
+        self
+    }
+
+    pub fn with_id_between_range<T>(mut self, range: DateRange<T>) -> Self
+    where
+        T: Into<u64>,
+    {
+        self.query = self.query.and_filter(Expr::between(
+            "id",
+            Into::<u64>::into(range.start),
+            Into::<u64>::into(range.end),
+        ));
         self
     }
 
     pub fn with_id_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<u64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "id",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<u64>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_id_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<u64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "id",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<u64>::into).map(teaql_core::Value::from),
         ));
         self
     }
+
+    pub fn with_id_is_unknown(mut self) -> Self {
+        self.query = self.query.and_filter(Expr::is_null("id"));
+        self
+    }
+
+
+
+    pub fn with_id_is_known(mut self) -> Self {
+        self.query = self.query.and_filter(Expr::is_not_null("id"));
+        self
+    }
+
 
     pub fn order_by_id_asc(mut self) -> Self {
         self.query = self.query.order_asc("id");
@@ -1005,77 +1069,77 @@ impl<R> PaymentRequest<R> {
         )
     }
 
-    pub fn with_reference_code_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("reference_code", value));
+    pub fn with_reference_code_is(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("reference_code", Into::<String>::into(value)));
         self
     }
 
 
 
-    pub fn with_reference_code_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("reference_code", value));
+    pub fn with_reference_code_is_not(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("reference_code", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_reference_code_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("reference_code", value));
+    pub fn with_reference_code_greater_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("reference_code", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_reference_code_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("reference_code", value));
+    pub fn with_reference_code_greater_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("reference_code", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_reference_code_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("reference_code", value));
+    pub fn with_reference_code_less_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("reference_code", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_reference_code_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("reference_code", value));
+    pub fn with_reference_code_less_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("reference_code", Into::<String>::into(value)));
         self
     }
 
     pub fn with_reference_code_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<String>,
+        upper: impl Into<String>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("reference_code", lower, upper));
+        self.query = self.query.and_filter(Expr::between("reference_code", Into::<String>::into(lower), Into::<String>::into(upper)));
         self
     }
 
     pub fn with_reference_code_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<String>,
     {
         self.query = self.query.and_filter(Expr::between(
             "reference_code",
-            range.start,
-            range.end,
+            Into::<String>::into(range.start),
+            Into::<String>::into(range.end),
         ));
         self
     }
 
     pub fn with_reference_code_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "reference_code",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_reference_code_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "reference_code",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
@@ -1110,17 +1174,17 @@ impl<R> PaymentRequest<R> {
         self
     }
 
-    pub fn with_reference_code_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("reference_code", value));
+    pub fn with_reference_code_sounding_like(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::sound_like("reference_code", Into::<String>::into(value)));
         self
     }
-    pub fn with_reference_code_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("reference_code", value));
+    pub fn with_reference_code_before(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("reference_code", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_reference_code_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("reference_code", value));
+    pub fn with_reference_code_after(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("reference_code", Into::<String>::into(value)));
         self
     }
 
@@ -1345,32 +1409,41 @@ impl<R> PaymentRequest<R> {
         self
     }
     pub fn select_customer_order(mut self) -> Self {
-        self.query = self.query.relation("customer_order");
+        self.query.relations.push(teaql_core::RelationLoad::new("customer_order")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_customer_order").with_relation("customer_order")));
         self
     }
 
     pub fn select_customer_order_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("customer_order", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("customer_order", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_customer_order_with").with_relation("customer_order")));
         self
 }
 
     pub fn facet_by_customer_order_as(self, facet_name: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.facet_by_customer_order_as_with_options(facet_name, request, true)
+        self.facet_by_customer_order_internal(facet_name, request, true, "facet_by_customer_order_as")
     }
 
     pub fn facet_by_customer_order_as_with_options(
-        mut self,
+        self,
         facet_name: impl Into<String>,
         request: impl Into<QuerySelection>,
         include_all_facets: bool,
     ) -> Self {
+        self.facet_by_customer_order_internal(facet_name, request, include_all_facets, "facet_by_customer_order_as_with_options")
+    }
+
+    fn facet_by_customer_order_internal(mut self, facet_name: impl Into<String>, request: impl Into<QuerySelection>, include_all_facets: bool, method: &'static str) -> Self {
+        let facet_name = facet_name.into();
+        let operation = QueryOperation::new(QueryOperationKind::Facet, method)
+            .with_alias(&facet_name).with_relation("customer_order");
         self.query_options.facets.push(FacetRequest::new(
             facet_name,
             "customer_order",
             request,
             include_all_facets,
-        ));
+        ).with_operation(operation));
         self
     }
     pub fn have_payment_attempts(self) -> Self {
@@ -1406,31 +1479,42 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn select_payment_attempt_list(mut self) -> Self {
-        self.query = self.query.relation("payment_attempt_list");
+        self.query.relations.push(teaql_core::RelationLoad::new("payment_attempt_list")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_payment_attempt_list").with_relation("payment_attempt_list")));
         self
     }
 
     pub fn select_payment_attempt_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("payment_attempt_list", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("payment_attempt_list", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_payment_attempt_list_with").with_relation("payment_attempt_list")));
         self
 }
     pub fn count_payment_attempts(self) -> Self {
-        self.count_payment_attempts_as("count_payment_attempts")
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_payment_attempts");
+        self.count_payment_attempts_internal("count_payment_attempts".to_owned(), crate::Q::payment_attempts().unlimited(), operation)
     }
 
     pub fn count_payment_attempts_as(self, alias: impl Into<String>) -> Self {
-        self.count_payment_attempts_with(alias, crate::Q::payment_attempts().unlimited())
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_payment_attempts_as").with_alias(&alias);
+        self.count_payment_attempts_internal(alias, crate::Q::payment_attempts().unlimited(), operation)
     }
 
-    pub fn count_payment_attempts_with(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    pub fn count_payment_attempts_with(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_payment_attempts_with").with_alias(&alias);
+        self.count_payment_attempts_internal(alias, request, operation)
+    }
+
+    fn count_payment_attempts_internal(mut self, alias: String, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "payment_attempt_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("payment_attempt_list")));
         self
     }
 
@@ -1440,23 +1524,26 @@ impl<R> PaymentRequest<R> {
 
     pub fn stats_from_payment_attempts_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
+        let alias = alias.into();
+        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "stats_from_payment_attempts_as")
+            .with_alias(&alias).with_relation("payment_attempt_list");
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "payment_attempt_list",
             alias,
             selection,
             false,
-        ));
+        ).with_operation(operation));
         self
     }
 
-    fn scalar_from_payment_attempts_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
+    fn scalar_from_payment_attempts_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "payment_attempt_list",
             alias,
             selection,
             true,
-        ));
+        ).with_operation(operation.with_relation("payment_attempt_list")));
         self
     }
 
@@ -1511,17 +1598,18 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PaymentRequest<R>> {
         self
     }
 
-    pub fn new_entity<C>(&self, context: &C) -> crate::Payment
+    pub fn new_entity<C>(&self, context: &C) -> Result<crate::Payment, RuntimeError>
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
+        // Reserve identity before allocating mutation state. A failed reservation
+        // must not escape as an entity or fall back to a different allocator.
+        let id = context.user_context().next_id(crate::Payment::ENTITY_NAME)?;
         let mut entity = crate::Payment::runtime_new(context.user_context().entity_runtime_state());
-        if let Ok(id) = context.user_context().next_id(crate::Payment::ENTITY_NAME) {
-            entity.update_id(id);
-        }
+        entity.update_id(id);
         teaql_core::Entity::mark_as_new(&mut entity);
-        entity
+        Ok(entity)
     }
 
     fn into_inner_with_trace(mut self) -> PaymentRequest<R> {
@@ -1542,21 +1630,12 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<PaymentRequest<R>> {
                 .comment
                 .as_deref()
                 .is_some_and(|comment| !comment.trim().is_empty()),
-            "query comment must not be empty"
+            "{}",
+            teaql_core::RequestIntentError {
+                request_kind: teaql_core::RequestKind::Query,
+                field: "comment",
+            }
         );
-    }
-
-    pub async fn execute_for_page<'a, C>(
-        self,
-        context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
-    where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        self.into_inner_with_trace()._execute_for_page(context, offset, limit).await
     }
 
     pub async fn execute_for_exists<'a, C>(

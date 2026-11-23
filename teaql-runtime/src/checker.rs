@@ -61,6 +61,9 @@ pub fn clear_entity_status(values: &mut EntityValues) {
 pub enum CheckRule {
     Required,
     InvalidType,
+    InvalidDeletionState,
+    InvalidVersionState,
+    VersionExhausted,
     Min,
     Max,
     MinStringLength,
@@ -74,6 +77,9 @@ impl CheckRule {
         match self {
             Self::Required => "required",
             Self::InvalidType => "invalid_type",
+            Self::InvalidDeletionState => "invalid_deletion_state",
+            Self::InvalidVersionState => "invalid_version_state",
+            Self::VersionExhausted => "version_exhausted",
             Self::Min => "min",
             Self::Max => "max",
             Self::MinStringLength => "min_string_length",
@@ -84,168 +90,11 @@ impl CheckRule {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LocationSegment {
-    Member(String),
-    Index(usize),
-}
+pub use teaql_core::object_location::{
+    JsonFieldNamingProfile, LocationSegment, ObjectLocation, WireLocationSegment,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum JsonFieldNamingProfile {
-    #[default]
-    CamelCase,
-    SnakeCase,
-    PascalCase,
-}
-
-impl JsonFieldNamingProfile {
-    pub fn from_model_value(value: &str) -> Result<Self, String> {
-        match value {
-            "" | "camelCase" => Ok(Self::CamelCase),
-            "snake_case" => Ok(Self::SnakeCase),
-            "PascalCase" => Ok(Self::PascalCase),
-            other => Err(format!("unsupported json_field_naming: {other}")),
-        }
-    }
-
-    fn render(self, name: &str) -> String {
-        match self {
-            Self::SnakeCase => name.to_owned(),
-            Self::CamelCase => lower_camel(name),
-            Self::PascalCase => {
-                let camel = lower_camel(name);
-                let mut chars = camel.chars();
-                chars
-                    .next()
-                    .map(|first| first.to_uppercase().chain(chars).collect())
-                    .unwrap_or_default()
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ObjectLocation {
-    segments: Vec<LocationSegment>,
-}
-
-impl ObjectLocation {
-    pub fn root() -> Self {
-        Self::default()
-    }
-
-    pub fn hash_root(member: impl Into<String>) -> Self {
-        Self::root().member(member)
-    }
-
-    pub fn array_root(index: usize) -> Self {
-        Self::root().element(index)
-    }
-
-    pub fn member(mut self, member: impl Into<String>) -> Self {
-        self.segments.push(LocationSegment::Member(member.into()));
-        self
-    }
-
-    pub fn element(mut self, index: usize) -> Self {
-        self.segments.push(LocationSegment::Index(index));
-        self
-    }
-
-    pub fn is_root(&self) -> bool {
-        self.segments.is_empty()
-    }
-
-    pub fn level(&self) -> usize {
-        self.segments.len()
-    }
-
-    /// Canonical casing-neutral path using KSML property names.
-    pub fn model_path(&self) -> String {
-        self.render_path(|name| name.to_owned())
-    }
-
-    /// Rust diagnostic path. KSML snake_case is already idiomatic Rust.
-    pub fn native_path(&self) -> String {
-        self.render_path(|name| name.to_owned())
-    }
-
-    /// RFC 6901 JSON pointer using TeaQL's default lower-camel wire policy.
-    pub fn instance_path(&self) -> String {
-        self.instance_path_with(JsonFieldNamingProfile::CamelCase)
-    }
-
-    pub fn instance_path_with(&self, profile: JsonFieldNamingProfile) -> String {
-        self.segments
-            .iter()
-            .map(|segment| match segment {
-                LocationSegment::Member(member) => {
-                    format!("/{}", escape_json_pointer(&profile.render(member)))
-                }
-                LocationSegment::Index(index) => format!("/{index}"),
-            })
-            .collect()
-    }
-
-    fn render_path(&self, property_name: impl Fn(&str) -> String) -> String {
-        let mut result = String::new();
-        for segment in &self.segments {
-            match segment {
-                LocationSegment::Member(member) => {
-                    if !result.is_empty() {
-                        result.push('.');
-                    }
-                    result.push_str(&property_name(member));
-                }
-                LocationSegment::Index(index) => result.push_str(&format!("[{index}]")),
-            }
-        }
-        result
-    }
-}
-
-fn lower_camel(name: &str) -> String {
-    let mut parts = name.split('_');
-    let mut result = parts.next().unwrap_or_default().to_owned();
-    for part in parts {
-        let mut chars = part.chars();
-        if let Some(first) = chars.next() {
-            result.extend(first.to_uppercase());
-            result.extend(chars);
-        }
-    }
-    result
-}
-
-fn escape_json_pointer(value: &str) -> String {
-    value.replace('~', "~0").replace('/', "~1")
-}
-
-impl std::fmt::Display for ObjectLocation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.segments.is_empty() {
-            return write!(f, "$");
-        }
-        let mut first = true;
-        for segment in &self.segments {
-            match segment {
-                LocationSegment::Member(member) => {
-                    if !first {
-                        write!(f, ".")?;
-                    }
-                    write!(f, "{member}")?;
-                }
-                LocationSegment::Index(index) => {
-                    write!(f, "[{index}]")?;
-                }
-            }
-            first = false;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct CheckResult {
     pub rule: CheckRule,
     pub location: ObjectLocation,
@@ -254,6 +103,20 @@ pub struct CheckResult {
     pub message: Option<String>,
     pub entity_type: Option<String>,
     pub source_instance_path: Option<String>,
+    pub(crate) presentation: Option<Arc<crate::checker_messages::RenderedState>>,
+}
+
+// Presentation caching is not part of a violation's public identity or equality.
+impl PartialEq for CheckResult {
+    fn eq(&self, other: &Self) -> bool {
+        self.rule == other.rule
+            && self.location == other.location
+            && self.input_value == other.input_value
+            && self.system_value == other.system_value
+            && self.message == other.message
+            && self.entity_type == other.entity_type
+            && self.source_instance_path == other.source_instance_path
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -269,13 +132,6 @@ pub struct WireCheckResult {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum WireLocationSegment {
-    Property { name: String },
-    Index { index: usize },
-}
-
 impl CheckResult {
     pub fn new(rule: CheckRule, location: ObjectLocation) -> Self {
         Self {
@@ -286,6 +142,7 @@ impl CheckResult {
             message: None,
             entity_type: None,
             source_instance_path: None,
+            presentation: None,
         }
     }
 
@@ -346,17 +203,7 @@ impl CheckResult {
         WireCheckResult {
             rule_id: self.rule.wire_id().to_owned(),
             entity_type: self.entity_type.clone(),
-            location: self
-                .location
-                .segments
-                .iter()
-                .map(|segment| match segment {
-                    LocationSegment::Member(name) => {
-                        WireLocationSegment::Property { name: name.clone() }
-                    }
-                    LocationSegment::Index(index) => WireLocationSegment::Index { index: *index },
-                })
-                .collect(),
+            location: self.location.wire_segments(),
             instance_path: self.location.instance_path_with(profile),
             source_instance_path: self.source_instance_path.clone(),
             input_value: self.input_value.as_ref().map(Value::to_json_value),
@@ -377,36 +224,63 @@ impl std::fmt::Display for CheckResult {
 
 pub type CheckResults = Vec<CheckResult>;
 
-/// A Fix result whose validation is deferred until the graph's final ledger snapshot.
-pub struct PreparedCheck {
-    pub(crate) changes: EntityValues,
-    results: CheckResults,
-    validate: Option<Box<dyn FnOnce(&UserContext, &ObjectLocation, &mut CheckResults) + Send>>,
+/// Runtime-owned, per-entity intent. Never accepted as a JSON eligibility flag.
+pub(crate) struct CheckMutationState<'a> {
+    pub original: Option<&'a teaql_core::EntitySnapshot>,
+    pub dirty: Option<&'a std::collections::BTreeSet<String>>,
+    pub dynamic_changed: bool,
 }
 
-impl PreparedCheck {
-    pub(crate) fn empty() -> Self {
-        Self {
-            changes: EntityValues::new(),
-            results: Vec::new(),
-            validate: None,
+impl CheckMutationState<'_> {
+    pub(crate) fn has_effective_change(
+        &self,
+        values: &EntityValues,
+        descriptor: &teaql_core::EntityDescriptor,
+        context_fields: &[&str],
+        custom_context_fields: &[&str],
+    ) -> bool {
+        if self.dynamic_changed {
+            return true;
         }
-    }
-
-    pub(crate) fn validate(
-        mut self,
-        context: &UserContext,
-        location: &ObjectLocation,
-    ) -> (EntityValues, CheckResults) {
-        if let Some(validate) = self.validate.take() {
-            validate(context, location, &mut self.results);
-        }
-        (self.changes, self.results)
+        let changed = |field: &str| {
+            let canonical = crate::ledger_keys::canonical_field_from_storage(descriptor, field)
+                .unwrap_or_else(|_| field.to_owned());
+            !canonical.starts_with('_')
+                && canonical != "id"
+                && canonical != "version"
+                && !context_fields.contains(&canonical.as_str())
+                && !custom_context_fields.contains(&canonical.as_str())
+                && self
+                    .original
+                    .is_none_or(|old| old.get(field) != values.get(field))
+        };
+        self.dirty.map_or_else(
+            || values.keys().any(|field| changed(field)),
+            |fields| fields.iter().any(|field| changed(field)),
+        )
     }
 }
 
 pub trait Checker: Send + Sync {
     fn entity(&self) -> &str;
+
+    fn managed_context_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn custom_context_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn check_and_fix_for_mutation(
+        &self,
+        context: &UserContext,
+        values: &mut EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+        _has_effective_change: bool,
+    ) {
+        self.check_and_fix(context, values, location, results);
+    }
 
     fn check_and_fix(
         &self,
@@ -415,37 +289,6 @@ pub trait Checker: Send + Sync {
         location: &ObjectLocation,
         results: &mut CheckResults,
     );
-
-    fn check_and_fix_collect_changes(
-        &self,
-        context: &UserContext,
-        values: &mut EntityValues,
-        location: &ObjectLocation,
-        results: &mut CheckResults,
-    ) -> EntityValues {
-        let before = values.clone();
-        self.check_and_fix(context, values, location, results);
-        values
-            .iter()
-            .filter(|(field, value)| before.get(*field) != Some(*value))
-            .map(|(field, value)| (field.clone(), value.clone()))
-            .collect::<BTreeMap<_, _>>()
-            .into()
-    }
-
-    /// Compatibility bridge: legacy combined checkers still run exactly once.
-    /// New generated checkers override this to defer readonly Check until after Fix.
-    fn prepare_check(
-        &self,
-        context: &UserContext,
-        values: &mut EntityValues,
-        location: &ObjectLocation,
-    ) -> PreparedCheck {
-        let mut prepared = PreparedCheck::empty();
-        prepared.changes =
-            self.check_and_fix_collect_changes(context, values, location, &mut prepared.results);
-        prepared
-    }
 
     fn required(
         &self,
@@ -540,12 +383,15 @@ impl CheckerRegistry for InMemoryCheckerRegistry {
 /// them in [`TypedEntityChecker`] so they satisfy the [`Checker`] trait
 /// expected by [`InMemoryCheckerRegistry`].
 pub trait TypedChecker<T>: Send + Sync {
-    /// Opt in only when Fix and Check have actually been separated.
     fn separate_fix_and_check(&self) -> bool {
         false
     }
-
-    /// Context/state-owned assignments; never gated by caller dirty fields.
+    fn managed_context_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn custom_context_fields(&self) -> &'static [&'static str] {
+        &[]
+    }
     fn fix_typed(
         &self,
         _context: &UserContext,
@@ -555,8 +401,6 @@ pub trait TypedChecker<T>: Send + Sync {
         _results: &mut CheckResults,
     ) {
     }
-
-    /// Validation cannot mutate the entity through the ordinary setter API.
     fn check_typed(
         &self,
         _context: &UserContext,
@@ -564,9 +408,9 @@ pub trait TypedChecker<T>: Send + Sync {
         _status: CheckObjectStatus,
         _location: &ObjectLocation,
         _results: &mut CheckResults,
+        _has_mutation: bool,
     ) {
     }
-
     fn check_and_fix_typed(
         &self,
         context: &UserContext,
@@ -575,23 +419,17 @@ pub trait TypedChecker<T>: Send + Sync {
         location: &ObjectLocation,
         results: &mut CheckResults,
     );
-}
 
-fn take_field_names(
-    values: &mut EntityValues,
-    field: &str,
-) -> Option<std::collections::BTreeSet<String>> {
-    match values.remove(field) {
-        Some(Value::List(fields)) => Some(
-            fields
-                .into_iter()
-                .filter_map(|field| match field {
-                    Value::Text(field) => Some(field),
-                    _ => None,
-                })
-                .collect(),
-        ),
-        _ => None,
+    /// Model constraints observe the canonical values after typed/custom Fix.
+    /// Borrow the existing sparse payload: absent fields and explicit null must
+    /// not be mistaken for defaults introduced while materializing `T`.
+    fn check_fixed_values(
+        &self,
+        _context: &UserContext,
+        _values: &EntityValues,
+        _location: &ObjectLocation,
+        _results: &mut CheckResults,
+    ) {
     }
 }
 
@@ -603,7 +441,7 @@ fn take_field_names(
 /// 3. Delegates to [`TypedChecker::check_and_fix_typed`].
 /// 4. Serializes the (possibly mutated) `T` back into entity values.
 pub struct TypedEntityChecker<T, C> {
-    checker: Arc<C>,
+    checker: C,
     entity_name: String,
     _marker: std::marker::PhantomData<fn() -> T>,
 }
@@ -616,7 +454,7 @@ where
     pub fn new(checker: C) -> Self {
         let entity_name = T::entity_descriptor().name.clone();
         Self {
-            checker: Arc::new(checker),
+            checker,
             entity_name,
             _marker: std::marker::PhantomData,
         }
@@ -625,96 +463,18 @@ where
 
 impl<T, C> Checker for TypedEntityChecker<T, C>
 where
-    T: Entity + TeaqlEntity + Send + Sync + Clone + 'static,
-    C: TypedChecker<T> + 'static,
+    T: Entity + TeaqlEntity + Send + Sync + Clone,
+    C: TypedChecker<T>,
 {
     fn entity(&self) -> &str {
         &self.entity_name
     }
 
-    fn prepare_check(
-        &self,
-        context: &UserContext,
-        values: &mut EntityValues,
-        location: &ObjectLocation,
-    ) -> PreparedCheck {
-        if !self.checker.separate_fix_and_check() {
-            let mut prepared = PreparedCheck::empty();
-            prepared.changes = self.check_and_fix_collect_changes(
-                context,
-                values,
-                location,
-                &mut prepared.results,
-            );
-            return prepared;
-        }
-        let mut prepared = PreparedCheck::empty();
-        let status = CheckObjectStatus::from_values(values);
-        let loaded = take_field_names(values, "_loaded_fields");
-        let dirty = take_field_names(values, "_dirty_fields");
-        if let Some(symbols) = T::symbols() {
-            values.bind_symbols(symbols);
-            prepared.changes = EntityValues::indexed(symbols);
-        }
-        match T::from_compact_row(values.to_compact_row()) {
-            Ok(mut entity) => {
-                if let Some(loaded) = loaded {
-                    entity.set_checker_loaded_fields(loaded);
-                }
-                if let Some(dirty) = &dirty {
-                    entity.set_checker_dirty_values(dirty, values);
-                }
-                let ledger_fix = entity.begin_checker_fix();
-                // Handwritten non-ledger carriers retain a diff fallback.
-                let before = (!ledger_fix).then(|| entity.clone().into_values());
-                self.checker.fix_typed(
-                    context,
-                    &mut entity,
-                    status,
-                    location,
-                    &mut prepared.results,
-                );
-                let fixed = if ledger_fix {
-                    entity.take_checker_fix_changes()
-                } else {
-                    let before = before.expect("non-ledger before values");
-                    entity
-                        .clone()
-                        .into_values()
-                        .into_iter()
-                        .filter(|(field, value)| before.get(field) != Some(value))
-                        .collect::<BTreeMap<_, _>>()
-                        .into()
-                };
-                // Setters declare Fix intent, including explicit zero/default values.
-                for (field, value) in fixed.into_fields() {
-                    if values.get(field.name()) != Some(&value) {
-                        values.insert_field(field.clone(), value.clone());
-                        prepared.changes.insert_field(field, value);
-                    }
-                }
-                // Check sees the effective dirty set, but Fix above never uses it as a trigger.
-                let mut effective_dirty = dirty.unwrap_or_default();
-                effective_dirty.extend(
-                    prepared
-                        .changes
-                        .named_entries()
-                        .map(|(field, _)| field.to_owned()),
-                );
-                entity.set_checker_dirty_values(&effective_dirty, values);
-                let checker = self.checker.clone();
-                prepared.validate = Some(Box::new(move |context, location, results| {
-                    checker.check_typed(context, &entity, status, location, results);
-                }));
-            }
-            Err(error) => prepared.results.push(
-                CheckResult::new(CheckRule::InvalidType, location.clone()).with_message(format!(
-                    "failed to materialize {} for checker: {error}",
-                    self.entity_name
-                )),
-            ),
-        }
-        prepared
+    fn managed_context_fields(&self) -> &'static [&'static str] {
+        self.checker.managed_context_fields()
+    }
+    fn custom_context_fields(&self) -> &'static [&'static str] {
+        self.checker.custom_context_fields()
     }
 
     fn check_and_fix(
@@ -724,23 +484,42 @@ where
         location: &ObjectLocation,
         results: &mut CheckResults,
     ) {
-        let _ = self.check_and_fix_collect_changes(context, values, location, results);
+        self.check_and_fix_scoped(context, values, location, results, None);
     }
 
-    fn check_and_fix_collect_changes(
+    fn check_and_fix_for_mutation(
         &self,
         context: &UserContext,
         values: &mut EntityValues,
         location: &ObjectLocation,
         results: &mut CheckResults,
-    ) -> EntityValues {
-        if self.checker.separate_fix_and_check() {
-            let prepared = self.prepare_check(context, values, location);
-            let (changes, checks) = prepared.validate(context, location);
-            results.extend(checks);
-            return changes;
+        changed: bool,
+    ) {
+        self.check_and_fix_scoped(context, values, location, results, Some(changed));
+    }
+}
+
+impl<T, C> TypedEntityChecker<T, C>
+where
+    T: Entity + TeaqlEntity + Send + Sync + Clone,
+    C: TypedChecker<T>,
+{
+    fn check_and_fix_scoped(
+        &self,
+        context: &UserContext,
+        values: &mut EntityValues,
+        location: &ObjectLocation,
+        results: &mut CheckResults,
+        has_effective_change: Option<bool>,
+    ) {
+        let descriptor = T::entity_descriptor();
+        if let Err(error) = crate::ledger_keys::map_checker_values(&descriptor, values, false) {
+            results.push(
+                CheckResult::new(CheckRule::InvalidType, location.clone())
+                    .with_message(error.to_string()),
+            );
+            return;
         }
-        let mut fixed = EntityValues::new();
         let status = CheckObjectStatus::from_values(values);
         // Materializing a partial update necessarily fills omitted Rust fields
         // with their type defaults. Those defaults are only a checker view;
@@ -771,8 +550,34 @@ where
             ),
             _ => None,
         };
-        let owned_record = original_values.clone().into();
-        match T::from_compact_row(teaql_core::CompactRow::from_map(owned_record)) {
+        if let Some(symbols) = T::symbols() {
+            original_values.bind_symbols(symbols);
+        }
+        let owned_record = original_values.to_compact_row();
+        let eligible = status.is_create()
+            || has_effective_change.unwrap_or_else(|| {
+                let business = |field: &str| {
+                    let field =
+                        crate::ledger_keys::canonical_field_from_storage(&descriptor, field)
+                            .unwrap_or_else(|_| field.to_owned());
+                    !field.starts_with('_')
+                        && field != "id"
+                        && field != "version"
+                        && !self
+                            .checker
+                            .managed_context_fields()
+                            .contains(&field.as_str())
+                        && !self
+                            .checker
+                            .custom_context_fields()
+                            .contains(&field.as_str())
+                };
+                dirty_fields.as_ref().map_or_else(
+                    || original_values.keys().any(|field| business(field)),
+                    |fields| fields.iter().any(|field| business(field)),
+                )
+            });
+        match T::from_compact_row(owned_record) {
             Ok(mut entity) => {
                 if let Some(loaded_fields) = loaded_fields {
                     entity.set_checker_loaded_fields(loaded_fields);
@@ -780,36 +585,118 @@ where
                 if let Some(dirty_fields) = dirty_fields {
                     // Only mutation-aware reconstruction needs the original value map.
                     // Readonly checks must not pay for an unused deep copy.
-                    let checker_values: teaql_core::MutationValues = original_values.clone().into();
-                    entity.set_checker_dirty_fields(dirty_fields, &checker_values);
+                    let mut checker_values = original_values.clone();
+                    if let Err(error) = crate::ledger_keys::map_checker_values(
+                        &descriptor,
+                        &mut checker_values,
+                        true,
+                    ) {
+                        *values = original_values;
+                        results.push(
+                            CheckResult::new(CheckRule::InvalidType, location.clone())
+                                .with_message(error.to_string()),
+                        );
+                        return;
+                    }
+                    let dirty_fields = dirty_fields
+                        .into_iter()
+                        .map(|field| {
+                            crate::ledger_keys::canonical_field_from_storage(&descriptor, &field)
+                                .unwrap_or(field)
+                        })
+                        .collect();
+                    entity.set_checker_dirty_fields(dirty_fields, &checker_values.into());
                 }
                 let before_check = entity.clone().into_values();
-                self.checker
-                    .check_and_fix_typed(context, &mut entity, status, location, results);
+                let key = descriptor.id_property().and_then(|property| {
+                    before_check
+                        .get(&property.name)
+                        .map(|id| crate::EntityKey::new(self.entity_name.clone(), id.clone()))
+                });
+                let native_intent = |entity: &T| {
+                    entity
+                        .__teaql_runtime_state_any()
+                        .and_then(|state| state.downcast_ref::<crate::EntityRuntimeState>())
+                        .and_then(|state| {
+                            key.as_ref()
+                                .and_then(|key| state.native_mutation_values_for(key))
+                        })
+                };
+                let before_intent = native_intent(&entity);
+                if self.checker.separate_fix_and_check() {
+                    if eligible {
+                        self.checker
+                            .fix_typed(context, &mut entity, status, location, results);
+                    }
+                    self.checker
+                        .check_typed(context, &entity, status, location, results, eligible);
+                } else {
+                    self.checker.check_and_fix_typed(
+                        context,
+                        &mut entity,
+                        status,
+                        location,
+                        results,
+                    );
+                }
+                let after_intent = native_intent(&entity);
                 let after_check = entity.into_values();
                 let descriptor = T::entity_descriptor();
-                for property in descriptor.properties.iter().filter(|property| {
-                    !property.nullable && !property.is_id && !property.is_version
-                }) {
-                    let was_absent_or_null = original_values
-                        .get(&property.name)
-                        .is_none_or(|value| matches!(value, Value::Null));
-                    if was_absent_or_null
-                        && after_check.get(&property.name).is_none_or(|value| {
-                            matches!(value, Value::Null)
-                                || before_check.get(&property.name) == Some(value)
-                        })
-                    {
-                        results.push(CheckResult::required(
-                            location.clone().member(&property.name),
-                        ));
-                    }
-                }
                 *values = original_values;
                 for (field, after_value) in after_check {
                     if before_check.get(&field) != Some(&after_value) {
-                        values.insert(field.clone(), after_value.clone());
-                        fixed.insert(field, after_value);
+                        values.insert(field, after_value);
+                    }
+                }
+                // A required typed member cannot represent Null (or another
+                // unconvertible raw value). Its generated setter preserves the
+                // old typed member and records the exact new intent in the
+                // carrier's ledger. Overlay only NEW customer-Fix intent, not
+                // stale caller intent which would undo direct typed edits.
+                if let Some(after) = after_intent {
+                    let changed: teaql_core::MutationValues = after
+                        .iter()
+                        .filter(|(field, value)| {
+                            before_intent.as_ref().and_then(|before| before.get(*field))
+                                != Some(*value)
+                        })
+                        .map(|(field, value)| (field.clone(), value.clone()))
+                        .collect::<BTreeMap<_, _>>()
+                        .into();
+                    match crate::ledger_keys::storage_values_from_ledger(&descriptor, &changed) {
+                        Ok(changed) => {
+                            for (field, value) in changed {
+                                values.insert(field, value);
+                            }
+                        }
+                        Err(error) => {
+                            results.push(
+                                CheckResult::new(CheckRule::InvalidType, location.clone())
+                                    .with_message(error.to_string()),
+                            );
+                            return;
+                        }
+                    }
+                }
+                // Required observes the actual merged values AFTER typed and
+                // ledger Fix. Missing values stay missing; typed defaults never
+                // materialize omitted caller input into mutation intent.
+                for property in descriptor.properties.iter().filter(|property| {
+                    !property.nullable && !property.is_id && !property.is_version
+                }) {
+                    if values
+                        .get(&property.name)
+                        .is_none_or(|value| matches!(value, Value::Null))
+                    {
+                        results.push(CheckResult::required(
+                            location.clone().member(
+                                crate::ledger_keys::canonical_field_from_storage(
+                                    &descriptor,
+                                    &property.name,
+                                )
+                                .unwrap_or_else(|_| property.name.clone()),
+                            ),
+                        ));
                     }
                 }
             }
@@ -828,13 +715,82 @@ where
                 );
             }
         }
-        fixed
+        if let Err(error) = crate::ledger_keys::map_checker_values(&descriptor, values, true) {
+            results.push(
+                CheckResult::new(CheckRule::InvalidType, location.clone())
+                    .with_message(error.to_string()),
+            );
+            return;
+        }
+        let first_model_result = results.len();
+        self.checker
+            .check_fixed_values(context, values, location, results);
+        // A customer checker may already report the same modeled rule. Keep
+        // its message/metadata instead of displaying a second mechanical copy.
+        let mut index = first_model_result;
+        while index < results.len() {
+            if results[..index].iter().any(|prior| {
+                prior.rule == results[index].rule && prior.location == results[index].location
+            }) {
+                results.remove(index);
+            } else {
+                index += 1;
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_intent_separates_restored_edits_from_other_business_repairs() {
+        use teaql_core::{DataType, EntityDescriptor, EntitySnapshot, PropertyDescriptor};
+        let descriptor = EntityDescriptor::new("Entry")
+            .property(PropertyDescriptor::new("name", DataType::Text))
+            .property(PropertyDescriptor::new("memo", DataType::Text))
+            .property(PropertyDescriptor::new("touched_at", DataType::I64));
+        let old = BTreeMap::from([
+            ("name".into(), Value::from("original")),
+            ("memo".into(), Value::from("old memo")),
+            ("touched_at".into(), Value::I64(100)),
+        ]);
+        let snapshot = EntitySnapshot::from(old.clone());
+        let mut values = EntityValues::from(old);
+        values.insert("touched_at".into(), Value::I64(200));
+        let state = CheckMutationState {
+            original: Some(&snapshot),
+            dirty: None,
+            dynamic_changed: false,
+        };
+        assert!(!state.has_effective_change(&values, &descriptor, &["touched_at"], &[]));
+        values.insert("memo".into(), Value::from("business repair"));
+        assert!(state.has_effective_change(&values, &descriptor, &["touched_at"], &[]));
+    }
+
+    #[test]
+    fn final_intent_cannot_cancel_dynamic_changes_or_unknown_original_values() {
+        use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};
+        let descriptor = EntityDescriptor::new("Entry")
+            .property(PropertyDescriptor::new("name", DataType::Text));
+        let values = EntityValues::from(BTreeMap::from([(
+            "name".into(),
+            Value::from("unknown baseline"),
+        )]));
+        let unknown = CheckMutationState {
+            original: None,
+            dirty: None,
+            dynamic_changed: false,
+        };
+        assert!(unknown.has_effective_change(&values, &descriptor, &[], &[]));
+        let dynamic = CheckMutationState {
+            original: None,
+            dirty: None,
+            dynamic_changed: true,
+        };
+        assert!(dynamic.has_effective_change(&EntityValues::new(), &descriptor, &[], &[]));
+    }
 
     #[test]
     fn test_object_location_formatting_and_nesting_levels() {

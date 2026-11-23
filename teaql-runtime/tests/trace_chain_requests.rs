@@ -16,6 +16,105 @@ use teaql_runtime::{
 
 struct NoIo;
 
+struct RootIntentPolicy(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl teaql_runtime::RequestPolicy for RootIntentPolicy {
+    fn enforce_select(
+        &self,
+        _: &UserContext,
+        _: &mut teaql_core::SelectQuery,
+    ) -> Result<(), teaql_runtime::RuntimeError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+struct RootIntentProvider(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl DataServiceExecutor for RootIntentProvider {
+    type Error = std::io::Error;
+    fn capabilities(&self) -> DataServiceCapabilities {
+        DataServiceCapabilities {
+            query: true,
+            ..Default::default()
+        }
+    }
+}
+impl QueryExecutor for RootIntentProvider {
+    async fn query(&self, _: QueryRequest) -> Result<QueryResult, Self::Error> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(QueryResult {
+            rows: vec![],
+            metadata: teaql_data_service::ExecutionMetadata::unrecorded_query(0),
+        })
+    }
+}
+impl MutationExecutor for RootIntentProvider {
+    async fn mutate(&self, _: MutationRequest) -> Result<MutationResult, Self::Error> {
+        panic!("query-only intent control must not mutate");
+    }
+}
+
+#[tokio::test]
+async fn annotated_children_cannot_authorize_missing_root_intent() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    for logging in [false, true] {
+        let policies = Arc::new(AtomicUsize::new(0));
+        let queries = Arc::new(AtomicUsize::new(0));
+        let mut context = context().with_request_policy(RootIntentPolicy(policies.clone()));
+        if !logging {
+            context.disable_sql_log();
+        }
+        let executor = RootIntentProvider(queries.clone());
+        let service = EntityDataService::for_executor(&context, "Order", &executor);
+        let child = teaql_core::SelectQuery::new("Payment")
+            .comment("load payments")
+            .purpose("render payments");
+        for field in ["comment", "purpose"] {
+            for blank in [None, Some(""), Some(" \t\n"), Some("\u{2003}")] {
+                let mut query = teaql_core::SelectQuery::new("Order")
+                    .comment("load orders")
+                    .purpose("render orders")
+                    .relation_query("payment", child.clone());
+                if field == "comment" {
+                    query.comment = blank.map(str::to_owned);
+                } else {
+                    query.purpose = blank.map(str::to_owned);
+                }
+                let error = QueryRequest::from_query(query.clone())
+                    .expect_err("child intent authorized the root");
+                assert_eq!(error.field, field);
+                assert_eq!(error.request_kind, teaql_core::RequestKind::Query);
+                // A missing purpose cannot form the staged executable query; the raw envelope
+                // is validated above. Missing comments also exercise runtime execution itself.
+                if field == "comment" {
+                    let staged = teaql_runtime::PurposedSelectQuery::new(query, "render orders");
+                    assert_intent_error(
+                        service.fetch_all(&staged).await.unwrap_err(),
+                        teaql_core::RequestKind::Query,
+                        field,
+                    );
+                }
+            }
+        }
+        assert_eq!(child.comment.as_deref(), Some("load payments"));
+        assert_eq!(child.purpose.as_deref(), Some("render payments"));
+        assert_eq!(policies.load(Ordering::SeqCst), 0);
+        assert_eq!(queries.load(Ordering::SeqCst), 0);
+        let valid = teaql_runtime::PurposedSelectQuery::new(
+            teaql_core::SelectQuery::new("Order").comment("load validation control"),
+            "verify live provider probes",
+        );
+        assert!(service.fetch_all(&valid).await.unwrap().is_empty());
+        assert!(policies.load(Ordering::SeqCst) > 0);
+        assert_eq!(queries.load(Ordering::SeqCst), 1);
+        println!(
+            "RTC_COM_01_PASS logging={logging} fields=comment,purpose invalid_provider=0 invalid_policy=0 annotated_child=true live_control=true"
+        );
+    }
+}
+
 struct NoPolicy;
 impl teaql_runtime::RequestPolicy for NoPolicy {
     fn enforce_select(

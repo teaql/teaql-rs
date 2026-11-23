@@ -148,7 +148,8 @@ async fn seed(context: &UserContext) -> Outcome<(u64, u64, Vec<u64>)> {
     let mut root = Q::customer_orders()
         .comment("prepare aggregate fixture")
         .purpose("isolate generated query acceptance")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     root.update_platform_id(1);
     root.update_order_number("AGGREGATE-ORDER");
     root.update_description("visible aggregate detail");
@@ -157,7 +158,8 @@ async fn seed(context: &UserContext) -> Outcome<(u64, u64, Vec<u64>)> {
         let mut child = Q::order_items()
             .comment("prepare aggregate child")
             .purpose("verify filtered counts and membership")
-            .new_entity(context);
+            .new_entity(context)
+            .expect("reserve trace fixture identity");
         child.update_customer_order_id(root.id());
         child.update_name(name);
         ids.push(child.id());
@@ -166,7 +168,8 @@ async fn seed(context: &UserContext) -> Outcome<(u64, u64, Vec<u64>)> {
     let mut payment = Q::payments()
         .comment("prepare aggregate ancestor")
         .purpose("verify nested query root")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     payment.update_customer_order_id(root.id());
     payment.update_reference_code("AGGREGATE-PAYMENT");
     let order_id = root.id();
@@ -393,17 +396,16 @@ pub async fn verify(
                         Some(order_id)
                     );
                     foreign_ids.push(order_id);
-                    let parent = E::order_item(member)
-                        .get_customer_order()
-                        .eval()
-                        .ok_or("known parent identity")?;
-                    assert_eq!(E::customer_order(parent).get_id().eval(), Some(order_id));
-                    assert_eq!(
-                        parent.is_field_loaded("description"),
-                        !filtered,
-                        "filtered detail is NotLoaded, not Null"
-                    );
-                    if !filtered {
+                    if filtered {
+                        assert!(member.customer_order().is_none(), "filtered object is NotLoaded, not an identity placeholder");
+                        assert!(!member.is_field_loaded("customer_order"));
+                        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            E::order_item(member).get_customer_order().get_description().eval()
+                        })).is_err(), "E must report missing preload, not return null");
+                    } else {
+                        let parent = E::order_item(member).get_customer_order().eval().ok_or("loaded parent")?;
+                        assert_eq!(E::customer_order(parent).get_id().eval(), Some(order_id));
+                        assert!(parent.is_field_loaded("description"));
                         assert_eq!(
                             E::customer_order(parent)
                                 .get_description()
@@ -475,11 +477,8 @@ pub async fn verify(
                     );
                     for member in members.iter() {
                         assert!(
-                            !E::order_item(member)
-                                .get_customer_order()
-                                .eval()
-                                .unwrap()
-                                .is_field_loaded("description")
+                            member.customer_order().is_none(),
+                            "a later complete view must not widen the filtered edge"
                         );
                     }
                     let mut report = statements(

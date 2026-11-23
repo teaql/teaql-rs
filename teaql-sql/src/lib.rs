@@ -1,6 +1,12 @@
 mod bindings;
+mod statistical;
+pub use statistical::{compile_statistical_plan, decode_statistical_rows};
 mod dialect;
+mod having;
+mod inheritance;
+mod integer_operand;
 pub use bindings::SqlBindings;
+pub use inheritance::{physical_entity_descriptors, validate_inherited_storage_columns};
 #[cfg(test)]
 mod binding_tests;
 mod diagnostic_execution;
@@ -89,6 +95,37 @@ mod tests {
                 .column_name("tenant_id")
                 .not_null(),
         )
+    }
+
+    #[test]
+    fn grouped_mapped_properties_return_logical_keys_and_explicit_aliases() {
+        let descriptor = entity().property(
+            PropertyDescriptor::new("kind_id", DataType::I64).column_name("Legacy Kind Key"),
+        );
+        let query = SelectQuery::new("Order")
+            .group_by("kind_id")
+            .project_expr("kindKey", Expr::column("kind_id"))
+            .count("n");
+        let compiled = TestDialect.compile_select(&descriptor, &query).unwrap();
+        assert_eq!(
+            compiled.sql,
+            "SELECT \"Legacy Kind Key\" AS \"kind_id\", \"Legacy Kind Key\" AS \"kindKey\", COUNT(*) AS \"n\" FROM \"orders\" GROUP BY \"Legacy Kind Key\""
+        );
+    }
+
+    #[test]
+    fn grouping_without_aggregates_does_not_select_unrelated_entity_fields() {
+        let descriptor = entity().property(
+            PropertyDescriptor::new("kind_id", DataType::I64).column_name("Legacy Kind Key"),
+        );
+        let query = SelectQuery::new("Order")
+            .project("id")
+            .project("name")
+            .group_by("kind_id");
+        assert_eq!(
+            TestDialect.compile_select(&descriptor, &query).unwrap().sql,
+            "SELECT \"Legacy Kind Key\" AS \"kind_id\" FROM \"orders\" GROUP BY \"Legacy Kind Key\""
+        );
     }
 
     #[test]
@@ -501,6 +538,159 @@ mod tests {
     #[test]
     fn dialect_schema_setup_defaults_to_empty() {
         assert!(TestDialect.schema_setup_sqls().is_empty());
+    }
+
+    #[test]
+    fn tombstone_soft_delete_rejects_non_live_versions() {
+        for version in [i64::MIN, -902, -2, -1, 0] {
+            let command = DeleteCommand::new("Order", 7_u64).expected_version(version);
+            assert!(
+                TestDialect.compile_delete(&entity(), &command).is_err(),
+                "soft deletion must not recover or rewrite version {version}"
+            );
+            assert!(
+                TestDialect
+                    .compile_guarded_delete(&entity(), &command, &Expr::eq("name", "visible"))
+                    .is_err(),
+                "a customer guard must not bypass lifecycle admission"
+            );
+        }
+    }
+
+    #[test]
+    fn tombstone_live_boundary_cannot_overflow() {
+        for (version, tombstone) in [(1, -2), (i64::MAX, i64::MIN)] {
+            let query = TestDialect
+                .compile_delete(
+                    &entity(),
+                    &DeleteCommand::new("Order", 7_u64).expected_version(version),
+                )
+                .unwrap();
+            assert_eq!(
+                query.params,
+                vec![Value::I64(tombstone), Value::U64(7), Value::I64(version)]
+            );
+        }
+    }
+
+    #[test]
+    fn tombstone_blind_delete_requires_a_live_row() {
+        let command = DeleteCommand::new("Order", 7_u64);
+        let ordinary = TestDialect.compile_delete(&entity(), &command).unwrap();
+        let guarded = TestDialect
+            .compile_guarded_delete(&entity(), &command, &Expr::eq("name", "visible"))
+            .unwrap();
+        for query in [ordinary, guarded] {
+            assert!(query.sql.contains("\"version\" >= 1"), "{}", query.sql);
+            assert_eq!(query.params[0], Value::I64(-1));
+        }
+    }
+
+    #[test]
+    fn tombstone_hard_delete_retains_its_separate_meaning() {
+        let query = TestDialect
+            .compile_delete(
+                &entity(),
+                &DeleteCommand::new("Order", 7_u64)
+                    .expected_version(-902)
+                    .hard_delete(),
+            )
+            .unwrap();
+        assert!(query.sql.starts_with("DELETE FROM "));
+        assert!(!query.sql.contains(">= 1"));
+        assert_eq!(query.params, vec![Value::U64(7), Value::I64(-902)]);
+    }
+
+    #[test]
+    fn version_lifecycle_update_rejects_non_live_versions() {
+        for version in [i64::MIN, -902, -1, 0] {
+            let command = UpdateCommand::new("Order", 7_u64)
+                .expected_version(version)
+                .value("name", "changed");
+            assert!(TestDialect.compile_update(&entity(), &command).is_err());
+            assert!(
+                TestDialect
+                    .compile_guarded_update(&entity(), &command, &Expr::eq("name", "visible"))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_update_rejects_exhaustion_without_panicking() {
+        let command = UpdateCommand::new("Order", 7_u64)
+            .expected_version(i64::MAX)
+            .value("name", "changed");
+        assert!(TestDialect.compile_update(&entity(), &command).is_err());
+        assert!(
+            TestDialect
+                .compile_guarded_update(&entity(), &command, &Expr::eq("name", "visible"))
+                .is_err()
+        );
+    }
+
+    fn version_lifecycle_batch(version: i64) -> teaql_core::BatchUpdateCommand {
+        let mut command = teaql_core::BatchUpdateCommand::new("Order", vec!["name".into()]);
+        command.batch_ids = vec![Value::U64(6), Value::U64(7)];
+        command.batch_expected_versions = vec![Some(1), Some(version)];
+        command.batch_values = vec![
+            std::collections::BTreeMap::from([("name".to_owned(), Value::from("first"))]).into(),
+            std::collections::BTreeMap::from([("name".to_owned(), Value::from("second"))]).into(),
+        ];
+        command
+    }
+
+    #[test]
+    fn version_lifecycle_batch_rejects_non_live_versions() {
+        for version in [i64::MIN, -902, -1, 0] {
+            assert!(
+                TestDialect
+                    .compile_batch_update(&entity(), &version_lifecycle_batch(version))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_batch_rejects_exhaustion_without_panicking() {
+        assert!(
+            TestDialect
+                .compile_batch_update(&entity(), &version_lifecycle_batch(i64::MAX))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn version_lifecycle_recovery_rejects_unrepresentable_successor() {
+        for version in [i64::MIN, i64::MIN + 1] {
+            let command = RecoverCommand::new("Order", 7_u64, version);
+            assert!(TestDialect.compile_recover(&entity(), &command).is_err());
+            assert!(
+                TestDialect
+                    .compile_guarded_recover(&entity(), &command, &Expr::eq("name", "visible"))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_adjacent_representable_boundaries_remain_valid() {
+        let update = TestDialect
+            .compile_update(
+                &entity(),
+                &UpdateCommand::new("Order", 7_u64)
+                    .expected_version(i64::MAX - 1)
+                    .value("name", "changed"),
+            )
+            .unwrap();
+        assert_eq!(update.params[1], Value::I64(i64::MAX));
+        let recover = TestDialect
+            .compile_recover(
+                &entity(),
+                &RecoverCommand::new("Order", 7_u64, i64::MIN + 2),
+            )
+            .unwrap();
+        assert_eq!(recover.params[0], Value::I64(i64::MAX));
     }
 
     #[test]

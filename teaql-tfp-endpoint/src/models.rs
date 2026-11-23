@@ -784,6 +784,7 @@ impl TfpMutationQuery {
                     entity: self.entity.clone(),
                     id: id_val,
                     expected_version: self.expected_version.unwrap_or(0),
+                    values: Default::default(),
                     trace_chain: trace,
                 })
                 .request(comment)

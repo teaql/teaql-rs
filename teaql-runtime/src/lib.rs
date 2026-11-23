@@ -1,11 +1,21 @@
 extern crate self as teaql_runtime;
+
+pub use context_fix::{ContextFixError, ContextFixInput, ContextFixResolver};
+
+/// Compile-time contract for generated contextual-ownership save admission.
+#[doc(hidden)]
+pub const CONTEXT_ROOT_SAVE_ADMISSION_REVISION: u32 = 1;
 mod business_id;
 mod checker;
+pub mod checker_messages;
+mod checker_privacy;
 mod commit_audit;
 mod context;
+mod context_fix;
 mod data_service;
 mod document_round_trip;
 pub mod dynamic_fields;
+pub mod entity_json;
 mod entity_reference;
 mod entity_runtime;
 pub mod entity_save;
@@ -14,13 +24,23 @@ mod error;
 mod event;
 pub mod generated_support;
 mod graph;
+pub mod http;
 mod i18n;
 mod id;
 pub mod inmemory_engine;
 mod language;
+mod ledger_keys;
 pub mod log_formatter;
 mod log_privacy;
+mod runtime_logging;
+pub use runtime_logging::{
+    RuntimeLogger, RuntimeLoggingError, RuntimeLoggingOptions, parse_log_size,
+};
 mod mutation_policy;
+mod mutation_version;
+pub mod object_storage;
+#[cfg(test)]
+mod requested_list_count_tests;
 // Deterministic test oracle; the published runtime uses provider executors.
 #[cfg(test)]
 #[allow(dead_code)]
@@ -30,8 +50,14 @@ mod registry;
 pub use registry::decode_compact_rows_with_read_metadata;
 mod round_trip_reference;
 mod telemetry;
+mod telemetry_mutation;
 #[cfg(feature = "opentelemetry")]
 mod telemetry_opentelemetry;
+mod telemetry_sql;
+#[cfg(feature = "standard-telemetry")]
+mod telemetry_standard;
+mod telemetry_startup;
+mod telemetry_stream;
 
 pub use business_id::{
     BUSINESS_ID_V1_ALPHABET, BUSINESS_ID_V1_WIDTH, BusinessClock, BusinessDate,
@@ -83,12 +109,18 @@ pub use graph::{
     EntityValues, GraphMutationBatch, GraphMutationKind, GraphMutationPlan, GraphMutationPlanItem,
     GraphNode, GraphOperation, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
 };
+pub use http::{
+    HttpCall, HttpCancellation, HttpFailure, HttpIntentKind, HttpMethod, HttpRequestService,
+    HttpResponse, HttpRetryMode,
+};
 pub use i18n::I18nCatalog;
 pub(crate) use id::local_id_generator;
 pub use id::{
     AtomicCounterIdGenerator, InternalIdGenerator, SnowflakeIdGenerator, canonical_id_space_entity,
 };
-pub use inmemory_engine::{ExprEvaluator, InMemoryQueryEngine};
+pub use inmemory_engine::{
+    ExprEvaluator, InMemoryQueryEngine, InMemoryQueryError, InMemoryQueryErrorKind,
+};
 pub use language::{
     BuiltinTranslator, Language, Locale, MessageTranslator, translate_check_result,
     translate_location,
@@ -120,12 +152,16 @@ pub use round_trip_reference::{
 };
 pub use telemetry::{
     FailOpenRuntimeTelemetryPropagationContext, FailOpenRuntimeTelemetryScope,
-    NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry,
-    RuntimeTelemetryPropagationContext, RuntimeTelemetryScope, extract_runtime_context,
-    runtime_error_category, start_runtime_operation,
+    NoopRuntimeTelemetry, RuntimeAttributeValue, RuntimeDiagnosticEvent, RuntimeOperation,
+    RuntimeTelemetry, RuntimeTelemetryPropagationContext, RuntimeTelemetryScope,
+    extract_runtime_context, runtime_error_category, start_runtime_operation,
 };
 #[cfg(feature = "opentelemetry")]
 pub use telemetry_opentelemetry::OpenTelemetryRuntimeTelemetry;
+pub use telemetry_startup::{
+    TELEMETRY_ENABLED, TELEMETRY_OTLP_ENDPOINT, TELEMETRY_SERVICE_NAME,
+    TelemetryStartupConfiguration,
+};
 
 #[cfg(test)]
 #[allow(dead_code, unused_imports)]
@@ -212,6 +248,7 @@ mod tests {
                 DataType::Json => Ok("JSONB".to_owned()),
                 DataType::Date => Ok("DATE".to_owned()),
                 DataType::Timestamp => Ok("TIMESTAMPTZ".to_owned()),
+                DataType::Binary => Ok("BYTEA".to_owned()),
             }
         }
     }
@@ -2245,11 +2282,11 @@ mod tests {
         match error {
             RuntimeError::Check(results) => {
                 assert_eq!(results.len(), 1);
-                assert!(
-                    results[0]
-                        .message
-                        .as_ref()
-                        .is_some_and(|message| message.contains("必填"))
+                assert_eq!(results[0].rule, CheckRule::Required);
+                assert_eq!(results[0].location.instance_path(), "/name");
+                assert_eq!(
+                    results[0].message.as_deref(),
+                    Some("请填写name。\n位置：当前对象")
                 );
             }
             other => panic!("unexpected checker error: {other:?}"),
@@ -3402,6 +3439,23 @@ mod tests {
         assert_eq!(second.first().map(|entity| entity.id), Some(51));
         assert_eq!(context.id_set_plan().as_deref(), Some("ID_SET_HIT"));
 
+        let beyond = repo
+            .fetch_enhanced_entities_with_relation_aggregates_internal::<Order>(
+                &fixture_select(
+                    "Order",
+                    "id_set_pagination_reuses_ordered_ids_and_returns_exact_count",
+                )
+                .projects(["id", "version", "name"])
+                .order_asc("name")
+                .page(100, 10)
+                .optimize_pagination_with_id_set_config("orders", 60, 1_000),
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(beyond.is_empty());
+        assert_eq!(beyond.total_count, Some(100));
+
         let queries = &context
             .get_resource::<IdSetQueueExecutor>()
             .unwrap()
@@ -4008,50 +4062,9 @@ mod tests {
             ],
         );
 
-        let query = teaql_core::SelectQuery {
-            hard_limit: 10_000,
-            entity: String::from("Order"),
-            projection: Vec::new(),
-            expr_projection: Vec::new(),
-            filter: None,
-            having: None,
-            order_by: Vec::new(),
-            slice: None,
-            partition_by: None,
-            top_n_probe_parent_threshold: None,
-            trace_chain: Vec::new(),
-            aggregates: vec![
-                Aggregate {
-                    function: AggregateFunction::Count,
-                    field: String::from("id"),
-                    alias: String::from("count"),
-                },
-                Aggregate {
-                    function: AggregateFunction::Sum,
-                    field: String::from("version"),
-                    alias: String::from("versionSum"),
-                },
-            ],
-            group_by: Vec::new(),
-            relations: Vec::new(),
-            facets: Vec::new(),
-            relation_aggregates: Vec::new(),
-            aggregation_cache: None,
-            comment: None,
-            purpose: None,
-            raw_sql: None,
-            raw_sql_search_criteria: Vec::new(),
-            dynamic_properties: Vec::new(),
-            dynamic_property_definitions: None,
-            dynamic_field_selection: None,
-            raw_projections: Vec::new(),
-            object_group_bys: Vec::new(),
-            search_with_text: None,
-            child_enhancements: Vec::new(),
-            stream_config: None,
-            continuous_page_fetch: None,
-            id_set_pagination: None,
-        };
+        let query = teaql_core::SelectQuery::new("Order")
+            .count("count")
+            .sum("version", "versionSum");
 
         let rows = data_service.fetch_all(&query).unwrap();
 
@@ -4508,6 +4521,6 @@ mod tests {
 pub use checker::{
     CHECK_OBJECT_STATUS_FIELD, CheckObjectStatus, CheckResult, CheckResults, CheckRule, Checker,
     CheckerRegistry, InMemoryCheckerRegistry, JsonFieldNamingProfile, LocationSegment,
-    ObjectLocation, PreparedCheck, TypedChecker, TypedEntityChecker, WireCheckResult,
-    WireLocationSegment, clear_entity_status, mark_entity_status,
+    ObjectLocation, TypedChecker, TypedEntityChecker, WireCheckResult, WireLocationSegment,
+    clear_entity_status, mark_entity_status,
 };

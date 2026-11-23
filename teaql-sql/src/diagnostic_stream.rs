@@ -14,28 +14,49 @@ pub(crate) struct DiagnosticStream<'a, E> {
     metadata: Option<ExecutionMetadata>,
     observer: ExecutionObserver<'a>,
     delivered: usize,
+    scope: Option<Box<dyn teaql_data_service::statement_telemetry::SqlStatementTelemetryScope>>,
 }
 
 impl<'a, E> DiagnosticStream<'a, E> {
     pub(crate) fn wrap(
         source: QueryStream<'a, E>,
-        metadata: ExecutionMetadata,
+        mut metadata: ExecutionMetadata,
         observer: ExecutionObserver<'a>,
     ) -> QueryStream<'a, E>
     where
         E: 'a,
     {
+        let scope = teaql_data_service::statement_telemetry::start_sql_statement(
+            &metadata.backend,
+            metadata.operation,
+        );
+        if let Some(scope) = &scope {
+            metadata.sql_log.telemetry =
+                Some(std::sync::Arc::new(teaql_data_service::SqlTelemetryState {
+                    correlation: std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        scope.correlation()
+                    }))
+                    .ok()
+                    .flatten(),
+                    ..Default::default()
+                }));
+        }
         Box::pin(Self {
             source: Some(source),
             metadata: Some(metadata),
             observer,
             delivered: 0,
+            scope,
         })
     }
 
     fn finish(&mut self, outcome: SqlExecutionOutcome) {
         // Release provider cursor/locks before invoking any runtime sink.
         drop(self.source.take());
+        if let Some(scope) = self.scope.take() {
+            let _ =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scope.finish(outcome)));
+        }
         if let Some(mut metadata) = self.metadata.take() {
             metadata.ended_at = SystemTime::now();
             metadata.result_count = Some(self.delivered);
@@ -56,7 +77,25 @@ impl<E> Stream for DiagnosticStream<'_, E> {
         let Some(source) = this.source.as_mut() else {
             return Poll::Ready(None);
         };
-        match source.as_mut().poll_next(cx) {
+        let result = if let Some(scope) = &this.scope {
+            let mut result = None;
+            let mut invoked = false;
+            let mut callback = || {
+                invoked = true;
+                result = Some(source.as_mut().poll_next(cx));
+            };
+            let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                scope.with_context(&mut callback)
+            }));
+            match (attempted, result) {
+                (_, Some(result)) => result,
+                (Err(payload), None) if invoked => std::panic::resume_unwind(payload),
+                _ => source.as_mut().poll_next(cx),
+            }
+        } else {
+            source.as_mut().poll_next(cx)
+        };
+        match result {
             Poll::Ready(Some(Ok(chunk))) => {
                 this.delivered += chunk.rows.len();
                 if chunk.is_last {

@@ -378,11 +378,19 @@ where
         self.prepare_select_query_owned(query.clone())
     }
 
-    fn prepare_select_query_owned(
+    pub(super) fn prepare_select_query_owned(
         &self,
         mut query: SelectQuery,
     ) -> Result<SelectQuery, RuntimeError> {
         let intent = self.request_intent_for(&query)?;
+        let scope = query
+            .request_scope()
+            .cloned()
+            .or_else(|| self.request_scope.clone())
+            .unwrap_or_else(|| {
+                teaql_core::QueryRequestScope::root(query.entity.clone(), intent.clone())
+            });
+        query = query.with_request_scope(scope);
         query.comment = Some(intent.comment().to_owned());
         query.purpose = Some(intent.purpose().to_owned());
         let mut full_trace = self.trace_context.clone();
@@ -466,7 +474,11 @@ where
             .data_service
             .metadata
             .context
-            .check_and_fix_values(&command.entity, &mut checked_values);
+            .check_and_fix_storage_values_at(
+                &command.entity,
+                &mut checked_values,
+                &crate::ObjectLocation::root(),
+            );
         clear_entity_status(&mut checked_values);
         check_result?;
         command.values = checked_values.into();
@@ -482,11 +494,14 @@ where
         &self,
         command: &UpdateCommand,
     ) -> Result<UpdateCommand, RuntimeError> {
+        crate::mutation_version::updated(&command.entity, command.expected_version)?;
         let mut command = command.clone();
         if let Some(behavior) = self.behavior() {
             behavior.before_update(self.data_service.metadata.context, &mut command)?;
         }
+        crate::mutation_version::updated(&command.entity, command.expected_version)?;
         self.enforce_update_policy(&mut command)?;
+        crate::mutation_version::updated(&command.entity, command.expected_version)?;
 
         Ok(command)
     }
@@ -514,6 +529,9 @@ where
             && query.child_enhancements.is_empty()
             && query.relations.is_empty()
         {
+            let query = self
+                .prepare_nested_statistical_layers(query)
+                .map_err(DataServiceError::Runtime)?;
             return self.fetch_prepared_query_owned(query).await;
         }
         self.fetch_prepared_all(&query).await
@@ -533,6 +551,9 @@ where
             && query.child_enhancements.is_empty()
             && query.relations.is_empty()
         {
+            let query = self
+                .prepare_nested_statistical_layers(query)
+                .map_err(DataServiceError::Runtime)?;
             return self.fetch_prepared_query_owned(query).await;
         }
         self.fetch_prepared_all(&query).await
@@ -544,9 +565,9 @@ where
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let query = self
             .prepare_select_query_owned(query)
-            .map_err(DataServiceError::Runtime)?
-            .prepare_for_list()
-            .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+            .map_err(DataServiceError::Runtime)?;
+        // Framework-owned relation/statistical populations are not outer pages.
+        // Keep an explicit business slice, but never invent a 10,000-row cutoff.
         // Relation probes build a fresh, runtime-owned query for every foreign key.
         // Keep that ownership all the way into the provider when no runtime
         // enhancement needs to retain the query. Going through
@@ -558,9 +579,13 @@ where
             && query.child_enhancements.is_empty()
             && query.relations.is_empty()
         {
+            let query = self
+                .prepare_nested_statistical_layers(query)
+                .map_err(DataServiceError::Runtime)?;
             return self.fetch_prepared_query_owned(query).await;
         }
-        self.fetch_prepared_all(&query).await
+        self.fetch_prepared_all_with_aggregates(&query, &[], false)
+            .await
     }
 
     async fn prepare_continuous_page(
@@ -744,6 +769,7 @@ where
             slice.offset = 0;
         }
         normalized.comment = None;
+        normalized.clear_request_scope();
         normalized.trace_chain.clear();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         namespace.hash(&mut hasher);
@@ -765,6 +791,7 @@ where
         normalized.child_enhancements.clear();
         normalized.object_group_bys.clear();
         normalized.comment = None;
+        normalized.clear_request_scope();
         normalized.trace_chain.clear();
         normalized.id_set_pagination = None;
         normalized.continuous_page_fetch = None;
@@ -896,6 +923,23 @@ where
                     offset: 0,
                     limit: Some(options.max_ids.saturating_add(1)),
                 });
+                let intent = self
+                    .request_intent_for(&id_query)
+                    .map_err(DataServiceError::Runtime)?;
+                let parent = query
+                    .request_scope()
+                    .cloned()
+                    .or_else(|| self.request_scope.clone())
+                    .unwrap_or_else(|| {
+                        teaql_core::QueryRequestScope::root(query.entity.clone(), intent)
+                    });
+                let helper = parent
+                    .derive_helper(
+                        &query.entity,
+                        format!("collect {} IDs for pagination", query.entity),
+                    )
+                    .map_err(|error| DataServiceError::Runtime(error.into()))?;
+                id_query = id_query.with_request_scope(helper);
                 let rows = self.fetch_prepared_query_owned(id_query).await?;
                 let mut ids = Vec::with_capacity(rows.len());
                 for row in rows {
@@ -973,10 +1017,18 @@ where
             .collect::<Vec<_>>();
         query.slice = Some(teaql_core::Slice {
             offset: 0,
-            limit: Some(page_size as u64),
+            limit: Some(if page_ids.is_empty() {
+                0
+            } else {
+                page_size as u64
+            }),
         });
         query.id_set_pagination = None;
-        query = query.and_filter(Expr::in_list("id", page_ids));
+        query = if page_ids.is_empty() {
+            query.and_filter(Expr::value(false))
+        } else {
+            query.and_filter(Expr::in_list("id", page_ids))
+        };
         Ok((query, Some(retained.ids.len() as u64)))
     }
 
@@ -1022,7 +1074,7 @@ where
         // The observer owns this scoped service; no reference to a local scope
         // or mutable Context state survives into delayed cursor consumption.
         let scoped = self
-            .query_scoped_service(diagnostic_source)
+            .query_scoped_service_with_source(query, diagnostic_source, &[])
             .map_err(DataServiceError::Runtime)?;
         let query = scoped
             .prepare_select_query(query)
@@ -1040,6 +1092,13 @@ where
                     .to_owned(),
             )));
         }
+
+        // An entity stream can still contain statistical eligibility operands.
+        // Give those children the same ownership and policy preparation as
+        // entity lists before opening the physical cursor.
+        let query = scoped
+            .prepare_nested_statistical_layers(query)
+            .map_err(DataServiceError::Runtime)?;
 
         let chunk_size = query
             .stream_config
@@ -1118,13 +1177,15 @@ where
         &self,
         query: &SelectQuery,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
-        self.fetch_prepared_all_with_aggregates(query, &[]).await
+        self.fetch_prepared_all_with_aggregates(query, &[], true)
+            .await
     }
 
     async fn fetch_prepared_all_with_aggregates(
         &self,
         query: &SelectQuery,
         relation_aggregates: &[RelationAggregate],
+        outer_materialization: bool,
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         if !query.relation_aggregates.is_empty() {
             let mut execution = query.clone();
@@ -1136,20 +1197,57 @@ where
                     combined.push(aggregate.clone());
                 }
             }
-            return Box::pin(self.fetch_prepared_all_with_aggregates(&execution, &combined)).await;
+            return Box::pin(self.fetch_prepared_all_with_aggregates(
+                &execution,
+                &combined,
+                outer_materialization,
+            ))
+            .await;
         }
         if self.request_intent.is_none() {
             return Box::pin(
                 self.query_scoped_service_with_aggregates(query, relation_aggregates)
                     .map_err(DataServiceError::Runtime)?
-                    .fetch_prepared_all_with_aggregates(query, relation_aggregates),
+                    .fetch_prepared_all_with_aggregates(
+                        query,
+                        relation_aggregates,
+                        outer_materialization,
+                    ),
             )
             .await;
         }
-        let query = query
-            .clone()
-            .prepare_for_list()
-            .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
+        // Facet result queries enter through the ordinary list facade but retain
+        // an execution-owned child request scope. They are nested populations,
+        // not a fresh user page. No caller-supplied wire flag controls this.
+        let nested_scope = query
+            .request_scope()
+            .is_some_and(|scope| scope.parent_request().is_some());
+        let query = if outer_materialization && !nested_scope {
+            query
+                .clone()
+                .prepare_for_list()
+                .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?
+        } else {
+            query.clone()
+        };
+        if query.requires_statistical_plan() {
+            if !relation_aggregates.is_empty()
+                || !query.relations.is_empty()
+                || !query.child_enhancements.is_empty()
+                || query.continuous_page_fetch.is_some()
+            {
+                return Err(DataServiceError::Runtime(RuntimeError::Graph(
+                    "layered statistics cannot use entity-row enhancements".into(),
+                )));
+            }
+            let query = self
+                .prepare_statistical_layers(query)
+                .map_err(DataServiceError::Runtime)?;
+            return Box::pin(self.fetch_prepared_query(&query)).await;
+        }
+        let query = self
+            .prepare_nested_statistical_layers(query)
+            .map_err(DataServiceError::Runtime)?;
         if relation_aggregates.is_empty()
             && query.continuous_page_fetch.is_none()
             && query.object_group_bys.is_empty()
@@ -1376,9 +1474,11 @@ where
                 );
                 let provider_result = provider_scope
                     .run(
-                        self.data_service
-                            .executor
-                            .query_observed(request, self.query_diagnostic_observer()),
+                        self.data_service.metadata.context.observe_sql_statements(
+                            self.data_service
+                                .executor
+                                .query_observed(request, self.query_diagnostic_observer()),
+                        ),
                     )
                     .await;
                 let res = match provider_result {
@@ -1435,7 +1535,7 @@ where
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
 
-        self.fetch_prepared_all_with_aggregates(&query, relation_aggregates)
+        self.fetch_prepared_all_with_aggregates(&query, relation_aggregates, true)
             .await
     }
 
@@ -1446,6 +1546,20 @@ where
         let query = self
             .prepare_select_query(query)
             .map_err(DataServiceError::Runtime)?;
+
+        if !query.object_group_bys.is_empty()
+            || !query.child_enhancements.is_empty()
+            || !query.relations.is_empty()
+            || !query.relation_aggregates.is_empty()
+            || query.continuous_page_fetch.is_some()
+        {
+            // A row-shaped SmartList is not permission to discard requested
+            // relation/group enhancements. Keep the ordinary compact fast path
+            // below, and box the rich future so it cannot inflate every caller.
+            return Box::pin(self.fetch_prepared_all(&query))
+                .await
+                .map(SmartList::from);
+        }
 
         self.fetch_prepared_compact_owned(query)
             .await
@@ -1582,6 +1696,9 @@ where
             .prepare_for_list()
             .map_err(|message| DataServiceError::Runtime(RuntimeError::Graph(message)))?;
         let root = crate::EntityRuntimeState::default();
+        let query = self
+            .prepare_nested_statistical_layers(query)
+            .map_err(DataServiceError::Runtime)?;
         let rows = self.fetch_prepared_query_owned(query).await?;
         let decoded = if let Some(selection) = selection.as_ref().filter(|_| !rows.is_empty()) {
             self.decode_with_dynamic_fields::<T>(rows, &root, selection)
@@ -1635,6 +1752,13 @@ where
                     .await;
             }
             let (mut query, id_set_total_count) = self.prepare_id_set_page(query).await?;
+            if id_set_total_count.is_some()
+                && query.slice.is_some_and(|slice| slice.limit == Some(0))
+            {
+                // The retained set already proves this page empty and owns its
+                // exact count. Do not compile an empty IN or execute a row query.
+                return Ok(with_total_count(SmartList::default(), id_set_total_count));
+            }
             if relation_aggregates.is_empty()
                 && query.relation_aggregates.is_empty()
                 && query.continuous_page_fetch.is_none()
@@ -1703,7 +1827,7 @@ where
                     .map(|list| with_total_count(list, id_set_total_count));
             }
             let mut rows = self
-                .fetch_prepared_all_with_aggregates(&root_query, relation_aggregates)
+                .fetch_prepared_all_with_aggregates(&root_query, relation_aggregates, true)
                 .await?;
             let root = if let Some((query_plans, behavior_plans)) = flat_plans {
                 let root = crate::EntityRuntimeState::default();
@@ -1766,15 +1890,21 @@ where
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let scoped = query
             .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
+            .map(|source| self.query_scoped_service_with_source(query.as_query(), source, &[]))
             .transpose()
             .map_err(DataServiceError::Runtime)?;
         // Keep one await site: duplicating the large hydration future in two
         // branches inflates native callers' stack frames even for ordinary Q.
-        scoped
-            .as_ref()
-            .unwrap_or(self)
-            .fetch_all_internal(query.as_query())
+        self.data_service
+            .metadata
+            .context
+            .observe_data_service_request(self.entity(), async {
+                scoped
+                    .as_ref()
+                    .unwrap_or(self)
+                    .fetch_all_internal(query.as_query())
+                    .await
+            })
             .await
     }
 
@@ -1785,13 +1915,19 @@ where
     ) -> Result<Vec<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let scoped = query
             .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
+            .map(|source| self.query_scoped_service_with_source(query.as_query(), source, &[]))
             .transpose()
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .as_ref()
-            .unwrap_or(self)
-            .fetch_all_owned_internal(query.into_query())
+        self.data_service
+            .metadata
+            .context
+            .observe_data_service_request(self.entity(), async {
+                scoped
+                    .as_ref()
+                    .unwrap_or(self)
+                    .fetch_all_owned_internal(query.into_query())
+                    .await
+            })
             .await
     }
 
@@ -1812,11 +1948,17 @@ where
     where
         E: teaql_data_service::StreamQueryExecutor,
     {
-        self.fetch_stream_with_source_internal(
-            query.as_query(),
-            query.diagnostic_source().unwrap_or(query.as_query()),
-        )
-        .await
+        self.data_service
+            .metadata
+            .context
+            .observe_data_service_request(
+                self.entity(),
+                self.fetch_stream_with_source_internal(
+                    query.as_query(),
+                    query.diagnostic_source().unwrap_or(query.as_query()),
+                ),
+            )
+            .await
     }
 
     #[doc(hidden)]
@@ -1826,13 +1968,19 @@ where
     ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let scoped = query
             .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
+            .map(|source| self.query_scoped_service_with_source(query.as_query(), source, &[]))
             .transpose()
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .as_ref()
-            .unwrap_or(self)
-            .fetch_smart_list_internal(query.as_query())
+        self.data_service
+            .metadata
+            .context
+            .observe_data_service_request(self.entity(), async {
+                scoped
+                    .as_ref()
+                    .unwrap_or(self)
+                    .fetch_smart_list_internal(query.as_query())
+                    .await
+            })
             .await
     }
 
@@ -1843,16 +1991,23 @@ where
         relation_aggregates: &[RelationAggregate],
     ) -> Result<SmartList<teaql_core::CompactRow>, DataServiceError<E::Error>> {
         let scoped = self
-            .query_scoped_service_with_aggregates(
+            .query_scoped_service_with_source(
+                query.as_query(),
                 query.diagnostic_source().unwrap_or(query.as_query()),
                 relation_aggregates,
             )
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .fetch_smart_list_with_relation_aggregates_internal(
-                query.as_query(),
-                relation_aggregates,
-            )
+        self.data_service
+            .metadata
+            .context
+            .observe_data_service_request(self.entity(), async {
+                scoped
+                    .fetch_smart_list_with_relation_aggregates_internal(
+                        query.as_query(),
+                        relation_aggregates,
+                    )
+                    .await
+            })
             .await
     }
 
@@ -1866,13 +2021,19 @@ where
     {
         let scoped = query
             .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
+            .map(|source| self.query_scoped_service_with_source(query.as_query(), source, &[]))
             .transpose()
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .as_ref()
-            .unwrap_or(self)
-            .fetch_entities_internal(query.as_query())
+        self.data_service
+            .metadata
+            .context
+            .observe_data_service_request(self.entity(), async {
+                scoped
+                    .as_ref()
+                    .unwrap_or(self)
+                    .fetch_entities_internal(query.as_query())
+                    .await
+            })
             .await
     }
 
@@ -1886,13 +2047,19 @@ where
     {
         let scoped = query
             .diagnostic_source()
-            .map(|source| self.query_scoped_service(source))
+            .map(|source| self.query_scoped_service_with_source(query.as_query(), source, &[]))
             .transpose()
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .as_ref()
-            .unwrap_or(self)
-            .fetch_enhanced_entities_internal(query.as_query())
+        self.data_service
+            .metadata
+            .context
+            .observe_data_service_request(self.entity(), async {
+                scoped
+                    .as_ref()
+                    .unwrap_or(self)
+                    .fetch_enhanced_entities_internal(query.as_query())
+                    .await
+            })
             .await
     }
 
@@ -1906,16 +2073,23 @@ where
         T: Entity,
     {
         let scoped = self
-            .query_scoped_service_with_aggregates(
+            .query_scoped_service_with_source(
+                query.as_query(),
                 query.diagnostic_source().unwrap_or(query.as_query()),
                 relation_aggregates,
             )
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .fetch_enhanced_entities_with_relation_aggregates_internal(
-                query.as_query(),
-                relation_aggregates,
-            )
+        self.data_service
+            .metadata
+            .context
+            .observe_data_service_request(self.entity(), async {
+                scoped
+                    .fetch_enhanced_entities_with_relation_aggregates_internal(
+                        query.as_query(),
+                        relation_aggregates,
+                    )
+                    .await
+            })
             .await
     }
 
@@ -1929,16 +2103,23 @@ where
         T: Entity,
     {
         let scoped = self
-            .query_scoped_service_with_aggregates(
+            .query_scoped_service_with_source(
+                query.as_query(),
                 query.diagnostic_source().unwrap_or(query.as_query()),
                 relation_aggregates,
             )
             .map_err(DataServiceError::Runtime)?;
-        scoped
-            .fetch_enhanced_entities_with_relation_aggregates_owned_internal(
-                query.into_query(),
-                relation_aggregates,
-            )
+        self.data_service
+            .metadata
+            .context
+            .observe_data_service_request(self.entity(), async {
+                scoped
+                    .fetch_enhanced_entities_with_relation_aggregates_owned_internal(
+                        query.into_query(),
+                        relation_aggregates,
+                    )
+                    .await
+            })
             .await
     }
 
@@ -1981,6 +2162,10 @@ where
         command: &DeleteCommand,
         trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        if command.soft_delete {
+            crate::mutation_version::deleted(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
+        }
         let mut command = command.clone();
         command.trace_chain = trace_chain.clone();
         if let Some(behavior) = self.behavior() {
@@ -1988,8 +2173,16 @@ where
                 .before_delete(self.data_service.metadata.context, &mut command)
                 .map_err(DataServiceError::Runtime)?;
         }
+        if command.soft_delete {
+            crate::mutation_version::deleted(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
+        }
         self.enforce_delete_policy(&mut command)
             .map_err(DataServiceError::Runtime)?;
+        if command.soft_delete {
+            crate::mutation_version::deleted(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
+        }
 
         let old_values =
             self.fetch_current_event_row(&command.entity, &command.id, trace_chain.clone())?;
@@ -2010,14 +2203,22 @@ where
         &self,
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        crate::mutation_version::recovered(&command.entity, command.expected_version)
+            .map_err(DataServiceError::Runtime)?;
         let mut command = command.clone();
-        command.trace_chain = self.trace_context.clone();
+        if command.trace_chain.is_empty() {
+            command.trace_chain = self.trace_context.clone();
+        }
         if let Some(behavior) = self.behavior() {
             behavior
                 .before_recover(self.data_service.metadata.context, &mut command)
                 .map_err(DataServiceError::Runtime)?;
         }
+        crate::mutation_version::recovered(&command.entity, command.expected_version)
+            .map_err(DataServiceError::Runtime)?;
         self.enforce_recover_policy(&mut command)
+            .map_err(DataServiceError::Runtime)?;
+        crate::mutation_version::recovered(&command.entity, command.expected_version)
             .map_err(DataServiceError::Runtime)?;
         let old_values = self.fetch_current_event_row(
             &command.entity,
@@ -2025,17 +2226,33 @@ where
             command.trace_chain.clone(),
         )?;
         let affected = self.data_service.recover(&command).await?;
-        let event = RawAuditEvent::recovered_with_old_values(
+        let mut event = RawAuditEvent::recovered_with_changes(
             command.entity,
             command.id,
             command.expected_version,
             old_values,
-        );
+            command.values.into(),
+        )
+        .map_err(|cause| {
+            DataServiceError::Runtime(crate::mutation_version::error(&self.entity, cause))
+        })?;
+        event.trace_chain = command.trace_chain;
         self.emit_event(event).map_err(DataServiceError::Runtime)?;
         Ok(affected)
     }
 
     fn emit_event(&self, mut event: RawAuditEvent) -> Result<(), RuntimeError> {
+        if let Ok(descriptor) = self
+            .data_service
+            .metadata
+            .context
+            .require_entity(&event.entity)
+        {
+            event.map_field_names(|field| {
+                crate::ledger_keys::canonical_field_from_storage(descriptor, field)
+                    .unwrap_or_else(|_| field.to_owned())
+            });
+        }
         event.diagnostic_redactions = self.data_service.mutation_privacy.clone();
         self.data_service.metadata.context.send_event(event)
     }
@@ -2102,6 +2319,9 @@ where
         mut command: UpdateCommand,
         trace_chain: Vec<teaql_core::TraceNode>,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        let next_version =
+            crate::mutation_version::updated(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
         command.trace_chain = trace_chain;
 
         let needs_fetch = match &command.old_values {
@@ -2129,8 +2349,8 @@ where
             .collect();
         let mut values = command.values;
         values.insert("id".to_owned(), command.id);
-        if let Some(version) = command.expected_version {
-            values.insert("version".to_owned(), Value::I64(version + 1));
+        if let Some(version) = next_version {
+            values.insert("version".to_owned(), Value::I64(version));
         }
         let mut new_values = old_values.clone().unwrap_or_default();
         for (field, value) in values.named_entries() {
@@ -2155,6 +2375,12 @@ where
         if command.batch_values.is_empty() {
             return Ok(0);
         }
+        let next_versions = command
+            .batch_expected_versions
+            .iter()
+            .map(|version| crate::mutation_version::updated(&command.entity, *version))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DataServiceError::Runtime)?;
         let affected = self.data_service.batch_update(&command).await?;
 
         let row_count = command.batch_values.len();
@@ -2170,8 +2396,8 @@ where
                 "id".to_owned(),
                 std::mem::replace(&mut command.batch_ids[i], Value::Null),
             );
-            if let Some(Some(version)) = command.batch_expected_versions.get(i) {
-                full_values.insert("version".to_owned(), teaql_core::Value::I64(*version + 1));
+            if let Some(Some(version)) = next_versions.get(i) {
+                full_values.insert("version".to_owned(), teaql_core::Value::I64(*version));
             }
 
             let old_values = command.batch_old_values.get_mut(i).and_then(Option::take);
@@ -2224,10 +2450,30 @@ where
             },
             trace_context: Vec::new(),
             request_intent: self.request_intent.clone(),
+            request_scope: self.request_scope.clone(),
             // Snapshot ancestry: descendants may add their own bindings without
             // changing their parent or an unrelated sibling relation.
             query_log_intent: self.query_intent_snapshot().map(std::sync::Mutex::new),
         }
+    }
+
+    // Classification may inspect a removed parent AST, but that AST must not
+    // replace the actual execution request's owner (count, facet or stream).
+    fn query_scoped_service_with_source(
+        &self,
+        query: &SelectQuery,
+        source: &SelectQuery,
+        aggregates: &[RelationAggregate],
+    ) -> Result<EntityDataService<'a, E>, RuntimeError> {
+        let intent = self.request_intent_for(query)?;
+        let scope = query
+            .request_scope()
+            .cloned()
+            .or_else(|| self.request_scope.clone())
+            .unwrap_or_else(|| teaql_core::QueryRequestScope::root(query.entity.clone(), intent));
+        Ok(self
+            .query_scoped_service_with_aggregates(source, aggregates)?
+            .with_request_scope(scope))
     }
 
     fn query_scoped_service_with_aggregates(
@@ -2255,6 +2501,16 @@ where
         let mut scoped = self.scoped_data_service_internal(self.entity.clone());
         scoped.trace_context = self.trace_context.clone();
         scoped.request_intent = Some(self.request_intent_for(query)?);
+        scoped.request_scope = query
+            .request_scope()
+            .cloned()
+            .or_else(|| self.request_scope.clone())
+            .or_else(|| {
+                Some(teaql_core::QueryRequestScope::root(
+                    query.entity.clone(),
+                    scoped.request_intent.clone().unwrap(),
+                ))
+            });
         let mut redactions = self.query_intent_snapshot().unwrap_or_default();
         if self.data_service.metadata.capture_execution_metadata() {
             // A root comment can quote a future relation's sensitive binding.

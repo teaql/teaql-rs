@@ -16,7 +16,8 @@ pub async fn paged_graph(
         let mut root = Q::customer_orders()
             .comment("what: prepare page root")
             .purpose("why: isolate this replay")
-            .new_entity(context);
+            .new_entity(context)
+            .expect("reserve trace fixture identity");
         if run.is_empty() {
             run = format!("PAGE-RUN-{}", root.id());
         }
@@ -27,7 +28,8 @@ pub async fn paged_graph(
         let mut child = Q::order_items()
             .comment("what: prepare page child")
             .purpose("why: verify relation provenance")
-            .new_entity(context);
+            .new_entity(context)
+            .expect("reserve trace fixture identity");
         child.update_customer_order_id(root.id());
         child.update_name(SECRET);
         root.include_pending_mutations_from(&child)?;
@@ -46,9 +48,11 @@ pub async fn paged_graph(
                 .limit(2),
         )
         .order_by_id_asc()
+        .offset(1, 2)
+        .count()
         .comment(format!("load {run} matching {SECRET}"))
         .purpose(format!("render {run} with {SECRET}"))
-        .execute_for_page(context, 1, 2)
+        .execute_for_list(context)
         .await?;
     assert_eq!(page.total_count, Some(3));
     assert_eq!(page.data.len(), 2);

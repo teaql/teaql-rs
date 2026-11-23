@@ -106,11 +106,23 @@ impl<R> SchoolRequest<R> {
     {
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
-        let query = authorize_query(apply_runtime_metadata(
+        let mut query = authorize_query(apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
         ))?;
+        let requested_count = query.take_requested_list_count(&query_options);
+        let use_id_set = query.as_query().id_set_pagination.is_some();
+        context.user_context().observe_generated_list("School", async {
+        let mut total = None;
+        if !use_id_set {
+            if let Some((alias, count_query)) = &requested_count {
+                let count_rows = context.fetch_compact_rows("School", count_query).await?;
+                total = Some(count_rows.first().and_then(|row| row.get(alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+            }
+        }
         let (mut rows, facets) = if query_options.facets.is_empty() {
             let rows = context.fetch_entity_smart_list::<R>(
                 "School",
@@ -128,8 +140,20 @@ impl<R> SchoolRequest<R> {
                 .await?;
             (rows, facets)
         };
+        if let Some((alias, count_query)) = requested_count {
+            if total.is_none() { total = rows.total_count; }
+            if total.is_none() {
+                let count_rows = context.fetch_compact_rows("School", &count_query).await?;
+                total = Some(count_rows.first().and_then(|row| row.get(&alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
+            }
+            rows.total_count = total;
+            rows.aggregations.insert(alias, teaql_core::Value::U64(total.expect("requested count resolved")));
+        }
         attach_facets(&mut rows, facets);
         Ok(rows)
+        }).await
     }
 
     pub(crate) async fn _execute_for_rows<'a, C>(
@@ -143,7 +167,7 @@ impl<R> SchoolRequest<R> {
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?;
+        ))?.with_facet_diagnostics(&self.query_options);
         context.fetch_compact_smart_list("School", &query).await
     }
 
@@ -160,7 +184,9 @@ impl<R> SchoolRequest<R> {
             &self.query_options,
             &self.child_enhancements,
         ))?;
-        Ok(context.fetch_entity_stream("School", query))
+        Ok(context.user_context().observe_generated_stream(
+            "School", context.fetch_entity_stream("School", query),
+        ))
     }
 
     pub(crate) async fn _execute_for_first<'a, C>(
@@ -187,33 +213,6 @@ impl<R> SchoolRequest<R> {
     }
 
 
-    pub(crate) async fn _execute_for_page<'a, C>(
-        self,
-        context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<SmartList<R>, RuntimeError>
-    where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        if self.query.id_set_pagination.is_some() {
-            let mut rows = self
-                .clone()
-                .page_offset(offset, limit)
-                ._execute_for_list(context)
-                .await?;
-            if rows.total_count.is_none() {
-                rows.total_count = Some(self._execute_for_count(context).await?);
-            }
-            return Ok(rows);
-        }
-        let total_count = self.clone()._execute_for_count(context).await?;
-        let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
-        rows.total_count = Some(total_count);
-        Ok(rows)
-    }
-
     pub(crate) async fn _execute_for_count<'a, C>(
         self,
         context: &'a C,
@@ -222,21 +221,19 @@ impl<R> SchoolRequest<R> {
         C: TeaqlRuntime + ?Sized,
     {
         let query_options = self.query_options.clone();
-        let mut query = apply_runtime_metadata(
+        let query = apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
         );
-        query.projection.clear();
-        query.expr_projection.clear();
-        query.order_by.clear();
-        query.slice = None;
-        query.relations.clear();
-        query = query.count(COUNT_ALIAS);
-        let query = authorize_query(query)?;
+        let operation = query_options.page_count_operation.clone().unwrap_or_else(||
+            QueryOperation::new(QueryOperationKind::NamedCount, "execute_for_count"));
+        let alias = operation.alias().unwrap_or(COUNT_ALIAS).to_owned();
+        let query = authorize_query(query)?.with_facet_diagnostics(&query_options)
+            .for_exact_count_with_operation(&alias, operation);
         let rows = context.fetch_compact_rows("School", &query).await?;
         rows.first()
-            .and_then(|row| row.get(COUNT_ALIAS))
+            .and_then(|row| row.get(&alias))
             .and_then(teaql_core::Value::try_u64)
             .ok_or_else(|| RuntimeError::Graph(format!("count result for School is missing or not numeric")))
     }
@@ -254,7 +251,7 @@ impl<R> SchoolRequest<R> {
             &self.child_enhancements,
         ).limit(1);
         query.relations.clear();
-        let query = authorize_query(query)?;
+        let query = authorize_query(query)?.with_facet_diagnostics(&self.query_options);
         let rows = context.fetch_compact_rows("School", &query).await?;
         Ok(!rows.is_empty())
     }
@@ -675,11 +672,14 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn count(self) -> Self {
-        self.count_as("count")
+    pub fn count(mut self) -> Self {
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count"));
+        self.aggregate_count("count")
     }
 
-    pub fn count_as(self, alias: impl Into<String>) -> Self {
+    pub fn count_as(mut self, alias: impl Into<String>) -> Self {
+        let alias = alias.into();
+        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count_as").with_alias(&alias));
         self.aggregate_count(alias)
     }
 
@@ -860,39 +860,93 @@ impl<R> SchoolRequest<R> {
         )
     }
 
-    pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", value));
+    pub fn with_id_is(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("id", Into::<u64>::into(value)));
         self
     }
 
 
 
-    pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", value));
+    pub fn with_id_is_not(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_greater_than(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_greater_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_less_than(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_less_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("id", Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_between(
+        mut self,
+        lower: impl Into<u64>,
+        upper: impl Into<u64>,
+    ) -> Self {
+        self.query = self.query.and_filter(Expr::between("id", Into::<u64>::into(lower), Into::<u64>::into(upper)));
+        self
+    }
+
+    pub fn with_id_between_range<T>(mut self, range: DateRange<T>) -> Self
+    where
+        T: Into<u64>,
+    {
+        self.query = self.query.and_filter(Expr::between(
+            "id",
+            Into::<u64>::into(range.start),
+            Into::<u64>::into(range.end),
+        ));
         self
     }
 
     pub fn with_id_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<u64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "id",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<u64>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_id_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<u64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "id",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<u64>::into).map(teaql_core::Value::from),
         ));
         self
     }
+
+    pub fn with_id_is_unknown(mut self) -> Self {
+        self.query = self.query.and_filter(Expr::is_null("id"));
+        self
+    }
+
+
+
+    pub fn with_id_is_known(mut self) -> Self {
+        self.query = self.query.and_filter(Expr::is_not_null("id"));
+        self
+    }
+
 
     pub fn order_by_id_asc(mut self) -> Self {
         self.query = self.query.order_asc("id");
@@ -1028,77 +1082,77 @@ impl<R> SchoolRequest<R> {
         )
     }
 
-    pub fn with_name_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("name", value));
+    pub fn with_name_is(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("name", Into::<String>::into(value)));
         self
     }
 
 
 
-    pub fn with_name_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("name", value));
+    pub fn with_name_is_not(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("name", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_name_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
+    pub fn with_name_greater_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("name", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("name", value));
+    pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("name", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_name_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
+    pub fn with_name_less_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("name", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("name", value));
+    pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("name", Into::<String>::into(value)));
         self
     }
 
     pub fn with_name_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<String>,
+        upper: impl Into<String>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("name", lower, upper));
+        self.query = self.query.and_filter(Expr::between("name", Into::<String>::into(lower), Into::<String>::into(upper)));
         self
     }
 
     pub fn with_name_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<String>,
     {
         self.query = self.query.and_filter(Expr::between(
             "name",
-            range.start,
-            range.end,
+            Into::<String>::into(range.start),
+            Into::<String>::into(range.end),
         ));
         self
     }
 
     pub fn with_name_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "name",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_name_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "name",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
@@ -1133,17 +1187,17 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn with_name_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("name", value));
+    pub fn with_name_sounding_like(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::sound_like("name", Into::<String>::into(value)));
         self
     }
-    pub fn with_name_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
+    pub fn with_name_before(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("name", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_name_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
+    pub fn with_name_after(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("name", Into::<String>::into(value)));
         self
     }
 
@@ -1294,77 +1348,77 @@ impl<R> SchoolRequest<R> {
         )
     }
 
-    pub fn with_address_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("address", value));
+    pub fn with_address_is(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("address", Into::<String>::into(value)));
         self
     }
 
 
 
-    pub fn with_address_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("address", value));
+    pub fn with_address_is_not(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("address", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_address_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("address", value));
+    pub fn with_address_greater_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("address", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_address_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("address", value));
+    pub fn with_address_greater_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("address", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_address_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("address", value));
+    pub fn with_address_less_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("address", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_address_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("address", value));
+    pub fn with_address_less_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("address", Into::<String>::into(value)));
         self
     }
 
     pub fn with_address_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<String>,
+        upper: impl Into<String>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("address", lower, upper));
+        self.query = self.query.and_filter(Expr::between("address", Into::<String>::into(lower), Into::<String>::into(upper)));
         self
     }
 
     pub fn with_address_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<String>,
     {
         self.query = self.query.and_filter(Expr::between(
             "address",
-            range.start,
-            range.end,
+            Into::<String>::into(range.start),
+            Into::<String>::into(range.end),
         ));
         self
     }
 
     pub fn with_address_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "address",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_address_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "address",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
@@ -1399,17 +1453,17 @@ impl<R> SchoolRequest<R> {
         self
     }
 
-    pub fn with_address_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("address", value));
+    pub fn with_address_sounding_like(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::sound_like("address", Into::<String>::into(value)));
         self
     }
-    pub fn with_address_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("address", value));
+    pub fn with_address_before(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("address", Into::<String>::into(value)));
         self
     }
 
-    pub fn with_address_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("address", value));
+    pub fn with_address_after(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("address", Into::<String>::into(value)));
         self
     }
 
@@ -1560,88 +1614,88 @@ impl<R> SchoolRequest<R> {
         )
     }
 
-    pub fn with_established_date_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("established_date", value));
+    pub fn with_established_date_is(mut self, value: impl Into<chrono::NaiveDate>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("established_date", Into::<chrono::NaiveDate>::into(value)));
         self
     }
 
 
 
-    pub fn with_established_date_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("established_date", value));
+    pub fn with_established_date_is_not(mut self, value: impl Into<chrono::NaiveDate>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("established_date", Into::<chrono::NaiveDate>::into(value)));
         self
     }
 
-    pub fn with_established_date_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("established_date", value));
+    pub fn with_established_date_greater_than(mut self, value: impl Into<chrono::NaiveDate>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("established_date", Into::<chrono::NaiveDate>::into(value)));
         self
     }
 
-    pub fn with_established_date_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("established_date", value));
+    pub fn with_established_date_greater_than_or_equal_to(mut self, value: impl Into<chrono::NaiveDate>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("established_date", Into::<chrono::NaiveDate>::into(value)));
         self
     }
 
-    pub fn with_established_date_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("established_date", value));
+    pub fn with_established_date_less_than(mut self, value: impl Into<chrono::NaiveDate>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("established_date", Into::<chrono::NaiveDate>::into(value)));
         self
     }
 
-    pub fn with_established_date_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("established_date", value));
+    pub fn with_established_date_less_than_or_equal_to(mut self, value: impl Into<chrono::NaiveDate>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("established_date", Into::<chrono::NaiveDate>::into(value)));
         self
     }
 
     pub fn with_established_date_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<chrono::NaiveDate>,
+        upper: impl Into<chrono::NaiveDate>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("established_date", lower, upper));
+        self.query = self.query.and_filter(Expr::between("established_date", Into::<chrono::NaiveDate>::into(lower), Into::<chrono::NaiveDate>::into(upper)));
         self
     }
 
     pub fn with_established_date_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<chrono::NaiveDate>,
     {
         self.query = self.query.and_filter(Expr::between(
             "established_date",
-            range.start,
-            range.end,
+            Into::<chrono::NaiveDate>::into(range.start),
+            Into::<chrono::NaiveDate>::into(range.end),
         ));
         self
     }
 
     pub fn with_established_date_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<chrono::NaiveDate>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "established_date",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<chrono::NaiveDate>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_established_date_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<chrono::NaiveDate>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "established_date",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<chrono::NaiveDate>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
-    pub fn with_established_date_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("established_date", value));
+    pub fn with_established_date_before(mut self, value: impl Into<chrono::NaiveDate>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("established_date", Into::<chrono::NaiveDate>::into(value)));
         self
     }
 
-    pub fn with_established_date_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("established_date", value));
+    pub fn with_established_date_after(mut self, value: impl Into<chrono::NaiveDate>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("established_date", Into::<chrono::NaiveDate>::into(value)));
         self
     }
 
@@ -1836,88 +1890,88 @@ impl<R> SchoolRequest<R> {
         )
     }
 
-    pub fn with_student_capacity_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("student_capacity", value));
+    pub fn with_student_capacity_is(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("student_capacity", Into::<i64>::into(value)));
         self
     }
 
 
 
-    pub fn with_student_capacity_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("student_capacity", value));
+    pub fn with_student_capacity_is_not(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("student_capacity", Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_student_capacity_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("student_capacity", value));
+    pub fn with_student_capacity_greater_than(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("student_capacity", Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_student_capacity_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("student_capacity", value));
+    pub fn with_student_capacity_greater_than_or_equal_to(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("student_capacity", Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_student_capacity_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("student_capacity", value));
+    pub fn with_student_capacity_less_than(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("student_capacity", Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_student_capacity_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("student_capacity", value));
+    pub fn with_student_capacity_less_than_or_equal_to(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("student_capacity", Into::<i64>::into(value)));
         self
     }
 
     pub fn with_student_capacity_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<i64>,
+        upper: impl Into<i64>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("student_capacity", lower, upper));
+        self.query = self.query.and_filter(Expr::between("student_capacity", Into::<i64>::into(lower), Into::<i64>::into(upper)));
         self
     }
 
     pub fn with_student_capacity_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<i64>,
     {
         self.query = self.query.and_filter(Expr::between(
             "student_capacity",
-            range.start,
-            range.end,
+            Into::<i64>::into(range.start),
+            Into::<i64>::into(range.end),
         ));
         self
     }
 
     pub fn with_student_capacity_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<i64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "student_capacity",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<i64>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_student_capacity_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<i64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "student_capacity",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<i64>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
-    pub fn with_student_capacity_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("student_capacity", value));
+    pub fn with_student_capacity_before(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("student_capacity", Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_student_capacity_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("student_capacity", value));
+    pub fn with_student_capacity_after(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("student_capacity", Into::<i64>::into(value)));
         self
     }
 
@@ -2196,88 +2250,88 @@ impl<R> SchoolRequest<R> {
         )
     }
 
-    pub fn with_create_time_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("create_time", value));
+    pub fn with_create_time_is(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("create_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
 
 
-    pub fn with_create_time_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("create_time", value));
+    pub fn with_create_time_is_not(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("create_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
-    pub fn with_create_time_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("create_time", value));
+    pub fn with_create_time_greater_than(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("create_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
-    pub fn with_create_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("create_time", value));
+    pub fn with_create_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("create_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
-    pub fn with_create_time_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("create_time", value));
+    pub fn with_create_time_less_than(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("create_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
-    pub fn with_create_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("create_time", value));
+    pub fn with_create_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("create_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
     pub fn with_create_time_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<teaql_core::time::Timestamp>,
+        upper: impl Into<teaql_core::time::Timestamp>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("create_time", lower, upper));
+        self.query = self.query.and_filter(Expr::between("create_time", Into::<teaql_core::time::Timestamp>::into(lower), Into::<teaql_core::time::Timestamp>::into(upper)));
         self
     }
 
     pub fn with_create_time_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<teaql_core::time::Timestamp>,
     {
         self.query = self.query.and_filter(Expr::between(
             "create_time",
-            range.start,
-            range.end,
+            Into::<teaql_core::time::Timestamp>::into(range.start),
+            Into::<teaql_core::time::Timestamp>::into(range.end),
         ));
         self
     }
 
     pub fn with_create_time_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<teaql_core::time::Timestamp>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "create_time",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<teaql_core::time::Timestamp>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_create_time_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<teaql_core::time::Timestamp>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "create_time",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<teaql_core::time::Timestamp>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
-    pub fn with_create_time_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("create_time", value));
+    pub fn with_create_time_before(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("create_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
-    pub fn with_create_time_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("create_time", value));
+    pub fn with_create_time_after(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("create_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
@@ -2428,88 +2482,88 @@ impl<R> SchoolRequest<R> {
         )
     }
 
-    pub fn with_update_time_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("update_time", value));
+    pub fn with_update_time_is(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::eq("update_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
 
 
-    pub fn with_update_time_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("update_time", value));
+    pub fn with_update_time_is_not(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::ne("update_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
-    pub fn with_update_time_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("update_time", value));
+    pub fn with_update_time_greater_than(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("update_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
-    pub fn with_update_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("update_time", value));
+    pub fn with_update_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::gte("update_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
-    pub fn with_update_time_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("update_time", value));
+    pub fn with_update_time_less_than(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("update_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
-    pub fn with_update_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("update_time", value));
+    pub fn with_update_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::lte("update_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
     pub fn with_update_time_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<teaql_core::time::Timestamp>,
+        upper: impl Into<teaql_core::time::Timestamp>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("update_time", lower, upper));
+        self.query = self.query.and_filter(Expr::between("update_time", Into::<teaql_core::time::Timestamp>::into(lower), Into::<teaql_core::time::Timestamp>::into(upper)));
         self
     }
 
     pub fn with_update_time_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<teaql_core::time::Timestamp>,
     {
         self.query = self.query.and_filter(Expr::between(
             "update_time",
-            range.start,
-            range.end,
+            Into::<teaql_core::time::Timestamp>::into(range.start),
+            Into::<teaql_core::time::Timestamp>::into(range.end),
         ));
         self
     }
 
     pub fn with_update_time_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<teaql_core::time::Timestamp>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "update_time",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<teaql_core::time::Timestamp>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_update_time_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<teaql_core::time::Timestamp>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "update_time",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<teaql_core::time::Timestamp>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
-    pub fn with_update_time_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("update_time", value));
+    pub fn with_update_time_before(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::lt("update_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
-    pub fn with_update_time_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("update_time", value));
+    pub fn with_update_time_after(mut self, value: impl Into<teaql_core::time::Timestamp>) -> Self {
+        self.query = self.query.and_filter(Expr::gt("update_time", Into::<teaql_core::time::Timestamp>::into(value)));
         self
     }
 
@@ -2900,62 +2954,80 @@ impl<R> SchoolRequest<R> {
 
 
     pub fn select_platform(mut self) -> Self {
-        self.query = self.query.relation("platform");
+        self.query.relations.push(teaql_core::RelationLoad::new("platform")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_platform").with_relation("platform")));
         self
     }
 
     pub fn select_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("platform", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("platform", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_platform_with").with_relation("platform")));
         self
 }
 
     pub fn facet_by_platform_as(self, facet_name: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.facet_by_platform_as_with_options(facet_name, request, true)
+        self.facet_by_platform_internal(facet_name, request, true, "facet_by_platform_as")
     }
 
     pub fn facet_by_platform_as_with_options(
-        mut self,
+        self,
         facet_name: impl Into<String>,
         request: impl Into<QuerySelection>,
         include_all_facets: bool,
     ) -> Self {
+        self.facet_by_platform_internal(facet_name, request, include_all_facets, "facet_by_platform_as_with_options")
+    }
+
+    fn facet_by_platform_internal(mut self, facet_name: impl Into<String>, request: impl Into<QuerySelection>, include_all_facets: bool, method: &'static str) -> Self {
+        let facet_name = facet_name.into();
+        let operation = QueryOperation::new(QueryOperationKind::Facet, method)
+            .with_alias(&facet_name).with_relation("platform");
         self.query_options.facets.push(FacetRequest::new(
             facet_name,
             "platform",
             request,
             include_all_facets,
-        ));
+        ).with_operation(operation));
         self
     }
 
     pub fn select_school_type(mut self) -> Self {
-        self.query = self.query.relation("school_type");
+        self.query.relations.push(teaql_core::RelationLoad::new("school_type")
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_type").with_relation("school_type")));
         self
     }
 
     pub fn select_school_type_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query = self.query.relation_query("school_type", selection.into_query());
+        self.query.relations.push(teaql_core::RelationLoad::with_query("school_type", selection.into_query())
+            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_school_type_with").with_relation("school_type")));
         self
 }
 
     pub fn facet_by_school_type_as(self, facet_name: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.facet_by_school_type_as_with_options(facet_name, request, true)
+        self.facet_by_school_type_internal(facet_name, request, true, "facet_by_school_type_as")
     }
 
     pub fn facet_by_school_type_as_with_options(
-        mut self,
+        self,
         facet_name: impl Into<String>,
         request: impl Into<QuerySelection>,
         include_all_facets: bool,
     ) -> Self {
+        self.facet_by_school_type_internal(facet_name, request, include_all_facets, "facet_by_school_type_as_with_options")
+    }
+
+    fn facet_by_school_type_internal(mut self, facet_name: impl Into<String>, request: impl Into<QuerySelection>, include_all_facets: bool, method: &'static str) -> Self {
+        let facet_name = facet_name.into();
+        let operation = QueryOperation::new(QueryOperationKind::Facet, method)
+            .with_alias(&facet_name).with_relation("school_type");
         self.query_options.facets.push(FacetRequest::new(
             facet_name,
             "school_type",
             request,
             include_all_facets,
-        ));
+        ).with_operation(operation));
         self
     }
 }
@@ -3003,17 +3075,18 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolRequest<R>> {
         self
     }
 
-    pub fn new_entity<C>(&self, context: &C) -> crate::School
+    pub fn new_entity<C>(&self, context: &C) -> Result<crate::School, RuntimeError>
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
+        // Reserve identity before allocating mutation state. A failed reservation
+        // must not escape as an entity or fall back to a different allocator.
+        let id = context.user_context().next_id(crate::School::ENTITY_NAME)?;
         let mut entity = crate::School::runtime_new(context.user_context().entity_runtime_state());
-        if let Ok(id) = context.user_context().next_id(crate::School::ENTITY_NAME) {
-            entity.update_id(id);
-        }
+        entity.update_id(id);
         teaql_core::Entity::mark_as_new(&mut entity);
-        entity
+        Ok(entity)
     }
 
     fn into_inner_with_trace(mut self) -> SchoolRequest<R> {
@@ -3034,21 +3107,12 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolRequest<R>> {
                 .comment
                 .as_deref()
                 .is_some_and(|comment| !comment.trim().is_empty()),
-            "query comment must not be empty"
+            "{}",
+            teaql_core::RequestIntentError {
+                request_kind: teaql_core::RequestKind::Query,
+                field: "comment",
+            }
         );
-    }
-
-    pub async fn execute_for_page<'a, C>(
-        self,
-        context: &'a C,
-        offset: u64,
-        limit: u64,
-    ) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
-    where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
-    {
-        self.into_inner_with_trace()._execute_for_page(context, offset, limit).await
     }
 
     pub async fn execute_for_exists<'a, C>(

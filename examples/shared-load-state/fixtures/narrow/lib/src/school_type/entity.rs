@@ -237,13 +237,13 @@ impl SchoolType {
     pub fn update_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.platform_id = value.try_u64().unwrap_or(self.platform_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "platform_id", value);
+        self.__teaql_runtime_state().set(self.entity_key(), "platform", value);
         self.__load_state.mark_loaded("platform_id").expect("generated field layout");
         self
     }
 
     pub fn changed_platform_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "platform_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), "platform")
     }
 
     pub fn eval_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {
@@ -253,15 +253,16 @@ impl SchoolType {
                     teaql_core::eval::EvalResult::Value(self.platform_id())
                 }}
     pub fn platform(&self) -> Option<&crate::Platform> {
+        if self.changed_platform_id().is_some()
+            || !self.is_loaded("platform") {
+            return None;
+        }
+        if let Some(edge) = self.__teaql_runtime_state().resolve_relation_option::<crate::Platform>(
+            <Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "platform",
+        ) {
+            return edge.as_ref();
+        }
         self.platform.as_deref().or_else(|| {
-            if !self.is_loaded("platform") {
-                return None;
-            }
-            if let Some(edge) = self.__teaql_runtime_state().resolve_relation_option::<crate::Platform>(
-                Self::ENTITY_NAME, self.id(), "platform",
-            ) {
-                return edge.as_ref();
-            }
             self.__teaql_runtime_state().resolve_entity(self.platform_id())})
     }
 

@@ -153,7 +153,7 @@ async fn fixture() -> (UserContext, SqliteMutationExecutor) {
     (context, transport)
 }
 
-fn query(shape: &str) -> PurposedSelectQuery {
+fn query_body(shape: &str) -> SelectQuery {
     let flat = shape.starts_with("flat_");
     let shape = shape.strip_prefix("flat_").unwrap_or(shape);
     let mut child = SelectQuery::new("Order").projects(["id", "version", "customer_id"]);
@@ -183,7 +183,14 @@ fn query(shape: &str) -> PurposedSelectQuery {
     if shape != "aggregate" {
         root = root.relation_query("orders", child);
     }
-    PurposedSelectQuery::new(root, format!("why: inspect {BUSINESS} {CREDENTIAL}"))
+    root
+}
+
+fn query(shape: &str) -> PurposedSelectQuery {
+    PurposedSelectQuery::new(
+        query_body(shape),
+        format!("why: inspect {BUSINESS} {CREDENTIAL}"),
+    )
 }
 
 async fn execute<E>(
@@ -403,9 +410,22 @@ fn relation_file_sinks() {
             .as_nanos()
     ));
     std::fs::create_dir(&directory).unwrap();
-    for (debug, cached) in [(false, false), (true, false), (false, true), (true, true)] {
-        let ordinary = directory.join(format!("ordinary-{debug}-cached-{cached}.log"));
-        let sensitive = directory.join(format!("explicit-{debug}-cached-{cached}.log"));
+    for (presentation, debug, cached) in [
+        ("json", false, false),
+        ("json", true, false),
+        ("json", false, true),
+        ("json", true, true),
+        ("human", false, false),
+        ("human", true, false),
+        ("human", false, true),
+        ("human", true, true),
+    ] {
+        let ordinary = directory.join(format!(
+            "ordinary-{presentation}-{debug}-cached-{cached}.log"
+        ));
+        let sensitive = directory.join(format!(
+            "explicit-{presentation}-{debug}-cached-{cached}.log"
+        ));
         let expected_sql = if cached { "FROM orders" } else { "FROM items" };
         let expected_purpose = if cached {
             "why: cached parent"
@@ -423,7 +443,7 @@ fn relation_file_sinks() {
             .env("TEAQL_LOG_ENDPOINT", &ordinary)
             .env("TEAQL_SQL_DEBUG_ENDPOINT", &sensitive)
             .env("TEAQL_SQL_LOG", "_full_with_payload")
-            .env("TEAQL_LOG_FORMAT", "debug")
+            .env("TEAQL_LOG_FORMAT", presentation)
             .env(
                 "TEAQL_RELATION_CACHE_FIXTURE",
                 if cached { "yes" } else { "no" },
@@ -457,12 +477,18 @@ fn relation_file_sinks() {
             assert!(sensitive.contains(BUSINESS));
             assert!(sensitive.contains(expected_sql));
             assert!(sensitive.contains("EXPLICIT OPT-IN"));
-            let failed_child = sensitive
-                .lines()
-                .find(|line| {
+            let failed_child = if presentation == "human" {
+                // Human diagnostics put the SQL on continuation lines. Keep
+                // the failure outcome and descendant statement in one block.
+                sensitive
+                    .split("\n[")
+                    .find(|block| block.contains("outcome=failure") && block.contains(expected_sql))
+            } else {
+                sensitive.lines().find(|line| {
                     line.contains("execution_outcome: Some(Failure)") && line.contains(expected_sql)
                 })
-                .expect("actual failed child must be logged");
+            }
+            .expect("actual failed child must be logged");
             assert!(
                 failed_child.contains(&format!("{expected_purpose} {BUSINESS} [REDACTED]")),
                 "debug child intent must use current field classification"
@@ -517,7 +543,7 @@ async fn cached_parent(transaction: bool, failure: bool) {
         "mask-parent",
     ));
     let query = PurposedSelectQuery::new(
-        query("batch").into_query().enable_aggregation_cache(),
+        query_body("batch").enable_aggregation_cache(),
         format!("why: cached parent {BUSINESS} {CREDENTIAL}"),
     );
     let repo = context.entity_data_service::<Executor>("Customer").unwrap();
@@ -601,9 +627,7 @@ async fn cached_parent_tx_failure() {
 async fn retained_id_set_hit_preserves_binding_sources_for_typed_relations() {
     let (context, _) = fixture().await;
     let query = PurposedSelectQuery::new(
-        query("flat_nested")
-            .into_query()
-            .optimize_pagination_with_id_set_config("mask-ids", 60, 100),
+        query_body("flat_nested").optimize_pagination_with_id_set_config("mask-ids", 60, 100),
         format!("why: retained ID set {BUSINESS} {CREDENTIAL}"),
     );
     let repo = context.entity_data_service::<Executor>("Customer").unwrap();

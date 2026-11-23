@@ -156,14 +156,57 @@ async fn fixture(logging: bool) -> UserContext {
 
 #[test]
 fn two_live_queries_on_one_context_keep_intent_and_real_relation_paths_isolated() {
+    verify_two_live_queries(false);
+}
+
+#[test]
+fn shared_template_concurrent_parents_keep_separate_owners() {
+    verify_two_live_queries(true);
+}
+
+fn verify_two_live_queries(shared_template: bool) {
     for logging in [false, true] {
         let context = futures_executor::block_on(fixture(logging));
         let observer = context.require_resource::<ObservedExecutor>().unwrap();
+        let child_template = SelectQuery::new("LiveChild").limit(1).relation_query(
+            "children",
+            SelectQuery::new("LiveDetail")
+                .limit(1)
+                .relation_query("children", SelectQuery::new("LiveLeaf").limit(1)),
+        );
+        let template_before = format!("{child_template:?}");
+        let assert_template_unchanged = || {
+            assert_eq!(format!("{child_template:?}"), template_before);
+            let mut cursor = &child_template;
+            loop {
+                assert!(cursor.request_scope().is_none());
+                assert!(cursor.comment.is_none() && cursor.purpose.is_none());
+                assert!(cursor.filter.is_none() && cursor.trace_chain.is_empty());
+                match cursor
+                    .relations
+                    .first()
+                    .and_then(|relation| relation.query.as_deref())
+                {
+                    Some(child) => cursor = child,
+                    None => break,
+                }
+            }
+        };
         std::thread::scope(|threads| {
             // Drop releases waiting workers before scoped thread joining on failure.
             let _release = ReleaseOnDrop(observer);
             let handles = ["alpha", "beta"].map(|label| {
                 let context = &context;
+                let child = if shared_template {
+                    child_template.clone()
+                } else {
+                    SelectQuery::new("LiveChild").limit(1).relation_query(
+                        "children",
+                        SelectQuery::new("LiveDetail")
+                            .limit(1)
+                            .relation_query("children", SelectQuery::new("LiveLeaf").limit(1)),
+                    )
+                };
                 // Recursive native query futures exceed the default worker
                 // stack in this unoptimized fixture; do not hide that cost.
                 std::thread::Builder::new()
@@ -175,16 +218,7 @@ fn two_live_queries_on_one_context_keep_intent_and_real_relation_paths_isolated(
                                 SelectQuery::new("LiveRoot")
                                     .limit(1)
                                     .comment(format!("load {label} graph"))
-                                    .relation_query(
-                                        "children",
-                                        SelectQuery::new("LiveChild").limit(1).relation_query(
-                                            "children",
-                                            SelectQuery::new("LiveDetail").limit(1).relation_query(
-                                                "children",
-                                                SelectQuery::new("LiveLeaf").limit(1),
-                                            ),
-                                        ),
-                                    ),
+                                    .relation_query("children", child),
                                 format!("render {label} graph"),
                             );
                             context
@@ -211,6 +245,7 @@ fn two_live_queries_on_one_context_keep_intent_and_real_relation_paths_isolated(
                 "both real root reads must overlap before either query finishes"
             );
             assert!(!live.released);
+            assert_template_unchanged();
             drop(live);
             assert!(handles.iter().all(|handle| !handle.is_finished()));
             assert!(context.sql_logs().is_empty());
@@ -245,6 +280,7 @@ fn two_live_queries_on_one_context_keep_intent_and_real_relation_paths_isolated(
                 }
                 assert_eq!(rows[0].get("id").and_then(Value::try_i64), Some(1));
             }
+            assert_template_unchanged();
         });
         let facts = observer.facts.lock().unwrap();
         assert_eq!(facts.len(), 8);

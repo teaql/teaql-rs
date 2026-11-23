@@ -345,6 +345,9 @@ impl UserContext {
         &self,
         plan: &MutationPlan,
     ) -> Result<MutationGovernanceSnapshot, RuntimeError> {
+        for operation in &plan.operations {
+            self.validate_final_plan_scalars(&operation.entity.entity, &operation.changed_values)?;
+        }
         let resolved = self.mutation_policy_registry.resolve(&plan.request_key);
         let (source, policy, approval_status, warning_codes) = match resolved {
             None => (
@@ -476,13 +479,14 @@ pub(crate) fn graph_policy_plan(
                 GraphMutationKind::Create => MutationOperationKind::Create,
                 GraphMutationKind::Update => MutationOperationKind::Update,
                 GraphMutationKind::Delete => MutationOperationKind::Delete,
+                GraphMutationKind::Recover => MutationOperationKind::Recover,
                 GraphMutationKind::Reference => return None,
             };
             let values = item.values.clone();
             let id = values.get("id").cloned().unwrap_or(Value::I64(0));
             let original_version = values.get("version").and_then(Value::try_i64);
             let changed_values = match kind {
-                MutationOperationKind::Update => {
+                MutationOperationKind::Update | MutationOperationKind::Recover => {
                     let mut selected = values
                         .symbols()
                         .map(teaql_core::MutationValues::indexed)
@@ -505,13 +509,48 @@ pub(crate) fn graph_policy_plan(
             })
         })
         .collect();
-    Ok(MutationPlan {
+    let plan = MutationPlan {
         execution_id: next_execution_id(context),
         request_key: format!("{}.saveGraph", root.entity),
         root_entity_type: root.entity.clone(),
         audit_reason: root.comment.clone(),
         operations,
-    })
+    };
+    validate_graph_mutation_versions(&plan)?;
+    Ok(plan)
+}
+
+// Graph Delete always means soft deletion. This belongs at plan construction,
+// not generic policy review: a provider's explicitly hard delete has a distinct
+// meaning and may legitimately target a tombstone.
+fn validate_graph_mutation_versions(plan: &MutationPlan) -> Result<(), RuntimeError> {
+    for operation in &plan.operations {
+        match operation.kind {
+            MutationOperationKind::Delete => {
+                crate::mutation_version::deleted(
+                    &operation.entity.entity,
+                    operation.original_version,
+                )?;
+            }
+            MutationOperationKind::Update if !operation.changed_values.is_empty() => {
+                crate::mutation_version::updated(
+                    &operation.entity.entity,
+                    operation.original_version,
+                )?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn ledger_policy_plan(
+    context: &UserContext,
+    node: &GraphNode,
+    root: &crate::EntityRuntimeState,
+) -> Result<MutationPlan, RuntimeError> {
+    ledger_policy_plan_from(context, node, root, &root.current_change_set())
 }
 
 pub(crate) fn ledger_policy_plan_from(
@@ -519,20 +558,24 @@ pub(crate) fn ledger_policy_plan_from(
     node: &GraphNode,
     root: &EntityRuntimeState,
     changes: &crate::EntityChangeSet,
-) -> MutationPlan {
+) -> Result<MutationPlan, RuntimeError> {
     let deleted = root.deleted_keys();
+    let recovered = root.recovered_keys();
     let new = root.new_keys();
     let mut keys = changes.changes().keys().cloned().collect::<BTreeSet<_>>();
     if let Some(dynamic) = changes.dynamic_changes() {
         keys.extend(dynamic.keys().cloned());
     }
     keys.extend(deleted.iter().cloned());
+    keys.extend(recovered.iter().cloned());
     let operations = keys
         .into_iter()
         .filter(|key| !(new.contains(key) && deleted.contains(key)))
         .map(|key| {
             let kind = if deleted.contains(&key) {
                 MutationOperationKind::Delete
+            } else if recovered.contains(&key) {
+                MutationOperationKind::Recover
             } else if new.contains(&key) {
                 MutationOperationKind::Create
             } else {
@@ -558,19 +601,48 @@ pub(crate) fn ledger_policy_plan_from(
             }
         })
         .collect();
-    MutationPlan {
+    let plan = MutationPlan {
         execution_id: next_execution_id(context),
         request_key: format!("{}.saveGraph", node.entity),
         root_entity_type: node.entity.clone(),
         audit_reason: root.get_comment().or_else(|| node.comment.clone()),
         operations,
-    }
+    };
+    validate_graph_mutation_versions(&plan)?;
+    Ok(plan)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn recovery_without_scalar_edits_is_a_reviewed_type_qualified_operation() {
+        let context = UserContext::default();
+        let root = EntityRuntimeState::default();
+        let recovered = EntityKey::new("Academy", 7_u64);
+        let unrelated = EntityKey::new("Other", 7_u64);
+        root.set_original_version(recovered.clone(), -4);
+        root.set_original_version(unrelated, 99);
+        root.mark_as_recover(recovered.clone());
+        root.set_comment("Recover the selected inherited object");
+        let node = GraphNode::new("Academy")
+            .value("id", 7_u64)
+            .value("version", -4_i64);
+        let plan = ledger_policy_plan(&context, &node, &root).unwrap();
+        assert_eq!(plan.operations.len(), 1);
+        assert_eq!(plan.operations[0].kind, MutationOperationKind::Recover);
+        assert_eq!(plan.operations[0].entity, recovered);
+        assert_eq!(plan.operations[0].original_version, Some(-4));
+        assert!(plan.operations[0].changed_values.is_empty());
+        root.mark_as_delete(recovered.clone());
+        assert!(root.recovered_keys().is_empty());
+        root.mark_as_recover(recovered.clone());
+        assert!(root.deleted_keys().is_empty());
+        root.clear_committed();
+        assert!(root.recovered_keys().is_empty());
+    }
 
     #[test]
     fn governance_scope_does_not_inline_work_future_payload() {

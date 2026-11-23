@@ -123,6 +123,27 @@ impl ServiceRuntimeExecutor {
         self
     }
 
+    fn notify_query_metadata(&self, metadata: &teaql_data_service::ExecutionMetadata) {
+        if let Some(observer) = &self.query_metadata_observer {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observer(metadata)));
+        }
+    }
+
+    fn query_metadata_observer<'a>(
+        &self, upstream: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> Option<teaql_data_service::ExecutionObserver<'a>> {
+        match &self.query_metadata_observer {
+            Some(callback) => {
+                let callback = callback.clone();
+                Some(std::sync::Arc::new(move |metadata| {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(&metadata)));
+                    if let Some(upstream) = &upstream { upstream(metadata); }
+                }))
+            }
+            None => upstream,
+        }
+    }
+
 }
 
 impl teaql_data_service::DataServiceExecutor for ServiceRuntimeExecutor {
@@ -137,42 +158,58 @@ impl teaql_data_service::QueryExecutor for ServiceRuntimeExecutor {
         teaql_data_service::QueryExecutor::query_log_intent(&self.inner, query)
     }
 
+    fn dynamic_field_store(&self) -> Option<&dyn teaql_data_service::dynamic_fields::DynamicFieldStore> {
+        teaql_data_service::QueryExecutor::dynamic_field_store(&self.inner)
+    }
+
     async fn query(&self, request: teaql_data_service::QueryRequest) -> Result<teaql_data_service::QueryResult, Self::Error> {
-        self.query_observed(request, None).await
+        teaql_data_service::QueryExecutor::query_observed(self, request, None).await
     }
 
-    async fn query_observed<'a>(&'a self, request: teaql_data_service::QueryRequest, observer: Option<teaql_data_service::ExecutionObserver<'a>>) -> Result<teaql_data_service::QueryResult, Self::Error> {
-        let result = self.execute_query_observed(request, observer).await?;
-        if let Some(observer) = &self.query_metadata_observer {
-            observer(&result.metadata);
-        }
+    fn query_observed<'a>(
+        &'a self,
+        request: teaql_data_service::QueryRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> impl std::future::Future<Output = Result<teaql_data_service::QueryResult, Self::Error>> + Send + 'a {
+        async move {
+        let observer = self.query_metadata_observer(observer);
+        let result = teaql_data_service::QueryExecutor::query_observed(&self.inner, request, observer).await?;
+        self.notify_query_metadata(&result.metadata);
         Ok(result)
-    }
-}
-
-impl ServiceRuntimeExecutor {
-    async fn execute_query_observed<'a>(&'a self, request: teaql_data_service::QueryRequest, observer: Option<teaql_data_service::ExecutionObserver<'a>>) -> Result<teaql_data_service::QueryResult, teaql_sql::SqlExecutorError<DataServiceMutationError>> {
-        teaql_data_service::QueryExecutor::query_observed(&self.inner, request, observer).await
+        }
     }
 }
 
 impl teaql_data_service::StreamQueryExecutor for ServiceRuntimeExecutor {
-    fn query_stream_observed<'a>(&'a self, request: teaql_data_service::QueryRequest, chunk_size: usize, observer: teaql_data_service::ExecutionObserver<'a>) -> teaql_data_service::QueryStream<'a, Self::Error> {
-        let trusted_observer = self.query_metadata_observer.clone();
-        teaql_data_service::StreamQueryExecutor::query_stream_observed(
-            &self.inner, request, chunk_size,
-            std::sync::Arc::new(move |metadata| {
-                // Deliver the runtime-owned safe sink before optional trusted SPI.
-                observer(metadata.clone());
-                if let Some(trusted) = &trusted_observer {
-                    trusted(&metadata);
-                }
-            }),
+    fn query_stream_with_dynamic_fields<'a>(
+        &'a self,
+        request: teaql_data_service::QueryRequest,
+        chunk_size: usize,
+        plan: teaql_data_service::dynamic_fields::DynamicFieldStreamPlan,
+        observer: Option<teaql_data_service::ExecutionObserver<'a>>,
+    ) -> Result<teaql_data_service::QueryStream<'a, Self::Error>, teaql_core::dynamic_fields::DynamicFieldError> {
+        let observer = self.query_metadata_observer(observer);
+        teaql_data_service::StreamQueryExecutor::query_stream_with_dynamic_fields(
+            &self.inner, request, chunk_size, plan, observer,
         )
     }
 
+    fn query_stream_observed<'a>(
+        &'a self,
+        request: teaql_data_service::QueryRequest,
+        chunk_size: usize,
+        observer: teaql_data_service::ExecutionObserver<'a>,
+    ) -> teaql_data_service::QueryStream<'a, Self::Error> {
+        let observer = self.query_metadata_observer(Some(observer)).expect("caller supplied stream observer");
+        teaql_data_service::StreamQueryExecutor::query_stream_observed(&self.inner, request, chunk_size, observer)
+    }
+
     fn query_stream(&self, request: teaql_data_service::QueryRequest, chunk_size: usize) -> teaql_data_service::QueryStream<'_, Self::Error> {
-        teaql_data_service::StreamQueryExecutor::query_stream(&self.inner, request, chunk_size)
+        if let Some(observer) = self.query_metadata_observer(None) {
+            teaql_data_service::StreamQueryExecutor::query_stream_observed(&self.inner, request, chunk_size, observer)
+        } else {
+            teaql_data_service::StreamQueryExecutor::query_stream(&self.inner, request, chunk_size)
+        }
     }
 }
 
@@ -343,8 +380,62 @@ pub fn generated_wire_field_aliases() -> std::collections::BTreeMap<String, std:
     std::collections::BTreeMap::new()
 }
 
+/// One immutable model schema shared across contexts, never across row values.
+pub fn generated_entity_json_model() -> &'static teaql_runtime::entity_json::Model {
+    use teaql_runtime::entity_json::{Definition, Field, Kind};
+    static MODEL: std::sync::OnceLock<teaql_runtime::entity_json::Model> = std::sync::OnceLock::new();
+    MODEL.get_or_init(|| teaql_runtime::entity_json::Model::new(vec![
+        Definition::new("Platform", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("name", "name", Kind::Text).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+            Field::new("customer_order_list", "customer_order_list", Kind::Many { target: "CustomerOrder".to_owned() }),
+        ]),
+        Definition::new("CustomerOrder", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("platform", "platform_id", Kind::Reference { target: "Platform".to_owned(), detail_key: "platform".to_owned() }).nullable(false),
+            Field::new("order_number", "order_number", Kind::Text).nullable(false),
+            Field::new("description", "description", Kind::Text).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+            Field::new("order_item_list", "order_item_list", Kind::Many { target: "OrderItem".to_owned() }),
+            Field::new("payment_list", "payment_list", Kind::Many { target: "Payment".to_owned() }),
+            Field::new("shipment_list", "shipment_list", Kind::Many { target: "Shipment".to_owned() }),
+        ]),
+        Definition::new("OrderItem", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("customer_order", "customer_order_id", Kind::Reference { target: "CustomerOrder".to_owned(), detail_key: "customer_order".to_owned() }).nullable(false),
+            Field::new("name", "name", Kind::Text).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+        ]),
+        Definition::new("Payment", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("customer_order", "customer_order_id", Kind::Reference { target: "CustomerOrder".to_owned(), detail_key: "customer_order".to_owned() }).nullable(false),
+            Field::new("reference_code", "reference_code", Kind::Text).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+            Field::new("payment_attempt_list", "payment_attempt_list", Kind::Many { target: "PaymentAttempt".to_owned() }),
+        ]),
+        Definition::new("PaymentAttempt", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("payment", "payment_id", Kind::Reference { target: "Payment".to_owned(), detail_key: "payment".to_owned() }).nullable(false),
+            Field::new("reference_code", "reference_code", Kind::Text).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+        ]),
+        Definition::new("Shipment", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("customer_order", "customer_order_id", Kind::Reference { target: "CustomerOrder".to_owned(), detail_key: "customer_order".to_owned() }).nullable(false),
+            Field::new("reference_code", "reference_code", Kind::Text).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+        ])
+    ]).expect("invalid generated entity JSON metadata"))
+}
+
+pub fn generated_json_field_naming_profile() -> teaql_runtime::JsonFieldNamingProfile {
+    teaql_runtime::JsonFieldNamingProfile::CamelCase
+}
+
 pub fn module() -> teaql_runtime::RuntimeModule {
     teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone())
         .entity::<Platform>()
         .entity::<CustomerOrder>()
         .entity::<OrderItem>()
@@ -355,7 +446,8 @@ pub fn module() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity::<Platform>();
     module = module.checker(teaql_runtime::TypedEntityChecker::<Platform, _>::new(PlatformChecker::default()));
     module = module.entity::<CustomerOrder>();
@@ -373,7 +465,8 @@ pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity_with_behavior::<Platform, _>(PlatformBehavior::default());
     module = module.entity_with_behavior::<CustomerOrder, _>(CustomerOrderBehavior::default());
     module = module.entity_with_behavior::<OrderItem, _>(OrderItemBehavior::default());
@@ -385,7 +478,8 @@ pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_behaviors_and_checkers() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity_with_behavior::<Platform, _>(PlatformBehavior::default());
     module = module.checker(teaql_runtime::TypedEntityChecker::<Platform, _>::new(PlatformChecker::default()));
     module = module.entity_with_behavior::<CustomerOrder, _>(CustomerOrderBehavior::default());

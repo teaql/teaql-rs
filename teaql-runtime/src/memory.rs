@@ -10,6 +10,7 @@ use teaql_core::{
     UpdateCommand, Value,
 };
 
+use crate::data_service::default_aggregate_value;
 use crate::{DataServiceError, InMemoryMetadataStore, MetadataStore, RuntimeError};
 
 #[derive(Debug)]
@@ -203,7 +204,7 @@ where
             .collect::<Vec<_>>();
 
         if ids.is_empty() {
-            let value = default_aggregate_value(aggregate.single_result);
+            let value = default_aggregate_value(aggregate);
             for parent in parent_rows.iter_mut() {
                 parent.insert(aggregate.alias.clone(), value.clone());
             }
@@ -244,8 +245,8 @@ where
             let value = parent
                 .get(&relation.local_key)
                 .and_then(|local_value| buckets.get(&local_graph_identity_key(local_value)))
-                .map(|rows| local_relation_aggregate_value(rows, aggregate.single_result))
-                .unwrap_or_else(|| default_aggregate_value(aggregate.single_result));
+                .map(|rows| local_relation_aggregate_value(rows, aggregate))
+                .unwrap_or_else(|| default_aggregate_value(aggregate));
             parent.insert(aggregate.alias.clone(), value);
         }
 
@@ -272,6 +273,9 @@ where
         command: &UpdateCommand,
     ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
         let (id_property, version_property) = self.id_and_version_properties(&command.entity)?;
+        let next_version =
+            crate::mutation_version::updated(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
         let mut data = self
             .data
             .lock()
@@ -297,10 +301,16 @@ where
                     },
                 ));
             }
-            row.insert(version_property.to_owned(), Value::I64(expected + 1));
+            row.insert(
+                version_property.to_owned(),
+                Value::I64(next_version.unwrap()),
+            );
         }
 
         for (key, value) in &command.values {
+            if next_version.is_some() && key == version_property {
+                continue;
+            }
             row.insert(key.clone(), value.clone());
         }
         Ok(1)
@@ -311,6 +321,12 @@ where
         command: &DeleteCommand,
     ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
         let (id_property, version_property) = self.id_and_version_properties(&command.entity)?;
+        let next_version = if command.soft_delete {
+            crate::mutation_version::deleted(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?
+        } else {
+            None
+        };
         let mut data = self
             .data
             .lock()
@@ -340,12 +356,16 @@ where
 
         match command.soft_delete {
             true => {
-                let next_version = command
-                    .expected_version
-                    .or_else(|| read_i64(rows[index].get(version_property)))
-                    .map(|version| -(version.abs() + 1))
-                    .unwrap_or(-1);
-                rows[index].insert(version_property.to_owned(), Value::I64(next_version));
+                if command.expected_version.is_none()
+                    && !read_i64(rows[index].get(version_property))
+                        .is_some_and(|version| version > 0)
+                {
+                    return Ok(0);
+                }
+                rows[index].insert(
+                    version_property.to_owned(),
+                    Value::I64(next_version.unwrap_or(-1)),
+                );
             }
             false => {
                 rows.remove(index);
@@ -359,6 +379,9 @@ where
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<MemoryDataServiceError>> {
         let (id_property, version_property) = self.id_and_version_properties(&command.entity)?;
+        let next_version =
+            crate::mutation_version::recovered(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
         let mut data = self
             .data
             .lock()
@@ -385,10 +408,15 @@ where
             ));
         }
 
-        row.insert(
-            version_property.to_owned(),
-            Value::I64(command.expected_version.abs() + 1),
-        );
+        for field in command.values.keys() {
+            if field == id_property || field == version_property {
+                return Err(DataServiceError::Runtime(RuntimeError::Graph(
+                    "recovery cannot change identity or supply its successor version".into(),
+                )));
+            }
+        }
+        row.extend(CompactRow::from_map(command.values.clone().into()));
+        row.insert(version_property.to_owned(), Value::I64(next_version));
         Ok(1)
     }
 
@@ -434,13 +462,6 @@ where
     }
 }
 
-fn default_aggregate_value(single_result: bool) -> Value {
-    match single_result {
-        true => Value::U64(0),
-        false => Value::List(Vec::new()),
-    }
-}
-
 fn aggregate_alias(single_result: bool, alias: &str) -> String {
     match single_result {
         true => alias.to_owned(),
@@ -448,12 +469,12 @@ fn aggregate_alias(single_result: bool, alias: &str) -> String {
     }
 }
 
-fn local_relation_aggregate_value(rows: &[CompactRow], single_result: bool) -> Value {
-    match single_result {
+fn local_relation_aggregate_value(rows: &[CompactRow], aggregate: &RelationAggregate) -> Value {
+    match aggregate.single_result {
         true => rows
             .first()
             .map(local_single_relation_aggregate_value)
-            .unwrap_or(Value::U64(0)),
+            .unwrap_or_else(|| default_aggregate_value(aggregate)),
         false => Value::List(
             rows.iter()
                 .cloned()
@@ -530,6 +551,14 @@ fn eval_function(
     row: &CompactRow,
 ) -> Result<Value, MemoryDataServiceError> {
     match function {
+        ExprFunction::Identity => {
+            let [argument] = args else {
+                return Err(MemoryDataServiceError::UnsupportedExpression(
+                    "IDENTITY expects exactly one argument".into(),
+                ));
+            };
+            eval_value(argument, row)
+        }
         ExprFunction::Soundex => {
             let [arg] = args else {
                 return Err(MemoryDataServiceError::UnsupportedExpression(
@@ -769,6 +798,11 @@ fn aggregate_rows(
             for aggregate in &query.aggregates {
                 let value = match aggregate.function {
                     AggregateFunction::Count => count_rows(&rows, &aggregate.field),
+                    AggregateFunction::CountDistinct => {
+                        crate::inmemory_engine::count_distinct_values(
+                            rows.iter().filter_map(|row| row.get(&aggregate.field)),
+                        )
+                    }
                     AggregateFunction::Sum => numeric_sum(&rows, &aggregate.field)?,
                     AggregateFunction::Avg => numeric_avg(&rows, &aggregate.field)?,
                     AggregateFunction::Min => min_max(&rows, &aggregate.field, false)?,
@@ -823,7 +857,12 @@ fn numeric_sum(rows: &[&CompactRow], field: &str) -> Result<Value, MemoryDataSer
     let mut decimal_sum = Decimal::ZERO;
     let mut integer_sum: i128 = 0;
     let mut saw_decimal = false;
+    let mut saw_value = false;
     for value in rows.iter().filter_map(|row| row.get(field)) {
+        if matches!(value, Value::Null) {
+            continue;
+        }
+        saw_value = true;
         match value {
             Value::I64(value) => {
                 integer_sum += i128::from(*value);
@@ -848,6 +887,9 @@ fn numeric_sum(rows: &[&CompactRow], field: &str) -> Result<Value, MemoryDataSer
                 )));
             }
         }
+    }
+    if !saw_value {
+        return Ok(Value::Null);
     }
     match (saw_decimal, integer_sum >= 0) {
         (true, _) => Ok(Value::Decimal(decimal_sum)),
@@ -1025,6 +1067,7 @@ fn value_key(value: &Value) -> String {
         Value::F64(value) => format!("f:{value}"),
         Value::Decimal(value) => format!("d:{value}"),
         Value::Text(value) => format!("t:{value}"),
+        Value::Binary(value) => format!("binary:{value:02x?}"),
         Value::Json(value) => format!("j:{value}"),
         Value::Date(value) => format!("d:{value}"),
         Value::Timestamp(value) => format!("ts:{}", value.0),
@@ -1051,6 +1094,7 @@ fn local_graph_identity_key(value: &Value) -> String {
         Value::F64(v) => format!("f:{v}"),
         Value::Decimal(v) => format!("d:{v}"),
         Value::Text(v) => format!("t:{v}"),
+        Value::Binary(v) => format!("binary:{v:02x?}"),
         Value::Json(v) => format!("j:{v}"),
         Value::Date(v) => format!("d:{v}"),
         Value::Timestamp(v) => format!("ts:{}", v.0),
@@ -1061,8 +1105,322 @@ fn local_graph_identity_key(value: &Value) -> String {
 }
 
 #[cfg(test)]
+mod version_lifecycle_tests {
+    use super::*;
+    use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};
+
+    fn service(version: i64) -> MemoryDataService {
+        let metadata = InMemoryMetadataStore::new().with_entity(
+            EntityDescriptor::new("LifecycleProbe")
+                .property(PropertyDescriptor::new("id", DataType::U64).id())
+                .property(PropertyDescriptor::new("version", DataType::I64).version())
+                .property(PropertyDescriptor::new("name", DataType::Text)),
+        );
+        MemoryDataService::new(metadata).with_rows(
+            "LifecycleProbe",
+            vec![CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(1)),
+                ("version".into(), Value::I64(version)),
+                ("name".into(), Value::from("original")),
+            ]))],
+        )
+    }
+
+    fn original(service: &MemoryDataService, version: i64) {
+        let rows = service
+            .fetch_all(
+                &SelectQuery::new("LifecycleProbe")
+                    .limit(1)
+                    .comment("Inspect rejected lifecycle state")
+                    .purpose("Assert no in-memory mutation"),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("version"), Some(&Value::I64(version)));
+        assert_eq!(rows[0].get("name"), Some(&Value::from("original")));
+    }
+
+    #[test]
+    fn version_lifecycle_memory_update_exhaustion_does_not_poison_or_mutate() {
+        let service = service(i64::MAX);
+        assert!(
+            service
+                .update(
+                    &UpdateCommand::new("LifecycleProbe", 1_u64)
+                        .expected_version(i64::MAX)
+                        .value("name", "changed")
+                )
+                .is_err()
+        );
+        original(&service, i64::MAX);
+    }
+
+    #[test]
+    fn version_lifecycle_memory_update_rejects_non_live_versions() {
+        for version in [i64::MIN, -902, -1, 0] {
+            let service = service(version);
+            assert!(
+                service
+                    .update(
+                        &UpdateCommand::new("LifecycleProbe", 1_u64)
+                            .expected_version(version)
+                            .value("name", "changed")
+                    )
+                    .is_err()
+            );
+            original(&service, version);
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_memory_recovery_exhaustion_does_not_poison_or_mutate() {
+        for version in [i64::MIN, i64::MIN + 1] {
+            let service = service(version);
+            assert!(
+                service
+                    .recover(&RecoverCommand::new("LifecycleProbe", 1_u64, version))
+                    .is_err()
+            );
+            original(&service, version);
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_memory_recovery_rejects_non_tombstones() {
+        for version in [0, 1, i64::MAX] {
+            let service = service(version);
+            assert!(
+                service
+                    .recover(&RecoverCommand::new("LifecycleProbe", 1_u64, version))
+                    .is_err()
+            );
+            original(&service, version);
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_memory_repeated_deletion_rejects_before_mutation() {
+        let service = service(-902);
+        assert!(
+            service
+                .delete(&DeleteCommand::new("LifecycleProbe", 1_u64).expected_version(-902))
+                .is_err()
+        );
+        original(&service, -902);
+        assert_eq!(
+            service
+                .delete(&DeleteCommand::new("LifecycleProbe", 1_u64))
+                .unwrap(),
+            0
+        );
+        original(&service, -902);
+    }
+
+    #[test]
+    fn version_lifecycle_memory_maximum_live_version_deletes_exactly() {
+        let service = service(i64::MAX);
+        assert_eq!(
+            service
+                .delete(&DeleteCommand::new("LifecycleProbe", 1_u64).expected_version(i64::MAX))
+                .unwrap(),
+            1
+        );
+        original(&service, i64::MIN);
+        assert_eq!(
+            service
+                .delete(
+                    &DeleteCommand::new("LifecycleProbe", 1_u64)
+                        .expected_version(i64::MIN)
+                        .hard_delete()
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn version_lifecycle_memory_legal_update_ignores_payload_version_override() {
+        let service = service(i64::MAX - 1);
+        assert_eq!(
+            service
+                .update(
+                    &UpdateCommand::new("LifecycleProbe", 1_u64)
+                        .expected_version(i64::MAX - 1)
+                        .value("version", -999_i64)
+                )
+                .unwrap(),
+            1
+        );
+        original(&service, i64::MAX);
+    }
+
+    #[test]
+    fn version_lifecycle_memory_representable_recovery_keeps_the_last_live_version() {
+        let service = service(i64::MIN + 2);
+        assert_eq!(
+            service
+                .recover(&RecoverCommand::new("LifecycleProbe", 1_u64, i64::MIN + 2))
+                .unwrap(),
+            1
+        );
+        original(&service, i64::MAX);
+    }
+}
+
+#[cfg(test)]
+mod empty_aggregate_tests {
+    use super::*;
+
+    fn row(value: Value) -> CompactRow {
+        CompactRow::from_map(BTreeMap::from([("amount".into(), value)]))
+    }
+
+    #[test]
+    fn empty_aggregate_scalar_null_and_zero_are_distinct() {
+        for (values, count, sum) in [
+            (vec![], 0, Value::Null),
+            (vec![Value::Null, Value::Null], 0, Value::Null),
+            (
+                vec![Value::Null, Value::I64(2), Value::I64(-1)],
+                2,
+                Value::U64(1),
+            ),
+            (vec![Value::I64(4), Value::I64(-4)], 2, Value::U64(0)),
+        ] {
+            let rows: Vec<_> = values.into_iter().map(row).collect();
+            let query = SelectQuery::new("Line")
+                .aggregate(Aggregate::count("count"))
+                .aggregate(Aggregate::count_field("amount", "countValue"))
+                .aggregate(Aggregate::sum("amount", "sum"));
+            let result = aggregate_rows(&query, &rows).unwrap();
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].get("count"), Some(&Value::U64(rows.len() as u64)));
+            assert_eq!(result[0].get("countValue"), Some(&Value::U64(count)));
+            assert_eq!(result[0].get("sum"), Some(&sum));
+            let json = Value::object(result[0].clone().into_map()).to_json_value();
+            assert!(json.as_object().unwrap().contains_key("sum"));
+            assert_eq!(json["sum"].is_null(), sum == Value::Null);
+            if sum == Value::Null {
+                let fallback = result[0].get("sum").and_then(Value::try_i64).unwrap_or(0);
+                assert_eq!(fallback, 0);
+                assert_eq!(result[0].get("sum"), Some(&Value::Null));
+            }
+        }
+        let grouped = SelectQuery::new("Line")
+            .group_by("amount")
+            .aggregate(Aggregate::sum("amount", "sum"));
+        assert!(aggregate_rows(&grouped, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_aggregate_memory_relation_bucket_preserves_present_null() {
+        use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor, RelationDescriptor};
+        let metadata = InMemoryMetadataStore::new()
+            .with_entity(
+                EntityDescriptor::new("Owner")
+                    .property(PropertyDescriptor::new("id", DataType::U64).id())
+                    .relation(
+                        RelationDescriptor::new("lines", "Line")
+                            .local_key("id")
+                            .foreign_key("owner")
+                            .many(),
+                    ),
+            )
+            .with_entity(
+                EntityDescriptor::new("Line")
+                    .property(PropertyDescriptor::new("owner", DataType::U64))
+                    .property(PropertyDescriptor::new("amount", DataType::I64)),
+            );
+        let service = MemoryDataService::new(metadata)
+            .with_rows(
+                "Owner",
+                (1..=3)
+                    .map(|id| CompactRow::from_map(BTreeMap::from([("id".into(), Value::U64(id))])))
+                    .collect(),
+            )
+            .with_rows(
+                "Line",
+                vec![
+                    CompactRow::from_map(BTreeMap::from([
+                        ("owner".into(), Value::U64(1)),
+                        ("amount".into(), Value::Null),
+                    ])),
+                    CompactRow::from_map(BTreeMap::from([
+                        ("owner".into(), Value::U64(2)),
+                        ("amount".into(), Value::I64(0)),
+                    ])),
+                ],
+            );
+        let rows = service
+            .fetch_all_with_relation_aggregates(
+                &SelectQuery::new("Owner"),
+                &[
+                    RelationAggregate::new(
+                        "lines",
+                        "total",
+                        SelectQuery::new("Line").aggregate(Aggregate::sum("amount", "sum")),
+                        true,
+                    ),
+                    RelationAggregate::new("lines", "count", SelectQuery::new("Line"), true),
+                ],
+            )
+            .unwrap();
+        assert_eq!(rows[0].get("total"), Some(&Value::Null));
+        assert_eq!(rows[1].get("total"), Some(&Value::U64(0)));
+        assert_eq!(rows[2].get("total"), Some(&Value::Null));
+        assert_eq!(rows[2].get("count"), Some(&Value::U64(0)));
+    }
+}
+
+#[cfg(test)]
 mod like_provenance_tests {
     use super::*;
+
+    #[test]
+    fn identity_keeps_exact_values_in_both_memory_evaluators() {
+        let decimal: teaql_core::Decimal = "12345678901234567890.12345678".parse().unwrap();
+        for value in [
+            Value::I64(9_007_199_254_740_993),
+            Value::U64(u64::MAX),
+            Value::Decimal(decimal),
+            Value::Bool(true),
+            Value::from("unmodified"),
+            Value::Null,
+            Value::TypedNull(teaql_core::DataType::Text),
+        ] {
+            let row = CompactRow::from_map(BTreeMap::from([("value".into(), value.clone())]));
+            let expression = Expr::identity(Expr::column("value"));
+            assert_eq!(eval_value(&expression, &row).unwrap(), value);
+            assert_eq!(
+                crate::inmemory_engine::ExprEvaluator::resolve(&expression, &row),
+                value
+            );
+        }
+        let empty = CompactRow::from_map(BTreeMap::new());
+        for value in [false, true] {
+            let expression = Expr::identity(Expr::value(value));
+            assert_eq!(eval_filter(&expression, &empty).unwrap(), value);
+            assert_eq!(
+                crate::inmemory_engine::ExprEvaluator::eval(&expression, &empty),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn identity_rejects_wrong_arity_without_echoing_values() {
+        let row = CompactRow::from_map(BTreeMap::new());
+        for args in [
+            vec![],
+            vec![Expr::value("secret-a"), Expr::value("secret-b")],
+        ] {
+            let error = eval_value(&Expr::function(ExprFunction::Identity, args), &row)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("IDENTITY expects exactly one argument"));
+            assert!(!error.contains("secret"));
+        }
+    }
 
     #[test]
     fn both_memory_evaluators_use_unchanged_typed_like_patterns() {

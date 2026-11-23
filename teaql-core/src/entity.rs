@@ -10,11 +10,51 @@ use crate::{
 #[derive(Default)]
 pub struct EntityJsonTraversal {
     path: Vec<(&'static str, usize)>,
+    strict_limits: Option<(usize, usize)>,
+    visited: usize,
+    failure: Option<EntityJsonTraversalError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityJsonTraversalError {
+    Cycle,
+    Limit,
+    DynamicPropertyCollision,
 }
 
 impl EntityJsonTraversal {
+    pub fn for_strict_wire(max_depth: usize, max_nodes: usize) -> Self {
+        Self {
+            strict_limits: Some((max_depth, max_nodes)),
+            ..Self::default()
+        }
+    }
+
+    pub fn failure(&self) -> Option<EntityJsonTraversalError> {
+        self.failure
+    }
+
+    /// Only the strict wire codec normalizes legacy query aliases for presentation.
+    pub fn is_strict_wire(&self) -> bool {
+        self.strict_limits.is_some()
+    }
+
+    /// Never silently choose between an alias and an already-prefixed property.
+    pub fn reject_dynamic_property_collision(&mut self) {
+        self.failure = Some(EntityJsonTraversalError::DynamicPropertyCollision);
+    }
+
     pub fn enter(&mut self, entity: &'static str, address: usize) -> bool {
-        let expand = self.path.len() < 128 && !self.path.contains(&(entity, address));
+        self.visited = self.visited.saturating_add(1);
+        let cycle = self.path.contains(&(entity, address));
+        if let Some((depth, nodes)) = self.strict_limits {
+            if self.path.len() >= depth || self.visited > nodes {
+                self.failure = Some(EntityJsonTraversalError::Limit);
+            } else if cycle {
+                self.failure = Some(EntityJsonTraversalError::Cycle);
+            }
+        }
+        let expand = self.path.len() < 128 && !cycle && self.failure.is_none();
         self.path.push((entity, address));
         expand
     }
@@ -26,6 +66,18 @@ impl EntityJsonTraversal {
 
 pub trait TeaqlEntity {
     const ENTITY_NAME: &'static str;
+
+    /// Derive capability witness. Legacy/hand-written adapters do not attest support.
+    #[doc(hidden)]
+    const CONTEXT_ROOT_METADATA_REVISION: u32 = 0;
+
+    /// An older derive must not silently erase generated inheritance metadata.
+    #[doc(hidden)]
+    const JOINED_INHERITANCE_METADATA_REVISION: u32 = 0;
+
+    /// The derive retains shallow direct-subtype metadata for typed views.
+    #[doc(hidden)]
+    const INHERITANCE_VIEW_METADATA_REVISION: u32 = 0;
 
     fn symbols() -> Option<&'static crate::EntitySymbols> {
         None
@@ -43,6 +95,24 @@ pub trait TeaqlEntity {
 
     fn register_into(store: &mut impl EntityDescriptorStore) {
         store.register_descriptor(Self::entity_descriptor());
+    }
+}
+
+/// Shared, immutable presentation metadata. Generated views keep only one
+/// optional pointer, not a per-row dictionary or a copy of the subtype name.
+#[doc(hidden)]
+#[derive(Debug, PartialEq, Eq)]
+pub struct RuntimeSubtypeIdentity {
+    owner: &'static str,
+    name: &'static str,
+}
+
+impl RuntimeSubtypeIdentity {
+    pub const fn new(owner: &'static str, name: &'static str) -> Self {
+        Self { owner, name }
+    }
+    pub fn for_view(&self, owner: &str) -> Option<&'static str> {
+        (self.owner == owner).then_some(self.name)
     }
 }
 
@@ -70,6 +140,15 @@ impl std::fmt::Display for EntityError {
 impl std::error::Error for EntityError {}
 
 pub trait Entity: TeaqlEntity + Sized {
+    /// Read-only next-subtype identity. A parent query still returns its parent
+    /// Rust type; this hint never selects a checker, repository, or mutation key.
+    fn runtime_type(&self) -> &str {
+        match self.dynamic_property("_type_") {
+            Some(Value::Text(name)) => name,
+            _ => Self::ENTITY_NAME,
+        }
+    }
+
     /// Optional readonly schema: a known type does not make a missing property present.
     fn dynamic_property_type(&self, key: &str) -> Option<crate::DataType> {
         let state = self.loaded_state_snapshot()?;
@@ -139,6 +218,19 @@ pub trait Entity: TeaqlEntity + Sized {
         None
     }
 
+    /// Runtime hydration only. Restores an unchanged view's validated immutable
+    /// geometry without copying row values or creating mutation intent.
+    #[doc(hidden)]
+    fn install_loaded_state_snapshot(
+        &mut self,
+        _state: std::sync::Arc<crate::LoadedSnapshot>,
+    ) -> Result<(), EntityError> {
+        Err(EntityError::new(
+            Self::ENTITY_NAME,
+            "entity lacks a runtime-owned indexed loaded-state carrier",
+        ))
+    }
+
     /// Framework hydration only: it must not create mutation intent or share row payloads.
     #[doc(hidden)]
     fn install_loaded_dynamic_fields(
@@ -176,6 +268,18 @@ pub trait Entity: TeaqlEntity + Sized {
     /// Older/manual carriers retain their existing consuming presentation path.
     #[doc(hidden)]
     fn borrowed_json(&self, _traversal: &mut EntityJsonTraversal) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Lossless presentation snapshot for model-aware codecs. Values retain
+    /// their native kinds, including Decimal scale and non-finite floats, so
+    /// the boundary can validate them before any JSON conversion. Absence is
+    /// omission, not null. This does not clone entities, load data or mutate.
+    #[doc(hidden)]
+    fn borrowed_json_values(
+        &self,
+        _traversal: &mut EntityJsonTraversal,
+    ) -> Option<BTreeMap<String, Value>> {
         None
     }
 
@@ -234,6 +338,11 @@ pub trait Entity: TeaqlEntity + Sized {
 
     /// Returns true if this entity has been marked for deletion.
     fn is_marked_as_delete(&self) -> bool {
+        false
+    }
+
+    /// A pending recovery is persisted only through audited graph save.
+    fn is_marked_as_recover(&self) -> bool {
         false
     }
 

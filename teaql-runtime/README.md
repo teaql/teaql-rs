@@ -6,6 +6,24 @@ Minimal runtime repository and graph persistence layer for TeaQL Rust.
 assembly, behaviors, checkers, events, graph planning, and in-memory execution.
 Database execution is supplied by provider crates.
 
+## Fallible in-memory query execution
+
+The approved source candidate makes `InMemoryQueryEngine::execute` return
+`Result<QueryResult, InMemoryQueryError>`. Direct callers must propagate or
+handle that result; the Linux provider retains the structured error as its
+source. Do not replace a failed query with an empty result or a null SUM.
+
+SUM retains integer and Decimal domains instead of routing exact values through
+`f64`. Empty/all-null SUM remains null; a genuine cancelling sum is numeric zero.
+Overflow, non-numeric inputs, non-finite floats, incompatible floating/exact
+domains, and unrepresentable Decimal precision are explicit errors. Diagnostics
+identify the field, alias and error code without retaining input values.
+
+This is a local source adoption, not a public version or installed-package
+acceptance claim. Its implementation and tests are unchanged from qualified
+candidate `894672f10babbd8c347514f4feb926a42fe6e75f`; private-package verification
+remains a separate gate.
+
 ## What It Provides
 
 - `UserContext` for metadata, typed resources, request locals, and runtime options
@@ -19,6 +37,55 @@ Database execution is supplied by provider crates.
 - typed entity graph extraction
 - SQL debug logging options on `UserContext`
 - context-bound `tqr1` entity references and `tqd1` document snapshots
+
+## Standard OpenTelemetry Module
+
+The local source candidate has an optional `standard-telemetry` feature. Enable
+that feature on the existing `teaql-runtime` dependency, keeping its configured
+version or local path, then set:
+
+```bash
+export TEAQL_TELEMETRY_ENABLED=true
+export TEAQL_TELEMETRY_SERVICE_NAME=my-application
+export TEAQL_TELEMETRY_OTLP_ENDPOINT=http://localhost:4318
+```
+
+Context initialization reports support and these three settings. Without
+enablement it creates no export pipeline; without the optional feature it reports
+that the module is unavailable. Enabled mode records traces, metrics, runtime
+diagnostics and masked expanded SQL without application instrumentation for each
+query or save. Ordinary SQL logging is independent of telemetry enablement.
+
+The module owns its SDK providers and official OTLP protobuf encoders. Its HTTP
+transport has a three-second timeout, no retries or redirects, and a four-MiB
+acknowledgement limit. Remote error text and response bodies never become SDK
+log messages. Trace and log queues each admit at most 2,048 records, counting
+both queued and currently exporting records; batches contain at most 128.
+`teaql.telemetry.export.lost` distinguishes failed export, queue overflow,
+shutdown and SDK-handoff failure;
+`teaql.telemetry.export.rejected` counts receiver-rejected spans, log records or
+metric data points. Partial success, warning and invalid-response diagnostics
+have separate counters. Export failures do not change business results or the
+independent durable audit sink. Shutdown closes only owned resources; existing
+customer SDKs and their configuration are not replaced.
+
+Telemetry completion and SDK handoff are serialized with shutdown, but business
+callbacks run outside those locks. A closed pipeline is not reused for a new
+context. After shutdown, late handoffs remain visible through fixed local
+notices and counters; already-closed providers cannot export another metrics
+snapshot. Repeated loss notices are bounded to one per signal/reason while
+counters retain the exact cumulative totals.
+
+Run the generated graph example from the runtime repository root:
+
+```bash
+cargo run --manifest-path examples/trace-chain/Cargo.toml \
+  --features standard-telemetry --bin standard-telemetry-graph
+```
+
+Local examples and tests qualify this source candidate, including real queue
+pressure and recovery through generated Q/E APIs. Advanced graph/stream
+scenarios, internal-registry consumers and publication remain separate gates.
 
 ## Context-Bound Document Round Trips
 

@@ -5,13 +5,13 @@ use std::time::Instant;
 use opentelemetry::global::BoxedTracer;
 use opentelemetry::logs::{AnyValue, LogRecord, Logger, Severity};
 use opentelemetry::metrics::{Counter, Histogram, Meter};
-use opentelemetry::propagation::Extractor;
+use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
 use opentelemetry::trace::{Span, Status, TraceContextExt, Tracer};
 use opentelemetry::{Context, KeyValue, Value, global};
 
 use crate::{
-    RuntimeAttributeValue, RuntimeOperation, RuntimeTelemetry, RuntimeTelemetryPropagationContext,
-    RuntimeTelemetryScope, runtime_error_category,
+    RuntimeAttributeValue, RuntimeDiagnosticEvent, RuntimeOperation, RuntimeTelemetry,
+    RuntimeTelemetryPropagationContext, RuntimeTelemetryScope, runtime_error_category,
 };
 
 pub struct OpenTelemetryRuntimeTelemetry {
@@ -19,8 +19,10 @@ pub struct OpenTelemetryRuntimeTelemetry {
     duration: Histogram<f64>,
     operations: Counter<u64>,
     log_emitter: Option<RuntimeLogEmitter>,
+    diagnostic_emitter: Option<Arc<dyn Fn(RuntimeDiagnosticEvent) + Send + Sync>>,
     flush: Arc<dyn Fn() + Send + Sync>,
     shutdown: Arc<dyn Fn() + Send + Sync>,
+    propagator: Option<Arc<dyn TextMapPropagator + Send + Sync>>,
 }
 
 type RuntimeLogEmitter = Arc<dyn Fn(&str, &str, &str, f64, Option<&str>) + Send + Sync>;
@@ -40,9 +42,19 @@ impl OpenTelemetryRuntimeTelemetry {
                 .with_unit("{operation}")
                 .build(),
             log_emitter: None,
+            diagnostic_emitter: None,
             flush: Arc::new(|| {}),
             shutdown: Arc::new(|| {}),
+            propagator: None,
         }
+    }
+
+    pub fn with_propagator(
+        mut self,
+        propagator: impl TextMapPropagator + Send + Sync + 'static,
+    ) -> Self {
+        self.propagator = Some(Arc::new(propagator));
+        self
     }
 
     pub fn with_lifecycle<F, S>(mut self, flush: F, shutdown: S) -> Self
@@ -60,9 +72,11 @@ impl OpenTelemetryRuntimeTelemetry {
         L: Logger + Send + Sync + 'static,
         L::LogRecord: Send,
     {
+        let logger = Arc::new(logger);
+        let operation_logger = logger.clone();
         self.log_emitter = Some(Arc::new(
             move |family, name, outcome, duration_ms, error_category| {
-                let mut record = logger.create_log_record();
+                let mut record = operation_logger.create_log_record();
                 record.set_severity_number(Severity::Info);
                 record.set_severity_text("INFO");
                 record.set_body("TeaQL runtime operation completed".into());
@@ -79,14 +93,58 @@ impl OpenTelemetryRuntimeTelemetry {
                     record
                         .add_attribute("teaql.error.category", AnyValue::from(category.to_owned()));
                 }
-                logger.emit(record);
+                operation_logger.emit(record);
             },
         ));
+        self.diagnostic_emitter = Some(Arc::new(move |event| {
+            use opentelemetry::trace::{SpanId, TraceFlags, TraceId};
+            let (Ok(trace_id), Ok(span_id)) = (
+                TraceId::from_hex(&event.correlation.trace_id),
+                SpanId::from_hex(&event.correlation.span_id),
+            ) else {
+                return;
+            };
+            if trace_id == TraceId::INVALID || span_id == SpanId::INVALID {
+                return;
+            }
+            let mut record = logger.create_log_record();
+            record.set_severity_number(Severity::Info);
+            record.set_severity_text("INFO");
+            record.set_body("TeaQL SQL execution".into());
+            record.set_trace_context(trace_id, span_id, Some(TraceFlags::SAMPLED));
+            for (key, value) in event.attributes {
+                let value = match value {
+                    RuntimeAttributeValue::String(v) => AnyValue::from(v),
+                    RuntimeAttributeValue::Integer(v) => AnyValue::from(v),
+                    RuntimeAttributeValue::Float(v) => AnyValue::from(v),
+                    RuntimeAttributeValue::Boolean(v) => AnyValue::from(v),
+                };
+                record.add_attribute(key, value);
+            }
+            logger.emit(record);
+        }));
         self
     }
 }
 
 impl RuntimeTelemetry for OpenTelemetryRuntimeTelemetry {
+    fn inject_context(&self, carrier: &mut BTreeMap<String, String>) {
+        if let Some(propagator) = &self.propagator {
+            propagator.inject_context(&Context::current(), &mut MapCarrier(carrier));
+        } else {
+            global::get_text_map_propagator(|propagator| {
+                propagator.inject_context(&Context::current(), &mut MapCarrier(carrier));
+            });
+        }
+    }
+    fn records_sql_diagnostics(&self) -> bool {
+        self.diagnostic_emitter.is_some()
+    }
+    fn record_diagnostic(&self, event: RuntimeDiagnosticEvent) {
+        if let Some(emitter) = &self.diagnostic_emitter {
+            emitter(event);
+        }
+    }
     fn start(&self, operation: RuntimeOperation) -> Box<dyn RuntimeTelemetryScope> {
         let mut span = self.tracer.start(format!("teaql.{}", operation.family));
         for (key, value) in &operation.attributes {
@@ -108,9 +166,13 @@ impl RuntimeTelemetry for OpenTelemetryRuntimeTelemetry {
         &self,
         carrier: &BTreeMap<String, String>,
     ) -> Box<dyn RuntimeTelemetryPropagationContext> {
-        let context = global::get_text_map_propagator(|propagator| {
+        let context = if let Some(propagator) = &self.propagator {
             propagator.extract(&CaseInsensitiveCarrier(carrier))
-        });
+        } else {
+            global::get_text_map_propagator(|propagator| {
+                propagator.extract(&CaseInsensitiveCarrier(carrier))
+            })
+        };
         Box::new(OpenTelemetryPropagationContext { context })
     }
 
@@ -124,6 +186,14 @@ impl RuntimeTelemetry for OpenTelemetryRuntimeTelemetry {
 }
 
 struct CaseInsensitiveCarrier<'a>(&'a BTreeMap<String, String>);
+
+struct MapCarrier<'a>(&'a mut BTreeMap<String, String>);
+
+impl Injector for MapCarrier<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+}
 
 impl Extractor for CaseInsensitiveCarrier<'_> {
     fn get(&self, key: &str) -> Option<&str> {
@@ -197,6 +267,18 @@ impl OpenTelemetryScope {
 }
 
 impl RuntimeTelemetryScope for OpenTelemetryScope {
+    fn correlation(
+        &self,
+    ) -> Option<teaql_data_service::statement_telemetry::SqlExecutionCorrelation> {
+        let span = self.context.span();
+        let context = span.span_context();
+        context.is_valid().then(|| {
+            teaql_data_service::statement_telemetry::SqlExecutionCorrelation {
+                trace_id: context.trace_id().to_string(),
+                span_id: context.span_id().to_string(),
+            }
+        })
+    }
     fn with_context(&self, callback: &mut dyn FnMut()) {
         let _guard = self.context.clone().attach();
         callback();
@@ -205,7 +287,7 @@ impl RuntimeTelemetryScope for OpenTelemetryScope {
     fn success(&mut self, attributes: BTreeMap<String, RuntimeAttributeValue>) {
         self.finish("success", None, |span| {
             for (key, value) in attributes {
-                if key == "teaql.result.cardinality" || key == "teaql.cache.result" {
+                if allowed_completion_attribute(&key) {
                     span.set_attribute(KeyValue::new(key, otel_value(&value)));
                 }
             }
@@ -214,13 +296,37 @@ impl RuntimeTelemetryScope for OpenTelemetryScope {
     }
 
     fn failure(&mut self, error_type: &str) {
+        self.failure_with_attributes(error_type, BTreeMap::new());
+    }
+
+    fn failure_with_attributes(
+        &mut self,
+        error_type: &str,
+        attributes: BTreeMap<String, RuntimeAttributeValue>,
+    ) {
         let category = runtime_error_category(error_type);
         self.finish("failure", Some(category), |span| {
+            for (key, value) in attributes {
+                if allowed_completion_attribute(&key) {
+                    span.set_attribute(KeyValue::new(key, otel_value(&value)));
+                }
+            }
             span.set_attribute(KeyValue::new("teaql.error.type", error_type.to_owned()));
             span.set_attribute(KeyValue::new("teaql.error.category", category));
             span.set_status(Status::error("TeaQL operation failed"));
         });
     }
+}
+
+fn allowed_completion_attribute(key: &str) -> bool {
+    matches!(
+        key,
+        "teaql.result.cardinality"
+            | "teaql.cache.result"
+            | "teaql.http.outcome"
+            | "teaql.http.attempts"
+            | "teaql.http.elapsed_ms"
+    )
 }
 
 fn otel_value(value: &RuntimeAttributeValue) -> Value {
@@ -240,9 +346,194 @@ mod tests {
 
     use opentelemetry::global;
     use opentelemetry::logs::LoggerProvider;
+    use opentelemetry::trace::TracerProvider;
     use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLoggerProvider};
     use opentelemetry_sdk::propagation::TraceContextPropagator;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+    #[test]
+    fn outbound_carrier_uses_the_active_runtime_span() {
+        let exporter = InMemorySpanExporter::default();
+        let traces = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let telemetry: Arc<dyn RuntimeTelemetry> = Arc::new(
+            OpenTelemetryRuntimeTelemetry::new(
+                opentelemetry::global::BoxedTracer::new(Box::new(traces.tracer("http"))),
+                global::meter("http"),
+            )
+            .with_propagator(TraceContextPropagator::new()),
+        );
+        let call = crate::HttpCall::get(
+            "orders",
+            "orders/1?token=PRIVATE_QUERY_CANARY",
+            "check inventory",
+            "render order",
+        )
+        .unwrap()
+        .with_parent_trace_chain(vec![
+            teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::Purpose,
+                "Order",
+                None,
+                "render order",
+            ),
+            teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::Comment,
+                "Order",
+                None,
+                "load order graph",
+            ),
+        ])
+        .unwrap();
+        let scope = start_runtime_operation(
+            &telemetry,
+            RuntimeOperation::new("http", "orders")
+                .attribute("teaql.http.trace_chain", call.business_trace_projection()),
+        );
+        let mut carrier = BTreeMap::new();
+        scope.with_context(&mut || telemetry.inject_context(&mut carrier));
+        scope.success(BTreeMap::from([
+            (
+                "teaql.http.outcome".to_owned(),
+                RuntimeAttributeValue::String("success".to_owned()),
+            ),
+            (
+                "teaql.http.attempts".to_owned(),
+                RuntimeAttributeValue::Integer(1),
+            ),
+        ]));
+        let parent = carrier
+            .get("traceparent")
+            .expect("active runtime span should propagate");
+        assert!(parent.starts_with("00-"));
+        assert_eq!(parent.len(), 55);
+        let spans = exporter.get_finished_spans().unwrap();
+        let trace = spans[0]
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == "teaql.http.trace_chain")
+            .unwrap()
+            .value
+            .to_string();
+        assert!(trace.contains("load order graph"));
+        assert!(!trace.contains("PRIVATE_QUERY_CANARY"));
+        assert!(
+            spans[0]
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "teaql.http.outcome"
+                    && attribute.value.to_string().contains("success"))
+        );
+        let failed = start_runtime_operation(&telemetry, RuntimeOperation::new("http", "orders"));
+        failed.failure_with_attributes(
+            "Timeout",
+            BTreeMap::from([
+                (
+                    "teaql.http.outcome".to_owned(),
+                    RuntimeAttributeValue::String("TIMEOUT".to_owned()),
+                ),
+                (
+                    "teaql.http.attempts".to_owned(),
+                    RuntimeAttributeValue::Integer(1),
+                ),
+            ]),
+        );
+        let spans = exporter.get_finished_spans().unwrap();
+        assert!(
+            spans[1]
+                .attributes
+                .iter()
+                .any(|attribute| attribute.key.as_str() == "teaql.http.outcome"
+                    && attribute.value.to_string().contains("TIMEOUT"))
+        );
+        traces.shutdown().unwrap();
+    }
+
+    #[cfg(feature = "standard-telemetry")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn standard_owned_shutdown_preserves_customer_global_sdk() {
+        let _global_otel_guard = GLOBAL_OTEL_TEST_LOCK.lock().await;
+        let exporter = InMemorySpanExporter::default();
+        let customer = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        global::set_tracer_provider(customer.clone());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        drop(listener);
+        let owned: Arc<dyn RuntimeTelemetry> = tokio::task::spawn_blocking(move || {
+            crate::telemetry_standard::build("teaql-owned-coexistence", &endpoint)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let started = std::time::Instant::now();
+        let scope =
+            start_runtime_operation(&owned, RuntimeOperation::new("query", "owned.request"));
+        scope.success(BTreeMap::new());
+        owned.flush();
+        owned.shutdown();
+        owned.shutdown();
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+        global::tracer("customer")
+            .start("customer-after-owned-shutdown")
+            .end();
+        customer.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].name, "customer-after-owned-shutdown");
+        customer.shutdown().unwrap();
+    }
+
+    #[test]
+    fn sql_diagnostics_use_carried_identity_not_an_unrelated_current_span() {
+        let spans = InMemorySpanExporter::default();
+        let traces = SdkTracerProvider::builder()
+            .with_simple_exporter(spans.clone())
+            .build();
+        let logs = InMemoryLogExporter::default();
+        let logger = SdkLoggerProvider::builder()
+            .with_simple_exporter(logs.clone())
+            .build();
+        let telemetry: Arc<dyn RuntimeTelemetry> = Arc::new(
+            OpenTelemetryRuntimeTelemetry::new(
+                opentelemetry::global::BoxedTracer::new(Box::new(traces.tracer("local"))),
+                global::meter("local"),
+            )
+            .with_logger(logger.logger("local")),
+        );
+        let original = start_runtime_operation(
+            &telemetry,
+            RuntimeOperation::new("provider", "sqlite.statement"),
+        );
+        let correlation = original.correlation().unwrap();
+        original.success(BTreeMap::new());
+        let unrelated =
+            start_runtime_operation(&telemetry, RuntimeOperation::new("query", "other.request"));
+        let other = unrelated.correlation().unwrap();
+        unrelated.with_context(&mut || {
+            telemetry.record_diagnostic(crate::RuntimeDiagnosticEvent {
+                correlation: correlation.clone(),
+                attributes: BTreeMap::from([("teaql.sql.log_mode".into(), "masked".into())]),
+            })
+        });
+        unrelated.success(BTreeMap::new());
+        let emitted = logs.get_emitted_logs().unwrap();
+        let event = emitted
+            .iter()
+            .find(|log| {
+                log.record.body()
+                    == Some(&opentelemetry::logs::AnyValue::from("TeaQL SQL execution"))
+            })
+            .unwrap();
+        let context = event.record.trace_context().unwrap();
+        assert_eq!(context.trace_id.to_string(), correlation.trace_id);
+        assert_eq!(context.span_id.to_string(), correlation.span_id);
+        assert_ne!(context.span_id.to_string(), other.span_id);
+        traces.shutdown().unwrap();
+        logger.shutdown().unwrap();
+    }
 
     use super::*;
     use crate::start_runtime_operation;

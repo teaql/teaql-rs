@@ -42,6 +42,22 @@ where
     M: MetadataStore,
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Sync,
 {
+    async fn mutate_observed(
+        &self,
+        request: MutationRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'_>>,
+    ) -> Result<teaql_data_service::MutationResult, E::Error> {
+        let future = self.executor.mutate_observed(request, observer);
+        match self.metadata.sql_statement_telemetry() {
+            Some(factory) => {
+                teaql_data_service::statement_telemetry::with_sql_statement_telemetry(
+                    factory, future,
+                )
+                .await
+            }
+            None => future.await,
+        }
+    }
     pub(crate) fn new(metadata: &'a M, executor: &'a E) -> Self {
         Self {
             metadata,
@@ -179,7 +195,6 @@ where
             self.required_mutation_intent()?,
         );
         let res = self
-            .executor
             .mutate_observed(
                 request.with_diagnostic_redactions(self.mutation_privacy.clone()),
                 self.metadata.mutation_diagnostic_observer(),
@@ -194,6 +209,8 @@ where
         &self,
         command: &UpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        crate::mutation_version::updated(&command.entity, command.expected_version)
+            .map_err(DataServiceError::Runtime)?;
         let mut sql_command = command.clone();
         sql_command.trace_chain = sql_statement_trace(
             sql_command.trace_chain,
@@ -205,7 +222,6 @@ where
             self.required_mutation_intent()?,
         );
         let res = self
-            .executor
             .mutate_observed(
                 request.with_diagnostic_redactions(self.mutation_privacy.clone()),
                 self.metadata.mutation_diagnostic_observer(),
@@ -231,6 +247,10 @@ where
         &self,
         command: &DeleteCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        if command.soft_delete {
+            crate::mutation_version::deleted(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
+        }
         let mut sql_command = command.clone();
         sql_command.trace_chain = sql_statement_trace(
             sql_command.trace_chain,
@@ -242,7 +262,6 @@ where
             self.required_mutation_intent()?,
         );
         let res = self
-            .executor
             .mutate_observed(
                 request.with_diagnostic_redactions(self.mutation_privacy.clone()),
                 self.metadata.mutation_diagnostic_observer(),
@@ -285,7 +304,6 @@ where
                     .and_then(teaql_core::Value::try_u64),
             );
             let res = self
-                .executor
                 .mutate_observed(
                     MutationRequest::with_intent(
                         teaql_data_service::MutationCommand::Insert(insert_cmd),
@@ -306,6 +324,10 @@ where
         &self,
         command: &teaql_core::BatchUpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        for version in &command.batch_expected_versions {
+            crate::mutation_version::updated(&command.entity, *version)
+                .map_err(DataServiceError::Runtime)?;
+        }
         let mut affected = 0;
         for (i, val) in command.batch_values.iter().enumerate() {
             let mut update_cmd =
@@ -334,7 +356,6 @@ where
             );
             let expected_version = update_cmd.expected_version;
             let res = self
-                .executor
                 .mutate_observed(
                     MutationRequest::with_intent(
                         teaql_data_service::MutationCommand::Update(update_cmd),
@@ -375,6 +396,8 @@ where
         &self,
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        crate::mutation_version::recovered(&command.entity, command.expected_version)
+            .map_err(DataServiceError::Runtime)?;
         let mut sql_command = command.clone();
         sql_command.trace_chain = sql_statement_trace(
             sql_command.trace_chain,
@@ -386,7 +409,6 @@ where
             self.required_mutation_intent()?,
         );
         let res = self
-            .executor
             .mutate_observed(
                 request.with_diagnostic_redactions(self.mutation_privacy.clone()),
                 self.metadata.mutation_diagnostic_observer(),

@@ -30,6 +30,13 @@ impl SqlExecutionOutcome {
 /// removed by the runtime before retaining or delivering the safe projection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SqlLogContext {
+    /// Exact identity captured before physical execution, never inferred at log completion.
+    #[doc(hidden)]
+    pub telemetry: Option<std::sync::Arc<SqlTelemetryState>>,
+    /// Business Request ancestry, independent of the executor's physical route.
+    pub request_trace_chain: Vec<teaql_core::TraceNode>,
+    /// Real participating requests in one statement; absent for a single chain.
+    pub request_tree: Option<std::sync::Arc<[teaql_core::QueryRequestTraceNode]>>,
     /// Opaque runtime-only state for safe reprojection; never wire data.
     #[doc(hidden)]
     pub projection_state: SqlProjectionState,
@@ -42,6 +49,14 @@ pub struct SqlLogContext {
     pub masked_parameters: Vec<bool>,
     pub mode: Option<String>,
     pub omission_reason: Option<String>,
+}
+
+/// Rare telemetry payload stays behind one pointer to protect ordinary async frames.
+#[doc(hidden)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SqlTelemetryState {
+    pub correlation: Option<crate::statement_telemetry::SqlExecutionCorrelation>,
+    pub mutation_lineage: Vec<teaql_core::TraceNode>,
 }
 
 /// A runtime owns the private concrete type; provider/workspace code cannot
@@ -98,22 +113,50 @@ impl SqlIntentRedactions {
         field: &str,
     ) -> SqlParameterLogPolicy {
         use SqlParameterLogPolicy as Policy;
-        let Some(property) = entity.property_by_name(field) else {
-            return Policy::Unknown;
-        };
-        if is_credential_log_name(&property.name) || is_credential_log_name(&property.column_name) {
-            Policy::Credential
-        } else if !entity.audit_mask_fields_declared {
-            Policy::Unknown
-        } else if entity
-            .audit_mask_fields
-            .iter()
-            .any(|name| name == &property.name)
-        {
-            Policy::Masked
-        } else {
-            Policy::Plain
+        fn local(entity: &teaql_core::EntityDescriptor, field: &str) -> Policy {
+            let Some(property) = entity.property_by_name(field) else {
+                return Policy::Unknown;
+            };
+            if is_credential_log_name(&property.name)
+                || is_credential_log_name(&property.column_name)
+            {
+                Policy::Credential
+            } else if !entity.audit_mask_fields_declared {
+                Policy::Unknown
+            } else if entity
+                .audit_mask_fields
+                .iter()
+                .any(|name| name == &property.name)
+            {
+                Policy::Masked
+            } else {
+                Policy::Plain
+            }
         }
+        let mut policy = local(entity, field);
+        let mut parent = entity.joined_parent.as_deref();
+        let mut depth = 0;
+        while let Some(entity) = parent {
+            if entity.property_by_name(field).is_none() {
+                break;
+            }
+            if depth == 64 {
+                return if policy == Policy::Credential {
+                    policy
+                } else {
+                    Policy::Unknown
+                };
+            }
+            policy = match (policy, local(entity, field)) {
+                (Policy::Credential, _) | (_, Policy::Credential) => Policy::Credential,
+                (Policy::Unknown, _) | (_, Policy::Unknown) => Policy::Unknown,
+                (Policy::Masked, _) | (_, Policy::Masked) => Policy::Masked,
+                _ => Policy::Plain,
+            };
+            parent = entity.joined_parent.as_deref();
+            depth += 1;
+        }
+        policy
     }
 
     /// Conservative provider fallback; not a wire-level permission or a retained
@@ -215,7 +258,11 @@ impl SqlIntentRedactions {
     }
 
     fn capture_forced_text(&mut self, text: String) {
-        if !self.0.iter().any(|(existing, forced)| existing == &text && *forced) {
+        if !self
+            .0
+            .iter()
+            .any(|(existing, forced)| existing == &text && *forced)
+        {
             self.0.push((text, true));
         }
     }
@@ -293,6 +340,25 @@ impl SqlIntentRedactions {
                         continue;
                     }
                     Value::Text(text) => text.clone(),
+                    Value::Binary(bytes) => {
+                        if let Ok(text) = std::str::from_utf8(bytes)
+                            && !text.is_empty()
+                        {
+                            strings.push(text.to_owned());
+                        }
+                        let hex = bytes
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>();
+                        if !hex.is_empty() {
+                            strings.push(hex);
+                        }
+                        strings.push(format!("{bytes:?}"));
+                        item.to_json_value()
+                            .as_str()
+                            .expect("base64 string")
+                            .to_owned()
+                    }
                     Value::Bool(value) => value.to_string(),
                     Value::I64(value) => value.to_string(),
                     Value::U64(value) => value.to_string(),
@@ -379,7 +445,13 @@ pub fn is_credential_log_name(name: &str) -> bool {
 }
 
 fn is_compound_redaction_value(value: &teaql_core::Value) -> bool {
-    matches!(value, teaql_core::Value::Object(_) | teaql_core::Value::List(_) | teaql_core::Value::Json(_))
+    matches!(
+        value,
+        teaql_core::Value::Object(_)
+            | teaql_core::Value::List(_)
+            | teaql_core::Value::Json(_)
+            | teaql_core::Value::Binary(_)
+    )
 }
 
 /// Scalar formatting matches the compound scanner, without traversal buffers.
@@ -396,7 +468,7 @@ fn scalar_redaction_text(value: &teaql_core::Value) -> Option<String> {
         Value::Decimal(value) => value.to_string(),
         Value::Date(value) => value.to_string(),
         Value::Timestamp(value) => value.as_millis().to_string(),
-        Value::Object(_) | Value::List(_) | Value::Json(_) => return None,
+        Value::Object(_) | Value::List(_) | Value::Json(_) | Value::Binary(_) => return None,
     };
     Some(text)
 }

@@ -3,6 +3,25 @@ name = "trace-chain-example"
 version = "0.1.0"
 edition = "2024"
 publish = false
+default-run = "trace-chain-example"
+
+[features]
+standard-telemetry = ["teaql-runtime/standard-telemetry"]
+
+[[bin]]
+name = "standard-telemetry"
+path = "src/bin/standard_telemetry.rs"
+required-features = ["standard-telemetry"]
+
+[[bin]]
+name = "standard-telemetry-stream"
+path = "src/bin/standard_telemetry_stream.rs"
+required-features = ["standard-telemetry"]
+
+[[bin]]
+name = "standard-telemetry-graph"
+path = "src/bin/standard_telemetry_graph.rs"
+required-features = ["standard-telemetry"]
 
 [dependencies]
 trace-chain-service-core = { path = "rust-lib-core/lib" }

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 pub use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
@@ -17,6 +17,8 @@ pub enum DataType {
     Json,
     Date,
     Timestamp,
+    /// Opaque bytes, distinct from text, JSON and a list of integers.
+    Binary,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -28,12 +30,20 @@ pub enum Value {
     F64(f64),
     Decimal(Decimal),
     Text(String),
+    Binary(Vec<u8>),
     Json(serde_json::Value),
     Date(NaiveDate),
     Timestamp(crate::time::Timestamp),
     Object(BTreeMap<String, Value>),
     List(Vec<Value>),
     TypedNull(DataType),
+}
+
+/// Nullable generated setters preserve unknown values as NULL, never as zero.
+impl<T: Into<Value>> From<Option<T>> for Value {
+    fn from(value: Option<T>) -> Self {
+        value.map(Into::into).unwrap_or(Self::Null)
+    }
 }
 
 impl From<&str> for Value {
@@ -120,6 +130,14 @@ impl From<NaiveDate> for Value {
     }
 }
 
+// Keep the domain boundary typed while preserving the existing local-time
+// SQL/wire representation. A local time has no date, UTC offset or epoch.
+impl From<NaiveTime> for Value {
+    fn from(value: NaiveTime) -> Self {
+        Self::Text(value.to_string())
+    }
+}
+
 impl From<crate::time::Timestamp> for Value {
     fn from(value: crate::time::Timestamp) -> Self {
         Self::Timestamp(value)
@@ -133,6 +151,23 @@ impl From<DateTime<Utc>> for Value {
 }
 
 impl Value {
+    pub fn try_binary(&self) -> Option<&[u8]> {
+        match self {
+            Self::Binary(bytes) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// Canonical base64 matches Java's byte[] JSON representation. A text
+    /// value is never implicitly decoded; callers need declared binary metadata.
+    pub fn binary_from_base64(text: &str) -> Option<Self> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .ok()
+            .map(Self::Binary)
+    }
+
     pub fn object(values: std::collections::BTreeMap<String, Value>) -> Self {
         Self::Object(values)
     }
@@ -141,16 +176,21 @@ impl Value {
         match self {
             Self::I64(value) => Some(*value),
             Self::U64(value) => i64::try_from(*value).ok(),
-            Self::Decimal(value) => value.to_i64(),
+            Self::Decimal(value) if value.fract().is_zero() => value.to_i64(),
             _ => None,
         }
+    }
+
+    /// Exact modeled Integer conversion: never rounds, truncates or wraps.
+    pub fn try_i32(&self) -> Option<i32> {
+        self.try_i64().and_then(|value| i32::try_from(value).ok())
     }
 
     pub fn try_u64(&self) -> Option<u64> {
         match self {
             Self::U64(value) => Some(*value),
             Self::I64(value) => u64::try_from(*value).ok(),
-            Self::Decimal(value) => value.to_u64(),
+            Self::Decimal(value) if value.fract().is_zero() => value.to_u64(),
             _ => None,
         }
     }
@@ -214,6 +254,13 @@ impl Value {
         }
     }
 
+    pub fn try_time(&self) -> Option<NaiveTime> {
+        match self {
+            Self::Text(value) => NaiveTime::parse_from_str(value, "%H:%M:%S%.f").ok(),
+            _ => None,
+        }
+    }
+
     pub fn try_timestamp(&self) -> Option<crate::time::Timestamp> {
         match self {
             Self::Timestamp(value) => Some(*value),
@@ -253,6 +300,10 @@ impl Value {
                 .unwrap_or(serde_json::Value::Null),
             Self::Decimal(value) => serde_json::Value::String(value.to_string()),
             Self::Text(value) => serde_json::Value::String(value.clone()),
+            Self::Binary(value) => {
+                use base64::Engine;
+                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(value))
+            }
             Self::Json(value) => value.clone(),
             Self::Date(value) => serde_json::Value::String(value.to_string()),
             Self::Timestamp(value) => serde_json::Value::from(value.0),
@@ -268,6 +319,31 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer32_exact_conversion_preserves_endpoints_and_rejects_loss() {
+        for number in [i32::MIN, 0, i32::MAX] {
+            assert_eq!(Value::I64(i64::from(number)).try_i32(), Some(number));
+            assert_eq!(
+                Value::Decimal(Decimal::from(number)).try_i32(),
+                Some(number)
+            );
+        }
+        assert_eq!(Value::U64(i32::MAX as u64).try_i32(), Some(i32::MAX));
+        assert_eq!(Value::Decimal(Decimal::new(42000, 3)).try_i32(), Some(42));
+        for invalid in [
+            Value::I64(i64::from(i32::MIN) - 1),
+            Value::I64(i64::from(i32::MAX) + 1),
+            Value::U64(u64::MAX),
+            Value::Decimal(Decimal::new(1, 1)),
+            Value::F64(42.0),
+            Value::Text("42".to_owned()),
+            Value::Bool(true),
+            Value::Null,
+        ] {
+            assert_eq!(invalid.try_i32(), None);
+        }
+    }
 
     #[test]
     fn value_try_i64_accepts_representable_numeric_variants() {
@@ -301,6 +377,47 @@ mod tests {
         assert_eq!(Value::F64(42.0).try_u64(), None);
         assert_eq!(Value::Text("42".to_owned()).try_u64(), None);
         assert_eq!(Value::Null.try_u64(), None);
+    }
+
+    #[test]
+    fn integral_exactness_fractional_decimals_never_truncate_or_cross_a_boundary() {
+        for text in [
+            "0.1",
+            "-0.1",
+            "1.9",
+            "-1.9",
+            "0.0000000000000000000000000001",
+            "9223372036854775807.1",
+            "-9223372036854775808.1",
+            "18446744073709551615.1",
+        ] {
+            let value = Value::Decimal(Decimal::from_str(text).unwrap());
+            assert_eq!(value.try_i64(), None, "signed conversion truncated {text}");
+            assert_eq!(
+                value.try_u64(),
+                None,
+                "unsigned conversion truncated {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn integral_exactness_integral_decimals_preserve_scale_zero_and_full_width() {
+        for (text, expected) in [
+            ("0.000", 0),
+            ("-0.000", 0),
+            ("42.000", 42),
+            ("-42.000", -42),
+            ("9223372036854775807.0", i64::MAX),
+            ("-9223372036854775808.0", i64::MIN),
+        ] {
+            let value = Value::Decimal(Decimal::from_str(text).unwrap());
+            assert_eq!(value.try_i64(), Some(expected));
+            assert_eq!(value.try_u64(), u64::try_from(expected).ok());
+        }
+        let value = Value::Decimal(Decimal::from_str("18446744073709551615.0").unwrap());
+        assert_eq!(value.try_i64(), None);
+        assert_eq!(value.try_u64(), Some(u64::MAX));
     }
 
     #[test]

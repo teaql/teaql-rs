@@ -130,15 +130,26 @@ where
     }
 
     /// Execute a provider-neutral query on the transaction-owned connection.
-    pub async fn query(&self, request: QueryRequest) -> Result<QueryResult, RuntimeError>
+    pub async fn query(&self, mut request: QueryRequest) -> Result<QueryResult, RuntimeError>
     where
         E::Tx<'context>: QueryExecutor,
     {
-        let observer = self.context.sql_log_options().select.then(|| {
+        if self.context.records_sql_diagnostics() {
+            request.capture_execution_metadata = true;
+        }
+        let observer = (self.context.sql_log_options().select
+            || self.context.records_sql_diagnostics())
+        .then(|| {
             std::sync::Arc::new(|metadata| self.context.record_metadata_log(&metadata))
                 as teaql_data_service::ExecutionObserver<'_>
         });
-        let result = QueryExecutor::query_observed(self.transaction(), request, observer)
+        let result = self
+            .context
+            .observe_sql_statements(QueryExecutor::query_observed(
+                self.transaction(),
+                request,
+                observer,
+            ))
             .await
             .map_err(|error| RuntimeError::Transaction(error.to_string()))?;
         self.context.record_metadata_log(&result.metadata);
@@ -150,11 +161,19 @@ where
     where
         E::Tx<'context>: MutationExecutor,
     {
-        let observer = self.context.sql_log_options().mutation.then(|| {
+        let observer = (self.context.sql_log_options().mutation
+            || self.context.records_sql_diagnostics())
+        .then(|| {
             std::sync::Arc::new(|metadata| self.context.record_metadata_log(&metadata))
                 as teaql_data_service::ExecutionObserver<'_>
         });
-        let result = MutationExecutor::mutate_observed(self.transaction(), request, observer)
+        let result = self
+            .context
+            .observe_sql_statements(MutationExecutor::mutate_observed(
+                self.transaction(),
+                request,
+                observer,
+            ))
             .await
             .map_err(|error| RuntimeError::Transaction(error.to_string()))?;
         self.context.record_metadata_log(&result.metadata);
@@ -171,11 +190,14 @@ where
         T: crate::LedgerEntity + Send + 'static,
         E::Tx<'context>: QueryExecutor + MutationExecutor + Send + Sync,
     {
-        let (entity, ledger) = crate::save_audited_ledger_entity_with_executor(
+        // Bound this composition point: the generic graph/SQL save future is
+        // large in debug builds. Keeping it inline multiplies the caller's
+        // transaction and task-local frames and can overflow a default stack.
+        let (entity, ledger) = Box::pin(crate::save_audited_ledger_entity_with_executor(
             audited,
             self.context,
             self.transaction(),
-        )
+        ))
         .await?;
         if let Some(ledger) = ledger {
             let mut ledgers = self

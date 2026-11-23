@@ -1,20 +1,26 @@
 extern crate self as teaql_core;
 
+pub mod aggregation_plan;
 pub mod business_id;
 pub mod dynamic_fields;
 pub mod dynamic_properties;
 pub mod dynamic_search;
 mod entity;
 mod entity_graph;
+pub mod eval_location;
 mod expr;
 mod list;
 mod load_state;
 mod meta;
 mod mutation;
+pub mod mutation_version;
 mod naming;
+pub mod object_location;
+pub mod object_storage;
 mod query;
 pub mod request;
 mod request_intent;
+mod request_tree;
 mod safe_expression;
 pub mod serde_utils;
 pub mod time;
@@ -25,13 +31,17 @@ mod xls;
 
 pub use entity::{
     Audited, BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError,
-    EntityJsonTraversal, IdentifiableEntity, TeaqlBoxedRelations, TeaqlEntity, VersionedEntity,
+    EntityJsonTraversal, EntityJsonTraversalError, IdentifiableEntity, RuntimeSubtypeIdentity,
+    TeaqlBoxedRelations, TeaqlEntity, VersionedEntity,
 };
 pub use entity_graph::{EntityGraph, EntityGraphBuilder, EntityGraphNode, EntityGraphOperation};
 pub use expr::{BinaryOp, Expr, ExprFunction};
 pub use list::SmartList;
 pub use load_state::{FieldLayout, LoadedSnapshot};
-pub use meta::{EntityDescriptor, EntityDescriptorData, PropertyDescriptor, RelationDescriptor};
+pub use meta::{
+    EntityDescriptor, EntityDescriptorData, InheritanceChild, PropertyDescriptor,
+    RelationDescriptor,
+};
 pub use mutation::{
     BatchInsertCommand, BatchUpdateCommand, DeleteCommand, EntitySnapshot, GeneratedValues,
     InsertCommand, MutationKind, MutationValues, RecoverCommand, UpdateCommand,
@@ -47,6 +57,9 @@ pub use query::{
     record_to_json_value,
 };
 pub use request_intent::{MutationIntent, QueryIntent, RequestIntentError, RequestKind};
+pub use request_tree::{
+    QueryOperation, QueryOperationKind, QueryRequestScope, QueryRequestTraceNode,
+};
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
 #[doc(hidden)]
 pub use serde_json;
@@ -225,12 +238,12 @@ mod tests {
                 ("unsigned".to_owned(), Value::U64(1)),
                 ("amount".to_owned(), Value::Decimal(Decimal::ONE)),
             ])));
-        assert!(
-            signed_overflow
-                .unwrap_err()
-                .message
-                .contains("out of i32 range")
+        let message = signed_overflow.unwrap_err().message;
+        assert_eq!(
+            message,
+            "invalid field signed: expected a signed 32-bit Integer"
         );
+        assert!(!message.contains("2147483648"));
 
         let unsigned_negative =
             TypedNumberRow::from_compact_row(CompactRow::from_map(Record::from([

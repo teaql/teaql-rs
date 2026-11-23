@@ -1,7 +1,8 @@
 //! Application-owned graph acceptance. API names come from retained current Assist.
-use school_management_service_core::{AuditedSave, TeaqlRuntime, E, Q};
+use crate::reserved_identity::ReservedExampleIdentity as _;
+use school_management_service_core::{AuditedSave, E, Q, TeaqlRuntime};
 use std::sync::Arc;
-use teaql_core::{serde_json, Entity};
+use teaql_core::{Entity, serde_json};
 use teaql_runtime::LoadedRelation;
 
 pub async fn verify_dynamic(
@@ -11,12 +12,12 @@ pub async fn verify_dynamic(
     second: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use teaql_core::dynamic_fields::{DynamicFieldSelection, DynamicFieldState};
-    use teaql_core::{time::Timestamp, Value};
+    use teaql_core::{Value, time::Timestamp};
     let null_name = format!("{renamed} Dynamic NULL Probe");
     let mut probe = Q::schools()
         .comment("what: allocate a separate nullable extension probe")
         .purpose("why: keep the ordinary sibling mutation-isolation test unchanged")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     probe.update_platform_id(1);
     probe.update_school_type_to_primary();
     probe.update_name(null_name.as_str());
@@ -46,7 +47,7 @@ pub async fn verify_dynamic(
         .await?;
 
     let platform = Q::platforms_minimal()
-        .with_id_is(1)
+        .with_id_is(1_u64)
         .select_school_list_with(
             Q::schools_minimal()
                 .with_name_in([renamed, second, null_name.as_str()])
@@ -136,10 +137,12 @@ pub async fn verify_dynamic(
         json["platform"]["school_list"][0]["#note"],
         "Private extension"
     );
-    assert!(json["platform"]["school_list"][1]
-        .get("#note")
-        .unwrap()
-        .is_null());
+    assert!(
+        json["platform"]["school_list"][1]
+            .get("#note")
+            .unwrap()
+            .is_null()
+    );
     println!("PASS generated Rust nested dynamic Value/NULL/NotLoaded and shared snapshots");
     println!("PASS generated Rust LF17 dynamic metadata shared without fixed slots");
     Ok(())
@@ -152,7 +155,7 @@ pub async fn verify(
     second: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let platform = Q::platforms_minimal()
-        .with_id_is(1)
+        .with_id_is(1_u64)
         .select_school_list_with(
             Q::schools_minimal()
                 .with_name_in([renamed, second])
@@ -230,9 +233,11 @@ pub async fn verify(
     assert_eq!(detailed.school_list().state(), LoadedRelation::Empty);
     assert_eq!(minimal.school_list().state(), LoadedRelation::NotLoaded);
     assert!(restored_views.dirty_fields().is_none());
-    assert!(views_children
-        .iter()
-        .all(|child| child.dirty_fields().is_none()));
+    assert!(
+        views_children
+            .iter()
+            .all(|child| child.dirty_fields().is_none())
+    );
     assert_eq!(restored_views.clone().into_json(), views_json);
     println!("PASS generated Rust same-identity JSON projection isolation through E API");
 
@@ -275,7 +280,7 @@ pub async fn verify(
     assert_eq!(restored_nested.clone().into_json(), nested_json);
 
     let empty = Q::school_types_minimal()
-        .with_id_is(1002)
+        .with_id_is(1002_u64)
         .select_school_list_with(
             Q::schools_minimal()
                 .select_name()
@@ -290,15 +295,17 @@ pub async fn verify(
         .unwrap();
     assert_eq!(empty.school_list().state(), LoadedRelation::Empty);
     assert!(empty.school_list().value().unwrap().is_empty());
-    assert!(empty.clone().into_json()["school_list"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        empty.clone().into_json()["school_list"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let restored_empty = decode_like(context, &empty, &empty.clone().into_json())?;
     assert_eq!(restored_empty.school_list().state(), LoadedRelation::Empty);
 
     let unselected = Q::school_types_minimal()
-        .with_id_is(1002)
+        .with_id_is(1002_u64)
         .limit(1)
         .comment("what: load the same constant without selecting its Schools")
         .purpose("why: NotLoaded must not serialize as an empty list")
@@ -317,7 +324,7 @@ pub async fn verify(
 
     let filtered = Q::schools_minimal()
         .with_id_is(school_id)
-        .select_school_type_with(Q::school_types_minimal().with_id_is(1002))
+        .select_school_type_with(Q::school_types_minimal().with_id_is(1002_u64))
         .limit(1)
         .comment("what: retain Primary FK while excluding it from selected target detail")
         .purpose("why: verify current filtered-forward NotLoaded semantics")
@@ -344,6 +351,19 @@ pub async fn verify(
 }
 
 fn assert_missing_school_type(row: &school_management_service_core::School) {
+    let error = E::school(row)
+        .get_school_type()
+        .get_code()
+        .try_eval()
+        .expect_err("structured E reads must preserve NotLoaded, not return NULL");
+    // Rust has no materialized target stub: the relation is the first missing node.
+    assert_eq!(error.location.model_path(), "school_type");
+    assert_eq!(error.to_wire().instance_path, "/schoolType");
+    assert_eq!(error.break_point, "school_type");
+    let wire = teaql_core::serde_json::to_value(error.to_wire()).unwrap();
+    assert_eq!(wire["location"][0]["name"], "school_type");
+    assert_eq!(wire["location"].as_array().unwrap().len(), 1);
+    assert!(wire.get("root").is_none());
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         E::school(row).get_school_type().get_code().eval()
     }))
@@ -353,20 +373,29 @@ fn assert_missing_school_type(row: &school_management_service_core::School) {
         .map(String::as_str)
         .or_else(|| failure.downcast_ref::<&str>().copied())
         .unwrap_or("");
+    // Machine diagnostics are obtained through try_eval/to_wire, never embedded
+    // into the human panic message or supplemented with entity IDs.
+    assert!(diagnostic.contains("TeaQLNotLoadedError:"));
+    assert!(!diagnostic.contains("diagnostic: "));
+    assert!(!diagnostic.contains(&format!("School(id={})", row.id())));
     assert!(
         // Rust fails at the unavailable relation before traversing its detail.
-        diagnostic.contains("access_path: [\"school_type\"]"),
+        diagnostic.contains("access_path=school_type"),
         "wrong path: {diagnostic}"
     );
     assert!(
-        diagnostic.contains("break_point: \"school_type\""),
+        diagnostic.contains("break_point=school_type"),
         "wrong break point: {diagnostic}"
     );
     assert!(
-        diagnostic.contains("missing_preload: [\"school_type\"]"),
-        "wrong missing preload: {diagnostic}"
+        diagnostic.contains("select the missing field or relation"),
+        "missing repair guidance: {diagnostic}"
     );
-    assert!(diagnostic.contains(&format!("root: School(id={})", row.id())), "wrong root: {diagnostic}");
+    assert!(
+        diagnostic.contains("E::school(<root>).get_school_type()<broken>.get_code().eval()"),
+        "incomplete or unredacted expression: {diagnostic}"
+    );
+    assert_eq!(diagnostic.matches("<broken>").count(), 1);
 }
 
 fn decode_like<T: Entity>(

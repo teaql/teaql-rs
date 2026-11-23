@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.0] - 2026-11-11
+
+Tracking: [Rust #317](https://github.com/teaql/teaql-rs/issues/317).
+
+The security follow-up supersedes the unpublished 6.0.1 plan. SQLite's public
+connection/error types now use rusqlite 0.41 rather than 0.40, requiring a major
+version boundary. Regenerate consumers or align direct rusqlite requirements;
+do not combine old generated driver metadata with this runtime.
+
+- Upgrade the production SQLite driver to rusqlite 0.41.1 / libsqlite3-sys
+  0.39, and refresh vulnerable TLS/cryptographic and Tokio/rustix lock entries
+  without adding advisory ignores. Track dependency qualification in #319.
+- Keep all mainstream Diesel reference assertions in an isolated test-only
+  process; record each engine version and exclude IPC from query timing.
+
+- Construct business futures lazily and pin them once in the data-service
+  observation state machine. The optional boxed telemetry observer borrows
+  pinned work instead of storing another large business future.
+- Preserve physical SQL observation, request lineage, failure propagation and
+  cancellation. Add seven bounded-size and lifecycle regression tests.
+- Fix a generated local-time decoding Clippy diagnostic without changing
+  hydration or privacy semantics.
+- The generator's previously overflowing shared Order SQLite tests pass twice
+  on the default test-thread stack; no `RUST_MIN_STACK` increase is required.
+  Final-version, artifact and publication qualification are separate gates.
+
+## [5.0.7] - 2026-10-13
+
+Tracking: [Rust #247](https://github.com/teaql/teaql-rs/issues/247) and
+[conformance #109](https://github.com/teaql/teaql-conformance/issues/109).
+
+- Add the optional `teaql-runtime/standard-telemetry` feature with trusted
+  environment activation, safe startup guidance and full traces, metrics and logs.
+- Keep owned SDK providers independent of customer globals. SQL logs carry the
+  original physical span identity and expanded masked parameters.
+- Preserve request-tree/entity lineage, original business errors and independent
+  audit across asynchronous lists, graph saves, scalar streams and shutdown.
+- Bound outstanding SDK work and distinguish overflow, failed exports, receiver
+  rejection and retirement. No whole-batch retry after partial acceptance.
+- Regenerate libraries to retire the separate page terminal; pagination uses
+  ordinary list execution and optional explicit count.
+
+Source and internal-candidate evidence is retained in the conformance
+`2026-10-13-standard-telemetry-onboarding` report. Final artifact verification and
+signed public delivery are distinct from those earlier candidate results.
+
 ## [5.0.2] - 2026-09-20
 
 Release tracking: [Rust #202](https://github.com/teaql/teaql-rs/issues/202).

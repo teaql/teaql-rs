@@ -22,7 +22,7 @@ pub struct ModelSymbols {
 pub struct EntitySymbols {
     pub model: &'static ModelSymbols,
     pub entity: EntityTypeId,
-    /// Storage field names in lexical order, preserving legacy mutation order.
+    /// Canonical ledger names and native storage names in lexical order.
     pub fields: &'static [&'static str],
     pub relations: &'static [&'static str],
 }

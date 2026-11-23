@@ -126,6 +126,91 @@ impl From<SelectQuery> for QuerySelection {
     }
 }
 
+/// Framework-owned eligibility for an entity-shaped roll-up target. The
+/// immutable origin survives a request clone but cannot tag a business filter.
+#[doc(hidden)]
+pub fn rollup_navigation_membership(
+    relation: &str,
+    storage: &str,
+    descriptor: crate::EntityDescriptor,
+    query: SelectQuery,
+) -> Expr {
+    let mut membership = Expr::in_subquery(storage, descriptor, query, "id");
+    if let Expr::SubQuery { query, .. } = &mut membership {
+        query.mark_navigation_origin(relation);
+    }
+    membership
+}
+
+/// Replace only navigation-owned eligibility, retaining independent predicates
+/// even when their relation, target and values are identical. None means TRUE
+/// while rewriting Boolean trees; unrelated branches remain for validation.
+#[doc(hidden)]
+pub fn clear_rollup_navigation(
+    query: &mut SelectQuery,
+    relation: &str,
+    identity: &str,
+) -> Result<(), String> {
+    crate::aggregation_plan::statistical_query_graph(query).map_err(|error| error.to_string())?;
+    fn rewrite(
+        expr: &Expr,
+        relation: &str,
+        identity: &str,
+        depth: usize,
+    ) -> Result<Option<Expr>, String> {
+        if depth > 64 {
+            return Err("roll-up navigation expression exceeds 64 levels".into());
+        }
+        if let Expr::SubQuery { query, .. } = expr
+            && query.navigation_origin() == Some(relation)
+        {
+            return Ok(None);
+        }
+        let operand = |expr: &Expr| -> Result<Expr, String> {
+            Ok(rewrite(expr, relation, identity, depth + 1)?
+                .unwrap_or_else(|| Expr::is_not_null(identity)))
+        };
+        Ok(Some(match expr {
+            Expr::And(parts) => {
+                let mut remaining = Vec::new();
+                for part in parts {
+                    if let Some(part) = rewrite(part, relation, identity, depth + 1)? {
+                        remaining.push(part);
+                    }
+                }
+                return Ok(match remaining.len() {
+                    0 => None,
+                    1 => remaining.pop(),
+                    _ => Some(Expr::And(remaining)),
+                });
+            }
+            Expr::Or(parts) => Expr::Or(parts.iter().map(operand).collect::<Result<_, _>>()?),
+            Expr::Not(expr) => Expr::Not(Box::new(operand(expr)?)),
+            Expr::Function { function, args } => Expr::Function {
+                function: *function,
+                args: args.iter().map(operand).collect::<Result<_, _>>()?,
+            },
+            Expr::Binary { left, op, right } => Expr::binary(operand(left)?, *op, operand(right)?),
+            Expr::Between { expr, lower, upper } => Expr::Between {
+                expr: Box::new(operand(expr)?),
+                lower: Box::new(operand(lower)?),
+                upper: Box::new(operand(upper)?),
+            },
+            Expr::IsNull(expr) => Expr::IsNull(Box::new(operand(expr)?)),
+            Expr::IsNotNull(expr) => Expr::IsNotNull(Box::new(operand(expr)?)),
+            other => other.clone(),
+        }))
+    }
+    let filter = query
+        .filter
+        .as_ref()
+        .map(|expr| rewrite(expr, relation, identity, 0))
+        .transpose()?
+        .flatten();
+    query.filter = filter;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // RelationSelection
 // ---------------------------------------------------------------------------
@@ -138,6 +223,7 @@ pub struct RelationSelection {
     pub relation_filters: Vec<RelationFilter>,
     pub child_enhancements: Vec<QuerySelection>,
     pub query_options: QueryOptions,
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl RelationSelection {
@@ -150,12 +236,17 @@ impl RelationSelection {
             relation_filters: selection.relation_filters,
             child_enhancements: selection.child_enhancements,
             query_options: selection.query_options,
+            operation: None,
         }
     }
 
     pub fn into_query(self) -> SelectQuery {
         let query = apply_relation_selections(self.query, self.relation_selections);
         apply_runtime_metadata(query, &self.query_options, &self.child_enhancements)
+    }
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -194,6 +285,9 @@ impl RelationFilter {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct QueryOptions {
     pub comment: Option<String>,
+    /// Native named-count operation retained for page execution; the alias is
+    /// caller supplied, never an internal COUNT column or example constant.
+    pub page_count_operation: Option<crate::QueryOperation>,
     pub raw_sql: Option<String>,
     pub raw_sql_search_criteria: Vec<String>,
     pub dynamic_properties: Vec<RawDynamicProperty>,
@@ -270,6 +364,7 @@ pub struct RelationAggregate {
     pub alias: String,
     pub query: QuerySelection,
     pub single_result: bool,
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl RelationAggregate {
@@ -284,7 +379,12 @@ impl RelationAggregate {
             alias: alias.into(),
             query: query.into(),
             single_result,
+            operation: None,
         }
+    }
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -298,6 +398,7 @@ pub struct FacetRequest {
     pub relation_name: String,
     pub query: QuerySelection,
     pub include_all_facets: bool,
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl FacetRequest {
@@ -312,7 +413,12 @@ impl FacetRequest {
             relation_name: relation_name.into(),
             query: query.into(),
             include_all_facets,
+            operation: None,
         }
+    }
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -325,6 +431,7 @@ pub struct ObjectGroupBy {
     pub property_name: String,
     pub storage_field: String,
     pub query: QuerySelection,
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl ObjectGroupBy {
@@ -337,7 +444,13 @@ impl ObjectGroupBy {
             property_name: property_name.into(),
             storage_field: storage_field.into(),
             query: query.into(),
+            operation: None,
         }
+    }
+
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -350,7 +463,11 @@ pub fn apply_relation_selections(
     relation_selections: Vec<RelationSelection>,
 ) -> SelectQuery {
     for selection in relation_selections {
-        query = query.relation_query(selection.name.clone(), selection.into_query());
+        let operation = selection.operation.clone();
+        let name = selection.name.clone();
+        let mut load = crate::RelationLoad::with_query(name, selection.into_query());
+        load.operation = operation;
+        query.relations.push(load);
     }
     query
 }
@@ -391,11 +508,13 @@ pub fn apply_runtime_metadata(
         .object_group_bys
         .iter()
         .map(|group_by| {
-            CoreObjectGroupBy::new(
+            let mut group = CoreObjectGroupBy::new(
                 group_by.property_name.clone(),
                 group_by.storage_field.clone(),
                 group_by.query.clone().into_query(),
-            )
+            );
+            group.operation = group_by.operation.clone();
+            group
         })
         .collect();
     query.child_enhancements = child_enhancements
@@ -415,12 +534,14 @@ pub fn runtime_relation_aggregates(options: &QueryOptions) -> Vec<RuntimeRelatio
         .relation_aggregates
         .iter()
         .map(|aggregate| {
-            RuntimeRelationAggregate::new(
+            let mut runtime = RuntimeRelationAggregate::new(
                 aggregate.relation_name.clone(),
                 aggregate.alias.clone(),
                 aggregate.query.clone().into_query(),
                 aggregate.single_result,
-            )
+            );
+            runtime.operation = aggregate.operation.clone();
+            runtime
         })
         .collect()
 }
@@ -522,6 +643,36 @@ pub fn required_text(operator: FieldOperator, values: &[Value], index: usize) ->
 // ---------------------------------------------------------------------------
 // remove_default_live_filter / remove_filter_expr
 // ---------------------------------------------------------------------------
+
+/// Java leaf-request `matchingAnyOf`: OR the supplied request's top-level
+/// non-version criteria. The caller ANDs this group with its own unchanged
+/// criteria. Nested Boolean groups and independent subqueries stay intact;
+/// grouping, HAVING, ordering and paging are not criteria alternatives.
+pub fn criteria_alternatives_excluding_version(filter: Option<Expr>) -> Option<Expr> {
+    fn version(criterion: &Expr) -> bool {
+        let operand = match criterion {
+            Expr::Binary { left, .. } => left.as_ref(),
+            Expr::Between { expr, .. } | Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
+                expr.as_ref()
+            }
+            _ => return false,
+        };
+        matches!(operand, Expr::Column(name) if name == "version")
+    }
+    let parts = match filter? {
+        Expr::And(parts) => parts,
+        other => vec![other],
+    };
+    let mut alternatives = parts
+        .into_iter()
+        .filter(|part| !version(part))
+        .collect::<Vec<_>>();
+    match alternatives.len() {
+        0 => None,
+        1 => alternatives.pop(),
+        _ => Some(Expr::or(alternatives)),
+    }
+}
 
 pub fn remove_default_live_filter(filter: Option<Expr>) -> Option<Expr> {
     let default_filter = Expr::gt("version", 0_i64);

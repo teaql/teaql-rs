@@ -320,3 +320,41 @@ fn sparse_storage_and_clone_do_not_scale_with_dictionary_size() {
     assert_eq!(calls, 2); // copying an old legacy view must not duplicate it again
     assert_eq!(copy.get_slot(&SYMBOLS, FieldSlot(25)), Some(&Value::Null));
 }
+
+#[teaql_entity]
+#[derive(Clone, Debug, Default, PartialEq, TeaqlEntity)]
+#[teaql(entity = "ReferenceProbe", symbol_fields = "type")]
+struct ReferenceProbe {
+    #[teaql(id)]
+    id: u64,
+    #[teaql(column = "type")]
+    type_field_id: Option<u64>,
+}
+
+#[test]
+fn canonical_reference_slots_stay_distinct_from_native_storage_slots() {
+    let entity = ReferenceProbe {
+        id: 7,
+        type_field_id: Some(3),
+        ..Default::default()
+    };
+    let symbols = ReferenceProbe::symbols().unwrap();
+    assert_ne!(
+        ReferenceProbe::__TEAQL_SLOT_type,
+        ReferenceProbe::__TEAQL_SLOT_type_field_id
+    );
+    let state = entity.entity_runtime_state().unwrap();
+    state.set_slot(
+        entity.entity_key(),
+        symbols,
+        ReferenceProbe::__TEAQL_SLOT_type,
+        Value::U64(9),
+    );
+    let changes = state.current_change_set();
+    let fields = &changes.changes()[&entity.entity_key()];
+    assert_eq!(fields.get("type"), Some(&Value::U64(9)));
+    assert!(!fields.contains_key("type_field_id"));
+    let storage = entity.into_values();
+    assert_eq!(storage.get("type_field_id"), Some(&Value::U64(3)));
+    assert!(!storage.contains_key("type"));
+}

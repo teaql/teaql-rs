@@ -9,6 +9,9 @@ fn fixtures() -> Vec<Value> {
         Value::TypedNull(DataType::U64),
         Value::Text(String::new()),
         Value::from("private"),
+        Value::Binary(b"private".to_vec()),
+        Value::Binary(vec![0xff, 0x00]),
+        Value::Binary(vec![]),
         Value::Bool(false),
         Value::I64(-7),
         Value::U64(u64::MAX),
@@ -84,7 +87,7 @@ fn target_capture_preserves_dedup_forced_flags_and_compound_fallback() {
     assert!(!format!("{actual:?}").contains("secret"));
 }
 
-// Frozen oracle: update only if the privacy contract intentionally changes.
+// Reference behavior, including the binary privacy contract added on main.
 fn previous_capture(output: &mut SqlIntentRedactions, id: &teaql_core::Value) {
     let source = SqlLogContext {
         generated_sql: true,
@@ -183,6 +186,25 @@ fn previous_from_bindings(
                 Value::Decimal(value) => value.to_string(),
                 Value::Date(value) => value.to_string(),
                 Value::Timestamp(value) => value.as_millis().to_string(),
+                Value::Binary(bytes) => {
+                    if let Ok(text) = std::str::from_utf8(bytes)
+                        && !text.is_empty()
+                    {
+                        strings.push(text.to_owned());
+                    }
+                    let hex = bytes
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>();
+                    if !hex.is_empty() {
+                        strings.push(hex);
+                    }
+                    strings.push(format!("{bytes:?}"));
+                    item.to_json_value()
+                        .as_str()
+                        .expect("base64 string")
+                        .to_owned()
+                }
             };
             if !text.is_empty() {
                 strings.push(text);
