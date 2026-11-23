@@ -1167,9 +1167,9 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -3588,7 +3588,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-core"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "base64",
  "bytes",
@@ -3603,7 +3603,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-data-service"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "futures-core",
  "serde_json",
@@ -3612,7 +3612,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-examples"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3632,7 +3632,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-http-reqwest"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "async-trait",
  "reqwest 0.13.4",
@@ -3643,7 +3643,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-macros"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3652,7 +3652,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-object-storage-s3"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "async-trait",
  "aws-sdk-s3",
@@ -3692,7 +3692,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-mysql"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "async-stream",
  "chrono",
@@ -3710,7 +3710,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-postgres"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "async-stream",
  "bytes",
@@ -3730,7 +3730,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-sqlite"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "async-stream",
  "chrono",
@@ -3752,7 +3752,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-runtime"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3786,7 +3786,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-sql"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -3797,7 +3797,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-tfp-endpoint"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3815,7 +3815,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-web-integration-axum"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "axum",
  "serde",
@@ -4235,9 +4235,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",

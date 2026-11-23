@@ -46,8 +46,8 @@ impl<R> PaymentRequest<R> {
     pub(crate) fn new() -> Self {
         Self {
             query: SelectQuery::new("Payment")
-                .project("id")
-                .project("version"),
+                .project(crate::Payment::__TEAQL_FIELD_id.query_key)
+                .project(crate::Payment::__TEAQL_FIELD_version.query_key),
             relation_selections: Vec::new(),
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
@@ -301,7 +301,7 @@ impl<R> PaymentRequest<R> {
 
     pub fn deleted_rows_only(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self.query = self.query.and_filter(Expr::lte("version", 0_i64));
+        self.query = self.query.and_filter(Expr::lte(crate::Payment::__TEAQL_FIELD_version.query_key, 0_i64));
         self
     }
 
@@ -618,10 +618,10 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn select_self(mut self) -> Self {
-        self.query = self.query.project("id");
-        self.query = self.query.project("reference_code");
-        self.query = self.query.project("version");
-        self.query = self.query.project("customer_order_id");
+        self.query = self.query.project(crate::Payment::__TEAQL_FIELD_id.query_key);
+        self.query = self.query.project(crate::Payment::__TEAQL_FIELD_reference_code.query_key);
+        self.query = self.query.project(crate::Payment::__TEAQL_FIELD_version.query_key);
+        self.query = self.query.project(crate::Payment::__TEAQL_FIELD_customer_order.query_key);
         self
     }
 
@@ -761,15 +761,15 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn group_by_id(self) -> Self {
-        self.group_by("id")
+        self.group_by(crate::Payment::__TEAQL_FIELD_id.query_key)
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("id");
+        let mut request = self.group_by(crate::Payment::__TEAQL_FIELD_id.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("id"));
+            .project_expr(alias, Expr::column(crate::Payment::__TEAQL_FIELD_id.query_key));
         request
     }
 
@@ -778,8 +778,8 @@ impl<R> PaymentRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("id")
-            .aggregate_with_function("id", alias, function)
+        self.group_by(crate::Payment::__TEAQL_FIELD_id.query_key)
+            .aggregate_with_function(crate::Payment::__TEAQL_FIELD_id.query_key, alias, function)
     }
 
     pub fn count_id(self) -> Self {
@@ -787,7 +787,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("id", alias)
+        self.aggregate_count_field(crate::Payment::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn sum_id(self) -> Self {
@@ -795,7 +795,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn sum_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("id", alias)
+        self.aggregate_sum(crate::Payment::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn avg_id(self) -> Self {
@@ -803,7 +803,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn avg_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("id", alias)
+        self.aggregate_avg(crate::Payment::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn min_id(self) -> Self {
@@ -811,7 +811,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn min_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("id", alias)
+        self.aggregate_min(crate::Payment::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn max_id(self) -> Self {
@@ -819,7 +819,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn max_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("id", alias)
+        self.aggregate_max(crate::Payment::__TEAQL_FIELD_id.query_key, alias)
     }
 
 
@@ -829,7 +829,7 @@ impl<R> PaymentRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "id",
+            crate::Payment::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -841,41 +841,41 @@ impl<R> PaymentRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "id",
+            crate::Payment::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_id_is(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::eq(crate::Payment::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
 
 
     pub fn with_id_is_not(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::ne(crate::Payment::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
     pub fn with_id_greater_than(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::gt(crate::Payment::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
     pub fn with_id_greater_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::gte(crate::Payment::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
     pub fn with_id_less_than(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::lt(crate::Payment::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
     pub fn with_id_less_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("id", Into::<u64>::into(value)));
+        self.query = self.query.and_filter(Expr::lte(crate::Payment::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
@@ -884,7 +884,7 @@ impl<R> PaymentRequest<R> {
         lower: impl Into<u64>,
         upper: impl Into<u64>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("id", Into::<u64>::into(lower), Into::<u64>::into(upper)));
+        self.query = self.query.and_filter(Expr::between(crate::Payment::__TEAQL_FIELD_id.query_key, Into::<u64>::into(lower), Into::<u64>::into(upper)));
         self
     }
 
@@ -893,7 +893,7 @@ impl<R> PaymentRequest<R> {
         T: Into<u64>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "id",
+            crate::Payment::__TEAQL_FIELD_id.query_key,
             Into::<u64>::into(range.start),
             Into::<u64>::into(range.end),
         ));
@@ -923,41 +923,41 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn with_id_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("id"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Payment::__TEAQL_FIELD_id.query_key));
         self
     }
 
 
 
     pub fn with_id_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("id"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Payment::__TEAQL_FIELD_id.query_key));
         self
     }
 
 
     pub fn order_by_id_asc(mut self) -> Self {
-        self.query = self.query.order_asc("id");
+        self.query = self.query.order_asc(crate::Payment::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
-        self.query = self.query.order_desc("id");
+        self.query = self.query.order_desc(crate::Payment::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("id");
+        self.query = self.query.order_gbk_asc(crate::Payment::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("id");
+        self.query = self.query.order_gbk_desc(crate::Payment::__TEAQL_FIELD_id.query_key);
         self
     }
 
 
     pub fn select_reference_code(mut self) -> Self {
-        self.query = self.query.project("reference_code");
+        self.query = self.query.project(crate::Payment::__TEAQL_FIELD_reference_code.query_key);
         self
     }
 
@@ -977,15 +977,15 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn group_by_reference_code(self) -> Self {
-        self.group_by("reference_code")
+        self.group_by(crate::Payment::__TEAQL_FIELD_reference_code.query_key)
     }
 
     pub fn group_by_reference_code_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("reference_code");
+        let mut request = self.group_by(crate::Payment::__TEAQL_FIELD_reference_code.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("reference_code"));
+            .project_expr(alias, Expr::column(crate::Payment::__TEAQL_FIELD_reference_code.query_key));
         request
     }
 
@@ -994,8 +994,8 @@ impl<R> PaymentRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("reference_code")
-            .aggregate_with_function("reference_code", alias, function)
+        self.group_by(crate::Payment::__TEAQL_FIELD_reference_code.query_key)
+            .aggregate_with_function(crate::Payment::__TEAQL_FIELD_reference_code.query_key, alias, function)
     }
 
     pub fn count_reference_code(self) -> Self {
@@ -1003,7 +1003,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn count_reference_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("reference_code", alias)
+        self.aggregate_count_field(crate::Payment::__TEAQL_FIELD_reference_code.query_key, alias)
     }
 
     pub fn sum_reference_code(self) -> Self {
@@ -1011,7 +1011,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn sum_reference_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("reference_code", alias)
+        self.aggregate_sum(crate::Payment::__TEAQL_FIELD_reference_code.query_key, alias)
     }
 
     pub fn avg_reference_code(self) -> Self {
@@ -1019,7 +1019,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn avg_reference_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("reference_code", alias)
+        self.aggregate_avg(crate::Payment::__TEAQL_FIELD_reference_code.query_key, alias)
     }
 
     pub fn min_reference_code(self) -> Self {
@@ -1027,7 +1027,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn min_reference_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("reference_code", alias)
+        self.aggregate_min(crate::Payment::__TEAQL_FIELD_reference_code.query_key, alias)
     }
 
     pub fn max_reference_code(self) -> Self {
@@ -1035,7 +1035,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn max_reference_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("reference_code", alias)
+        self.aggregate_max(crate::Payment::__TEAQL_FIELD_reference_code.query_key, alias)
     }
 
     pub fn unselect_reference_code(mut self) -> Self {
@@ -1051,7 +1051,7 @@ impl<R> PaymentRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "reference_code",
+            crate::Payment::__TEAQL_FIELD_reference_code.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1063,41 +1063,41 @@ impl<R> PaymentRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "reference_code",
+            crate::Payment::__TEAQL_FIELD_reference_code.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_reference_code_is(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("reference_code", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::eq(crate::Payment::__TEAQL_FIELD_reference_code.query_key, Into::<String>::into(value)));
         self
     }
 
 
 
     pub fn with_reference_code_is_not(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("reference_code", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::ne(crate::Payment::__TEAQL_FIELD_reference_code.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_reference_code_greater_than(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("reference_code", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::gt(crate::Payment::__TEAQL_FIELD_reference_code.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_reference_code_greater_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("reference_code", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::gte(crate::Payment::__TEAQL_FIELD_reference_code.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_reference_code_less_than(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("reference_code", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::lt(crate::Payment::__TEAQL_FIELD_reference_code.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_reference_code_less_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("reference_code", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::lte(crate::Payment::__TEAQL_FIELD_reference_code.query_key, Into::<String>::into(value)));
         self
     }
 
@@ -1106,7 +1106,7 @@ impl<R> PaymentRequest<R> {
         lower: impl Into<String>,
         upper: impl Into<String>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("reference_code", Into::<String>::into(lower), Into::<String>::into(upper)));
+        self.query = self.query.and_filter(Expr::between(crate::Payment::__TEAQL_FIELD_reference_code.query_key, Into::<String>::into(lower), Into::<String>::into(upper)));
         self
     }
 
@@ -1115,7 +1115,7 @@ impl<R> PaymentRequest<R> {
         T: Into<String>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "reference_code",
+            crate::Payment::__TEAQL_FIELD_reference_code.query_key,
             Into::<String>::into(range.start),
             Into::<String>::into(range.end),
         ));
@@ -1145,17 +1145,17 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn with_reference_code_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("reference_code", value));
+        self.query = self.query.and_filter(Expr::contain(crate::Payment::__TEAQL_FIELD_reference_code.query_key, value));
         self
     }
 
     pub fn with_reference_code_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("reference_code", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::Payment::__TEAQL_FIELD_reference_code.query_key, value));
         self
     }
 
     pub fn with_reference_code_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("reference_code", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::Payment::__TEAQL_FIELD_reference_code.query_key, value));
         self
     }
 
@@ -1165,7 +1165,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn with_reference_code_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("reference_code", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::Payment::__TEAQL_FIELD_reference_code.query_key, value));
         self
     }
 
@@ -1175,62 +1175,62 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn with_reference_code_sounding_like(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("reference_code", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::sound_like(crate::Payment::__TEAQL_FIELD_reference_code.query_key, Into::<String>::into(value)));
         self
     }
     pub fn with_reference_code_before(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("reference_code", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::lt(crate::Payment::__TEAQL_FIELD_reference_code.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_reference_code_after(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("reference_code", Into::<String>::into(value)));
+        self.query = self.query.and_filter(Expr::gt(crate::Payment::__TEAQL_FIELD_reference_code.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_reference_code_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("reference_code"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Payment::__TEAQL_FIELD_reference_code.query_key));
         self
     }
 
 
 
     pub fn with_reference_code_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("reference_code"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Payment::__TEAQL_FIELD_reference_code.query_key));
         self
     }
 
 
     pub fn order_by_reference_code_asc(mut self) -> Self {
-        self.query = self.query.order_asc("reference_code");
+        self.query = self.query.order_asc(crate::Payment::__TEAQL_FIELD_reference_code.query_key);
         self
     }
 
     pub fn order_by_reference_code_desc(mut self) -> Self {
-        self.query = self.query.order_desc("reference_code");
+        self.query = self.query.order_desc(crate::Payment::__TEAQL_FIELD_reference_code.query_key);
         self
     }
 
     pub fn order_by_reference_code_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("reference_code");
+        self.query = self.query.order_gbk_asc(crate::Payment::__TEAQL_FIELD_reference_code.query_key);
         self
     }
 
     pub fn order_by_reference_code_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("reference_code");
+        self.query = self.query.order_gbk_desc(crate::Payment::__TEAQL_FIELD_reference_code.query_key);
         self
     }
 
     pub fn group_by_version(self) -> Self {
-        self.group_by("version")
+        self.group_by(crate::Payment::__TEAQL_FIELD_version.query_key)
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("version");
+        let mut request = self.group_by(crate::Payment::__TEAQL_FIELD_version.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("version"));
+            .project_expr(alias, Expr::column(crate::Payment::__TEAQL_FIELD_version.query_key));
         request
     }
 
@@ -1239,8 +1239,8 @@ impl<R> PaymentRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("version")
-            .aggregate_with_function("version", alias, function)
+        self.group_by(crate::Payment::__TEAQL_FIELD_version.query_key)
+            .aggregate_with_function(crate::Payment::__TEAQL_FIELD_version.query_key, alias, function)
     }
 
     pub fn count_version(self) -> Self {
@@ -1248,7 +1248,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("version", alias)
+        self.aggregate_count_field(crate::Payment::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn sum_version(self) -> Self {
@@ -1256,7 +1256,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn sum_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("version", alias)
+        self.aggregate_sum(crate::Payment::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn avg_version(self) -> Self {
@@ -1264,7 +1264,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn avg_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("version", alias)
+        self.aggregate_avg(crate::Payment::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn min_version(self) -> Self {
@@ -1272,7 +1272,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn min_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("version", alias)
+        self.aggregate_min(crate::Payment::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn max_version(self) -> Self {
@@ -1280,30 +1280,30 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn max_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("version", alias)
+        self.aggregate_max(crate::Payment::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn order_by_version_asc(mut self) -> Self {
-        self.query = self.query.order_asc("version");
+        self.query = self.query.order_asc(crate::Payment::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
-        self.query = self.query.order_desc("version");
+        self.query = self.query.order_desc(crate::Payment::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("version");
+        self.query = self.query.order_gbk_asc(crate::Payment::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("version");
+        self.query = self.query.order_gbk_desc(crate::Payment::__TEAQL_FIELD_version.query_key);
         self
     }
     pub fn filter_by_customer_order(mut self, value: impl EntityReference) -> Self {
-        self.query = self.query.and_filter(Expr::eq("customer_order_id", value.entity_id_value()));
+        self.query = self.query.and_filter(Expr::eq(crate::Payment::__TEAQL_FIELD_customer_order.query_key, value.entity_id_value()));
         self
     }
 
@@ -1334,26 +1334,26 @@ impl<R> PaymentRequest<R> {
 
 
     pub fn have_customer_order(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("customer_order_id"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Payment::__TEAQL_FIELD_customer_order.query_key));
         self
     }
 
     pub fn have_no_customer_order(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("customer_order_id"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Payment::__TEAQL_FIELD_customer_order.query_key));
         self
     }
 
 
     pub fn group_by_customer_order(self) -> Self {
-        self.group_by("customer_order_id")
+        self.group_by(crate::Payment::__TEAQL_FIELD_customer_order.query_key)
     }
 
     pub fn group_by_customer_order_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("customer_order_id");
+        let mut request = self.group_by(crate::Payment::__TEAQL_FIELD_customer_order.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("customer_order_id"));
+            .project_expr(alias, Expr::column(crate::Payment::__TEAQL_FIELD_customer_order.query_key));
         request
     }
 
@@ -1362,12 +1362,12 @@ impl<R> PaymentRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("customer_order_id")
-            .aggregate_with_function("customer_order_id", alias, function)
+        self.group_by(crate::Payment::__TEAQL_FIELD_customer_order.query_key)
+            .aggregate_with_function(crate::Payment::__TEAQL_FIELD_customer_order.query_key, alias, function)
     }
 
     pub fn group_by_customer_order_with(mut self, request: impl Into<QuerySelection>) -> Self {
-        self.query = self.query.group_by("customer_order_id");
+        self.query = self.query.group_by(crate::Payment::__TEAQL_FIELD_customer_order.query_key);
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "customer_order",
             "customer_order_id",
@@ -1400,7 +1400,7 @@ impl<R> PaymentRequest<R> {
     }
 
     pub fn count_customer_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("customer_order_id", alias)
+        self.aggregate_count_field(crate::Payment::__TEAQL_FIELD_customer_order.query_key, alias)
     }
 
     pub fn unselect_customer_order(mut self) -> Self {

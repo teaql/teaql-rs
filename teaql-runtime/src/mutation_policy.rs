@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,7 +63,7 @@ pub struct MutationOperation {
     pub kind: MutationOperationKind,
     pub entity: EntityKey,
     pub original_version: Option<i64>,
-    pub changed_values: BTreeMap<String, Value>,
+    pub changed_values: teaql_core::MutationValues,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -401,7 +403,11 @@ impl UserContext {
                 .map(|operation| MutationOperationSummary {
                     kind: operation.kind,
                     entity: operation.entity.clone(),
-                    changed_fields: operation.changed_values.keys().cloned().collect(),
+                    changed_fields: operation
+                        .changed_values
+                        .named_entries()
+                        .map(|(name, _)| name.to_owned())
+                        .collect(),
                 })
                 .collect(),
         };
@@ -476,21 +482,23 @@ pub(crate) fn graph_policy_plan(
                 GraphMutationKind::Recover => MutationOperationKind::Recover,
                 GraphMutationKind::Reference => return None,
             };
-            let values: BTreeMap<String, Value> = item.values.clone().into();
+            let values = item.values.clone();
             let id = values.get("id").cloned().unwrap_or(Value::I64(0));
             let original_version = values.get("version").and_then(Value::try_i64);
             let changed_values = match kind {
-                MutationOperationKind::Update | MutationOperationKind::Recover => item
-                    .update_fields
-                    .iter()
-                    .filter_map(|field| {
-                        values
-                            .get(field)
-                            .cloned()
-                            .map(|value| (field.clone(), value))
-                    })
-                    .collect(),
-                MutationOperationKind::Delete => BTreeMap::new(),
+                MutationOperationKind::Update | MutationOperationKind::Recover => {
+                    let mut selected = values
+                        .symbols()
+                        .map(teaql_core::MutationValues::indexed)
+                        .unwrap_or_default();
+                    for field in &item.update_fields {
+                        if let Some(value) = values.get(field) {
+                            selected.insert_named(field, value.clone());
+                        }
+                    }
+                    selected
+                }
+                MutationOperationKind::Delete => teaql_core::MutationValues::new(),
                 _ => values,
             };
             Some(MutationOperation {
@@ -536,12 +544,21 @@ fn validate_graph_mutation_versions(plan: &MutationPlan) -> Result<(), RuntimeEr
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn ledger_policy_plan(
     context: &UserContext,
     node: &GraphNode,
-    root: &EntityRuntimeState,
+    root: &crate::EntityRuntimeState,
 ) -> Result<MutationPlan, RuntimeError> {
-    let changes = root.current_change_set();
+    ledger_policy_plan_from(context, node, root, &root.current_change_set())
+}
+
+pub(crate) fn ledger_policy_plan_from(
+    context: &UserContext,
+    node: &GraphNode,
+    root: &EntityRuntimeState,
+    changes: &crate::EntityChangeSet,
+) -> Result<MutationPlan, RuntimeError> {
     let deleted = root.deleted_keys();
     let recovered = root.recovered_keys();
     let new = root.new_keys();
@@ -580,7 +597,7 @@ pub(crate) fn ledger_policy_plan(
                 kind,
                 original_version: root.get_original_version(&key),
                 entity: key,
-                changed_values: changed_values.into(),
+                changed_values,
             }
         })
         .collect();
@@ -688,7 +705,8 @@ mod tests {
                 kind: MutationOperationKind::Create,
                 entity: EntityKey::new("Order", 7_u64),
                 original_version: None,
-                changed_values: BTreeMap::from([("total_amount".to_owned(), Value::I64(25_000))]),
+                changed_values: BTreeMap::from([("total_amount".to_owned(), Value::I64(25_000))])
+                    .into(),
             }],
         }
     }

@@ -42,7 +42,7 @@ fn run_case(data_type: DataType, value: Value, invalid: bool) {
             kind: MutationOperationKind::Create,
             entity: EntityKey::new("TypedCarrier", Value::I64(1)),
             original_version: None,
-            changed_values: BTreeMap::from([("scalar_value".into(), value)]),
+            changed_values: BTreeMap::from([("scalar_value".into(), value)]).into(),
         }],
     };
     let before = format!("{plan:?}"); // NaN is not PartialEq to itself.
@@ -223,7 +223,7 @@ fn final_plan_sparse_changes_do_not_repeat_requiredness() {
             kind: MutationOperationKind::Update,
             entity: EntityKey::new("TypedCarrier", Value::I64(1)),
             original_version: Some(1),
-            changed_values: BTreeMap::new(),
+            changed_values: teaql_core::MutationValues::new(),
         }],
     };
     context.review_mutation_plan(&plan).unwrap();

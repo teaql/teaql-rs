@@ -911,6 +911,31 @@ impl UserContext {
             .unwrap_or_default()
     }
 
+    pub fn require_entity_symbols(
+        &self,
+        symbols: &'static teaql_core::EntitySymbols,
+    ) -> Result<&EntityDescriptor, RuntimeError> {
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.entity_by_symbols(symbols))
+            .ok_or_else(|| {
+                RuntimeError::Graph(format!(
+                    "generated symbol model is not registered for {}",
+                    symbols.name().unwrap_or("<invalid entity ID>")
+                ))
+            })
+    }
+
+    pub(crate) fn require_entity_key(
+        &self,
+        key: &crate::EntityKey,
+    ) -> Result<&EntityDescriptor, RuntimeError> {
+        match key.symbols() {
+            Some(symbols) => self.require_entity_symbols(symbols),
+            None => self.require_entity(&key.entity),
+        }
+    }
+
     pub fn require_entity(&self, name: &str) -> Result<&EntityDescriptor, RuntimeError> {
         self.entity(name)
             .ok_or_else(|| RuntimeError::MissingEntity(name.to_owned()))
@@ -1321,7 +1346,7 @@ impl UserContext {
             .iter()
             .filter_map(|field| {
                 values
-                    .get(*field)
+                    .get(field)
                     .cloned()
                     .map(|value| ((*field).to_owned(), value))
             })

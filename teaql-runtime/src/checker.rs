@@ -550,7 +550,10 @@ where
             ),
             _ => None,
         };
-        let owned_record = original_values.clone().into();
+        if let Some(symbols) = T::symbols() {
+            original_values.bind_symbols(symbols);
+        }
+        let owned_record = original_values.to_compact_row();
         let eligible = status.is_create()
             || has_effective_change.unwrap_or_else(|| {
                 let business = |field: &str| {
@@ -574,7 +577,7 @@ where
                     |fields| fields.iter().any(|field| business(field)),
                 )
             });
-        match T::from_compact_row(teaql_core::CompactRow::from_map(owned_record)) {
+        match T::from_compact_row(owned_record) {
             Ok(mut entity) => {
                 if let Some(loaded_fields) = loaded_fields {
                     entity.set_checker_loaded_fields(loaded_fields);
@@ -654,7 +657,7 @@ where
                     let changed: teaql_core::MutationValues = after
                         .iter()
                         .filter(|(field, value)| {
-                            before_intent.as_ref().and_then(|before| before.get(*field))
+                            before_intent.as_ref().and_then(|before| before.get(field))
                                 != Some(*value)
                         })
                         .map(|(field, value)| (field.clone(), value.clone()))
