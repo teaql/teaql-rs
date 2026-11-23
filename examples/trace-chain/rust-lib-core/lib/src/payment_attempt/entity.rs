@@ -37,21 +37,58 @@ pub struct PaymentAttempt {
 }
 
 impl PaymentAttempt {
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_id: crate::GeneratedField = crate::GeneratedField {
+        model_key: "id",
+        query_key: "id",
+        member_name: "id",
+        column_name: "id",
+        load_index: 0,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_payment: crate::GeneratedField = crate::GeneratedField {
+        model_key: "payment",
+        query_key: "payment_id",
+        member_name: "payment_id",
+        column_name: "payment",
+        load_index: 1,
+        reference: true,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_reference_code: crate::GeneratedField = crate::GeneratedField {
+        model_key: "reference_code",
+        query_key: "reference_code",
+        member_name: "reference_code",
+        column_name: "reference_code",
+        load_index: 2,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_version: crate::GeneratedField = crate::GeneratedField {
+        model_key: "version",
+        query_key: "version",
+        member_name: "version",
+        column_name: "version",
+        load_index: 3,
+        reference: false,
+    };
+
     pub const ENTITY_NAME: &'static str = "Payment Attempt";
 
     // Framework metadata: complete fixed layout, including overflow slots.
     pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "e8c46db1ccaafe0f9d90335a74f7dd234482731b27d51dbebb2e9f07bebc02eb";
     pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
-        ("id", 0),
-        ("payment", 1),
-        ("reference_code", 2),
-        ("version", 3),
+        (Self::__TEAQL_FIELD_id.model_key, Self::__TEAQL_FIELD_id.load_index),
+        (Self::__TEAQL_FIELD_payment.model_key, Self::__TEAQL_FIELD_payment.load_index),
+        (Self::__TEAQL_FIELD_reference_code.model_key, Self::__TEAQL_FIELD_reference_code.load_index),
+        (Self::__TEAQL_FIELD_version.model_key, Self::__TEAQL_FIELD_version.load_index),
     ];
     pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
-        ("id", "id", "id"),
-        ("payment", "payment_id", "payment"),
-        ("reference_code", "reference_code", "reference_code"),
-        ("version", "version", "version"),
+        (Self::__TEAQL_FIELD_id.model_key, Self::__TEAQL_FIELD_id.member_name, Self::__TEAQL_FIELD_id.column_name),
+        (Self::__TEAQL_FIELD_payment.model_key, Self::__TEAQL_FIELD_payment.member_name, Self::__TEAQL_FIELD_payment.column_name),
+        (Self::__TEAQL_FIELD_reference_code.model_key, Self::__TEAQL_FIELD_reference_code.member_name, Self::__TEAQL_FIELD_reference_code.column_name),
+        (Self::__TEAQL_FIELD_version.model_key, Self::__TEAQL_FIELD_version.member_name, Self::__TEAQL_FIELD_version.column_name),
     ];
 
     pub fn with_id(id: u64) -> teaql_core::Value {
@@ -98,17 +135,17 @@ impl PaymentAttempt {
     pub fn update_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "id", value);
-        self.__load_state.mark_loaded("id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_id.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_id.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "id")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_id.model_key)
     }
 
     pub fn eval_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_id.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "id".to_string(), attempted_path: "id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.id())
@@ -122,17 +159,17 @@ impl PaymentAttempt {
     pub fn update_reference_code(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.reference_code = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.reference_code.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "reference_code", value);
-        self.__load_state.mark_loaded("reference_code").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_reference_code.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_reference_code.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_reference_code(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "reference_code")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_reference_code.model_key)
     }
 
     pub fn eval_reference_code(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("reference_code") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_reference_code.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "reference_code".to_string(), attempted_path: "reference_code".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.reference_code())
@@ -146,17 +183,17 @@ impl PaymentAttempt {
     pub fn update_version(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "version", value);
-        self.__load_state.mark_loaded("version").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_version.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_version.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_version(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "version")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_version.model_key)
     }
 
     pub fn eval_version(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("version") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_version.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "version".to_string(), attempted_path: "version".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.version())
@@ -169,17 +206,17 @@ impl PaymentAttempt {
     pub fn update_payment_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.payment_id = value.try_u64().unwrap_or(self.payment_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "payment", value);
-        self.__load_state.mark_loaded("payment_id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_payment.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_payment.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_payment_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "payment")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_payment.model_key)
     }
 
     pub fn eval_payment_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("payment_id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_payment.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "payment_id".to_string(), attempted_path: "payment_id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.payment_id())

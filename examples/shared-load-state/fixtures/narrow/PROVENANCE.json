@@ -1,5 +1,5 @@
 {
-  "kind": "raw generated minimal Rust load-state fixture",
+  "kind": "generated minimal Rust load-state fixture with field descriptor migration",
   "producerCommit": "107bc82cde45837a78abd9686d40bd16ad764e5c",
   "modelSha256": "0664ef5b32b1126100676782ec5c6c2d56e9e491920bfdfacadb4790a66b9ca9",
   "runtimeVersion": "5.0.7",
@@ -7,7 +7,7 @@
   "wide": false,
   "inheritance": false,
   "handEdited": false,
-  "previousProvenanceSha256": "6e06cd43d0bc3172ffe62da29acbaef0edfdf005913690a71c9f5a6708dfda99",
+  "previousProvenanceSha256": "5d6aeb93b9732451149a514dc67a921679b0d4d8efd5da56e0241ea8de7c1f30",
   "producerReceipt": {
     "repository": "teaql-conformance",
     "path": "evidence/2026-10-25-core-p0-p1/rust-shared-current-fixture-export-v1/report.json",
@@ -32,7 +32,7 @@
     },
     {
       "path": "lib/src/lib.rs",
-      "sha256": "9d5b3be514e5d85242f2bb6567902ef3126756695d39989889d2a5ab704306a8"
+      "sha256": "61981dc8dd17f8636ce0198d2077c211ad39e572cbfc1d8367c6be70e5763387"
     },
     {
       "path": "lib/src/platform/behavior.rs",
@@ -44,7 +44,7 @@
     },
     {
       "path": "lib/src/platform/entity.rs",
-      "sha256": "0244cf625177b846b94a9c5bca6554172bf6efad8916ee25bb00ea1856c8343e"
+      "sha256": "6dd7006a0ddcfc2bfaadf03d71d9f1ba9858fe50cedc2832e93c2c49a167c128"
     },
     {
       "path": "lib/src/platform/expression.rs",
@@ -56,7 +56,7 @@
     },
     {
       "path": "lib/src/platform/request.rs",
-      "sha256": "3cf281b45adbd9bc8c19424032059745522d09d4f0db7f5cbd41d88b777c1144"
+      "sha256": "37e95044a12e8086f1136b5a87c6103d0de2246e8d96b7ffa5d4ccd60ebfcd09"
     },
     {
       "path": "lib/src/q.rs",
@@ -84,7 +84,7 @@
     },
     {
       "path": "lib/src/school_capacity_summary/entity.rs",
-      "sha256": "65da9a91f88e4087bf2f837abb222cef44d2cb49af8da8a60cec3ce84fce6308"
+      "sha256": "4182a2bbd1c85f5096b8ccdf06a29366cf9ab30202dc3e5a6f995ac258d4bd8a"
     },
     {
       "path": "lib/src/school_capacity_summary/expression.rs",
@@ -96,7 +96,7 @@
     },
     {
       "path": "lib/src/school_capacity_summary/request.rs",
-      "sha256": "d2667d34e7b9df43d2054bafa7079b3674e6e5aa4fb39686ac6f54aeaea1158a"
+      "sha256": "db51091d2709253123ad7bcc5aca69ded18e0567fcf28bee3e3cc89fb9462695"
     },
     {
       "path": "lib/src/school_type/behavior.rs",
@@ -108,7 +108,7 @@
     },
     {
       "path": "lib/src/school_type/entity.rs",
-      "sha256": "63cb321347e14c1990e57011c26e18a8d38c1993fc0444f6a7460cec49aec6a8"
+      "sha256": "6cde2b8a1b0874c32b9609615ab457ebeb01bb401c5804f31c203a4ea80f2c47"
     },
     {
       "path": "lib/src/school_type/expression.rs",
@@ -120,7 +120,7 @@
     },
     {
       "path": "lib/src/school_type/request.rs",
-      "sha256": "1c3082b1c0e047ff4cef649a61f3092fc6372deaef936916177caa48b12d090b"
+      "sha256": "7300893b8a815643f671ae0c3710ac2a1e79418db82736d8522cf067175aace6"
     },
     {
       "path": "lib/src/school/behavior.rs",
@@ -132,7 +132,7 @@
     },
     {
       "path": "lib/src/school/entity.rs",
-      "sha256": "c94da94c14d79c5fb517674616042fd509ff92e5d17d7f5e0058482fe97082a8"
+      "sha256": "d9a1f07f7f73d56c1eb852374519199feeabd25bd6011f0af134766e1ed2da9d"
     },
     {
       "path": "lib/src/school/expression.rs",
@@ -144,11 +144,12 @@
     },
     {
       "path": "lib/src/school/request.rs",
-      "sha256": "7c21ae384d36b77978a01270d931da9481efb0ff4d49284f578d314613324c01"
+      "sha256": "8e3aab1c0a7da4722ae7acb5bcf887e26bb762f71049ca049d30d570c6d482f2"
     },
     {
       "path": "model-under-test.xml",
       "sha256": "0664ef5b32b1126100676782ec5c6c2d56e9e491920bfdfacadb4790a66b9ca9"
     }
-  ]
+  ],
+  "fieldDescriptorRefresh": "../../../field-descriptor-generation.json"
 }

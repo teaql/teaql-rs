@@ -46,8 +46,8 @@ impl<R> WorkItemRequest<R> {
     pub(crate) fn new() -> Self {
         Self {
             query: SelectQuery::new("WorkItem")
-                .project("id")
-                .project("version"),
+                .project(crate::WorkItem::__TEAQL_FIELD_id.query_key)
+                .project(crate::WorkItem::__TEAQL_FIELD_version.query_key),
             relation_selections: Vec::new(),
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
@@ -323,7 +323,7 @@ impl<R> WorkItemRequest<R> {
 
     pub fn deleted_rows_only(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self.query = self.query.and_filter(Expr::lte("version", 0_i64));
+        self.query = self.query.and_filter(Expr::lte(crate::WorkItem::__TEAQL_FIELD_version.query_key, 0_i64));
         self
     }
 
@@ -635,11 +635,11 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn select_self(mut self) -> Self {
-        self.query = self.query.project("id");
-        self.query = self.query.project("title");
-        self.query = self.query.project("description");
-        self.query = self.query.project("version");
-        self.query = self.query.project("platform_id");
+        self.query = self.query.project(crate::WorkItem::__TEAQL_FIELD_id.query_key);
+        self.query = self.query.project(crate::WorkItem::__TEAQL_FIELD_title.query_key);
+        self.query = self.query.project(crate::WorkItem::__TEAQL_FIELD_description.query_key);
+        self.query = self.query.project(crate::WorkItem::__TEAQL_FIELD_version.query_key);
+        self.query = self.query.project(crate::WorkItem::__TEAQL_FIELD_platform.query_key);
         self
     }
 
@@ -769,15 +769,15 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn group_by_id(self) -> Self {
-        self.group_by("id")
+        self.group_by(crate::WorkItem::__TEAQL_FIELD_id.query_key)
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("id");
+        let mut request = self.group_by(crate::WorkItem::__TEAQL_FIELD_id.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("id"));
+            .project_expr(alias, Expr::column(crate::WorkItem::__TEAQL_FIELD_id.query_key));
         request
     }
 
@@ -786,8 +786,8 @@ impl<R> WorkItemRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("id")
-            .aggregate_with_function("id", alias, function)
+        self.group_by(crate::WorkItem::__TEAQL_FIELD_id.query_key)
+            .aggregate_with_function(crate::WorkItem::__TEAQL_FIELD_id.query_key, alias, function)
     }
 
     pub fn count_id(self) -> Self {
@@ -795,7 +795,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("id", alias)
+        self.aggregate_count_field(crate::WorkItem::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn sum_id(self) -> Self {
@@ -803,7 +803,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn sum_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("id", alias)
+        self.aggregate_sum(crate::WorkItem::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn avg_id(self) -> Self {
@@ -811,7 +811,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn avg_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("id", alias)
+        self.aggregate_avg(crate::WorkItem::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn min_id(self) -> Self {
@@ -819,7 +819,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn min_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("id", alias)
+        self.aggregate_min(crate::WorkItem::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn max_id(self) -> Self {
@@ -827,7 +827,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn max_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("id", alias)
+        self.aggregate_max(crate::WorkItem::__TEAQL_FIELD_id.query_key, alias)
     }
 
 
@@ -837,7 +837,7 @@ impl<R> WorkItemRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "id",
+            crate::WorkItem::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -849,21 +849,21 @@ impl<R> WorkItemRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "id",
+            crate::WorkItem::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", value));
+        self.query = self.query.and_filter(Expr::eq(crate::WorkItem::__TEAQL_FIELD_id.query_key, value));
         self
     }
 
 
 
     pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", value));
+        self.query = self.query.and_filter(Expr::ne(crate::WorkItem::__TEAQL_FIELD_id.query_key, value));
         self
     }
 
@@ -890,28 +890,28 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn order_by_id_asc(mut self) -> Self {
-        self.query = self.query.order_asc("id");
+        self.query = self.query.order_asc(crate::WorkItem::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
-        self.query = self.query.order_desc("id");
+        self.query = self.query.order_desc(crate::WorkItem::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("id");
+        self.query = self.query.order_gbk_asc(crate::WorkItem::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("id");
+        self.query = self.query.order_gbk_desc(crate::WorkItem::__TEAQL_FIELD_id.query_key);
         self
     }
 
 
     pub fn select_title(mut self) -> Self {
-        self.query = self.query.project("title");
+        self.query = self.query.project(crate::WorkItem::__TEAQL_FIELD_title.query_key);
         self
     }
 
@@ -931,15 +931,15 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn group_by_title(self) -> Self {
-        self.group_by("title")
+        self.group_by(crate::WorkItem::__TEAQL_FIELD_title.query_key)
     }
 
     pub fn group_by_title_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("title");
+        let mut request = self.group_by(crate::WorkItem::__TEAQL_FIELD_title.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("title"));
+            .project_expr(alias, Expr::column(crate::WorkItem::__TEAQL_FIELD_title.query_key));
         request
     }
 
@@ -948,8 +948,8 @@ impl<R> WorkItemRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("title")
-            .aggregate_with_function("title", alias, function)
+        self.group_by(crate::WorkItem::__TEAQL_FIELD_title.query_key)
+            .aggregate_with_function(crate::WorkItem::__TEAQL_FIELD_title.query_key, alias, function)
     }
 
     pub fn count_title(self) -> Self {
@@ -957,7 +957,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn count_title_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("title", alias)
+        self.aggregate_count_field(crate::WorkItem::__TEAQL_FIELD_title.query_key, alias)
     }
 
     pub fn sum_title(self) -> Self {
@@ -965,7 +965,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn sum_title_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("title", alias)
+        self.aggregate_sum(crate::WorkItem::__TEAQL_FIELD_title.query_key, alias)
     }
 
     pub fn avg_title(self) -> Self {
@@ -973,7 +973,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn avg_title_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("title", alias)
+        self.aggregate_avg(crate::WorkItem::__TEAQL_FIELD_title.query_key, alias)
     }
 
     pub fn min_title(self) -> Self {
@@ -981,7 +981,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn min_title_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("title", alias)
+        self.aggregate_min(crate::WorkItem::__TEAQL_FIELD_title.query_key, alias)
     }
 
     pub fn max_title(self) -> Self {
@@ -989,7 +989,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn max_title_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("title", alias)
+        self.aggregate_max(crate::WorkItem::__TEAQL_FIELD_title.query_key, alias)
     }
 
     pub fn unselect_title(mut self) -> Self {
@@ -1005,7 +1005,7 @@ impl<R> WorkItemRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "title",
+            crate::WorkItem::__TEAQL_FIELD_title.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1017,41 +1017,41 @@ impl<R> WorkItemRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "title",
+            crate::WorkItem::__TEAQL_FIELD_title.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_title_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("title", value));
+        self.query = self.query.and_filter(Expr::eq(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
 
 
     pub fn with_title_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("title", value));
+        self.query = self.query.and_filter(Expr::ne(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
     pub fn with_title_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("title", value));
+        self.query = self.query.and_filter(Expr::gt(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
     pub fn with_title_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("title", value));
+        self.query = self.query.and_filter(Expr::gte(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
     pub fn with_title_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("title", value));
+        self.query = self.query.and_filter(Expr::lt(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
     pub fn with_title_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("title", value));
+        self.query = self.query.and_filter(Expr::lte(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
@@ -1060,7 +1060,7 @@ impl<R> WorkItemRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("title", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::WorkItem::__TEAQL_FIELD_title.query_key, lower, upper));
         self
     }
 
@@ -1069,7 +1069,7 @@ impl<R> WorkItemRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "title",
+            crate::WorkItem::__TEAQL_FIELD_title.query_key,
             range.start,
             range.end,
         ));
@@ -1099,17 +1099,17 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn with_title_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("title", value));
+        self.query = self.query.and_filter(Expr::contain(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
     pub fn with_title_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("title", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
     pub fn with_title_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("title", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
@@ -1119,7 +1119,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn with_title_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("title", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
@@ -1129,55 +1129,55 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn with_title_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("title", value));
+        self.query = self.query.and_filter(Expr::sound_like(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
     pub fn with_title_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("title", value));
+        self.query = self.query.and_filter(Expr::lt(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
     pub fn with_title_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("title", value));
+        self.query = self.query.and_filter(Expr::gt(crate::WorkItem::__TEAQL_FIELD_title.query_key, value));
         self
     }
 
     pub fn with_title_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("title"));
+        self.query = self.query.and_filter(Expr::is_null(crate::WorkItem::__TEAQL_FIELD_title.query_key));
         self
     }
 
 
 
     pub fn with_title_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("title"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::WorkItem::__TEAQL_FIELD_title.query_key));
         self
     }
 
 
     pub fn order_by_title_asc(mut self) -> Self {
-        self.query = self.query.order_asc("title");
+        self.query = self.query.order_asc(crate::WorkItem::__TEAQL_FIELD_title.query_key);
         self
     }
 
     pub fn order_by_title_desc(mut self) -> Self {
-        self.query = self.query.order_desc("title");
+        self.query = self.query.order_desc(crate::WorkItem::__TEAQL_FIELD_title.query_key);
         self
     }
 
     pub fn order_by_title_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("title");
+        self.query = self.query.order_gbk_asc(crate::WorkItem::__TEAQL_FIELD_title.query_key);
         self
     }
 
     pub fn order_by_title_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("title");
+        self.query = self.query.order_gbk_desc(crate::WorkItem::__TEAQL_FIELD_title.query_key);
         self
     }
 
 
     pub fn select_description(mut self) -> Self {
-        self.query = self.query.project("description");
+        self.query = self.query.project(crate::WorkItem::__TEAQL_FIELD_description.query_key);
         self
     }
 
@@ -1197,15 +1197,15 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn group_by_description(self) -> Self {
-        self.group_by("description")
+        self.group_by(crate::WorkItem::__TEAQL_FIELD_description.query_key)
     }
 
     pub fn group_by_description_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("description");
+        let mut request = self.group_by(crate::WorkItem::__TEAQL_FIELD_description.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("description"));
+            .project_expr(alias, Expr::column(crate::WorkItem::__TEAQL_FIELD_description.query_key));
         request
     }
 
@@ -1214,8 +1214,8 @@ impl<R> WorkItemRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("description")
-            .aggregate_with_function("description", alias, function)
+        self.group_by(crate::WorkItem::__TEAQL_FIELD_description.query_key)
+            .aggregate_with_function(crate::WorkItem::__TEAQL_FIELD_description.query_key, alias, function)
     }
 
     pub fn count_description(self) -> Self {
@@ -1223,7 +1223,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn count_description_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("description", alias)
+        self.aggregate_count_field(crate::WorkItem::__TEAQL_FIELD_description.query_key, alias)
     }
 
     pub fn sum_description(self) -> Self {
@@ -1231,7 +1231,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn sum_description_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("description", alias)
+        self.aggregate_sum(crate::WorkItem::__TEAQL_FIELD_description.query_key, alias)
     }
 
     pub fn avg_description(self) -> Self {
@@ -1239,7 +1239,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn avg_description_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("description", alias)
+        self.aggregate_avg(crate::WorkItem::__TEAQL_FIELD_description.query_key, alias)
     }
 
     pub fn min_description(self) -> Self {
@@ -1247,7 +1247,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn min_description_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("description", alias)
+        self.aggregate_min(crate::WorkItem::__TEAQL_FIELD_description.query_key, alias)
     }
 
     pub fn max_description(self) -> Self {
@@ -1255,7 +1255,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn max_description_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("description", alias)
+        self.aggregate_max(crate::WorkItem::__TEAQL_FIELD_description.query_key, alias)
     }
 
     pub fn unselect_description(mut self) -> Self {
@@ -1271,7 +1271,7 @@ impl<R> WorkItemRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "description",
+            crate::WorkItem::__TEAQL_FIELD_description.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1283,41 +1283,41 @@ impl<R> WorkItemRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "description",
+            crate::WorkItem::__TEAQL_FIELD_description.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_description_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("description", value));
+        self.query = self.query.and_filter(Expr::eq(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
 
 
     pub fn with_description_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("description", value));
+        self.query = self.query.and_filter(Expr::ne(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
     pub fn with_description_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("description", value));
+        self.query = self.query.and_filter(Expr::gt(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
     pub fn with_description_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("description", value));
+        self.query = self.query.and_filter(Expr::gte(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
     pub fn with_description_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("description", value));
+        self.query = self.query.and_filter(Expr::lt(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
     pub fn with_description_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("description", value));
+        self.query = self.query.and_filter(Expr::lte(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
@@ -1326,7 +1326,7 @@ impl<R> WorkItemRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("description", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::WorkItem::__TEAQL_FIELD_description.query_key, lower, upper));
         self
     }
 
@@ -1335,7 +1335,7 @@ impl<R> WorkItemRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "description",
+            crate::WorkItem::__TEAQL_FIELD_description.query_key,
             range.start,
             range.end,
         ));
@@ -1365,17 +1365,17 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn with_description_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("description", value));
+        self.query = self.query.and_filter(Expr::contain(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
     pub fn with_description_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("description", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
     pub fn with_description_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("description", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
@@ -1385,7 +1385,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn with_description_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("description", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
@@ -1395,62 +1395,62 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn with_description_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("description", value));
+        self.query = self.query.and_filter(Expr::sound_like(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
     pub fn with_description_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("description", value));
+        self.query = self.query.and_filter(Expr::lt(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
     pub fn with_description_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("description", value));
+        self.query = self.query.and_filter(Expr::gt(crate::WorkItem::__TEAQL_FIELD_description.query_key, value));
         self
     }
 
     pub fn with_description_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("description"));
+        self.query = self.query.and_filter(Expr::is_null(crate::WorkItem::__TEAQL_FIELD_description.query_key));
         self
     }
 
 
 
     pub fn with_description_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("description"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::WorkItem::__TEAQL_FIELD_description.query_key));
         self
     }
 
 
     pub fn order_by_description_asc(mut self) -> Self {
-        self.query = self.query.order_asc("description");
+        self.query = self.query.order_asc(crate::WorkItem::__TEAQL_FIELD_description.query_key);
         self
     }
 
     pub fn order_by_description_desc(mut self) -> Self {
-        self.query = self.query.order_desc("description");
+        self.query = self.query.order_desc(crate::WorkItem::__TEAQL_FIELD_description.query_key);
         self
     }
 
     pub fn order_by_description_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("description");
+        self.query = self.query.order_gbk_asc(crate::WorkItem::__TEAQL_FIELD_description.query_key);
         self
     }
 
     pub fn order_by_description_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("description");
+        self.query = self.query.order_gbk_desc(crate::WorkItem::__TEAQL_FIELD_description.query_key);
         self
     }
 
     pub fn group_by_version(self) -> Self {
-        self.group_by("version")
+        self.group_by(crate::WorkItem::__TEAQL_FIELD_version.query_key)
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("version");
+        let mut request = self.group_by(crate::WorkItem::__TEAQL_FIELD_version.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("version"));
+            .project_expr(alias, Expr::column(crate::WorkItem::__TEAQL_FIELD_version.query_key));
         request
     }
 
@@ -1459,8 +1459,8 @@ impl<R> WorkItemRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("version")
-            .aggregate_with_function("version", alias, function)
+        self.group_by(crate::WorkItem::__TEAQL_FIELD_version.query_key)
+            .aggregate_with_function(crate::WorkItem::__TEAQL_FIELD_version.query_key, alias, function)
     }
 
     pub fn count_version(self) -> Self {
@@ -1468,7 +1468,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("version", alias)
+        self.aggregate_count_field(crate::WorkItem::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn sum_version(self) -> Self {
@@ -1476,7 +1476,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn sum_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("version", alias)
+        self.aggregate_sum(crate::WorkItem::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn avg_version(self) -> Self {
@@ -1484,7 +1484,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn avg_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("version", alias)
+        self.aggregate_avg(crate::WorkItem::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn min_version(self) -> Self {
@@ -1492,7 +1492,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn min_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("version", alias)
+        self.aggregate_min(crate::WorkItem::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn max_version(self) -> Self {
@@ -1500,30 +1500,30 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn max_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("version", alias)
+        self.aggregate_max(crate::WorkItem::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn order_by_version_asc(mut self) -> Self {
-        self.query = self.query.order_asc("version");
+        self.query = self.query.order_asc(crate::WorkItem::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
-        self.query = self.query.order_desc("version");
+        self.query = self.query.order_desc(crate::WorkItem::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("version");
+        self.query = self.query.order_gbk_asc(crate::WorkItem::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("version");
+        self.query = self.query.order_gbk_desc(crate::WorkItem::__TEAQL_FIELD_version.query_key);
         self
     }
     pub fn filter_by_platform(mut self, value: impl EntityReference) -> Self {
-        self.query = self.query.and_filter(Expr::eq("platform_id", value.entity_id_value()));
+        self.query = self.query.and_filter(Expr::eq(crate::WorkItem::__TEAQL_FIELD_platform.query_key, value.entity_id_value()));
         self
     }
 
@@ -1554,26 +1554,26 @@ impl<R> WorkItemRequest<R> {
 
 
     pub fn have_platform(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("platform_id"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::WorkItem::__TEAQL_FIELD_platform.query_key));
         self
     }
 
     pub fn have_no_platform(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("platform_id"));
+        self.query = self.query.and_filter(Expr::is_null(crate::WorkItem::__TEAQL_FIELD_platform.query_key));
         self
     }
 
 
     pub fn group_by_platform(self) -> Self {
-        self.group_by("platform_id")
+        self.group_by(crate::WorkItem::__TEAQL_FIELD_platform.query_key)
     }
 
     pub fn group_by_platform_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("platform_id");
+        let mut request = self.group_by(crate::WorkItem::__TEAQL_FIELD_platform.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("platform_id"));
+            .project_expr(alias, Expr::column(crate::WorkItem::__TEAQL_FIELD_platform.query_key));
         request
     }
 
@@ -1582,12 +1582,12 @@ impl<R> WorkItemRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("platform_id")
-            .aggregate_with_function("platform_id", alias, function)
+        self.group_by(crate::WorkItem::__TEAQL_FIELD_platform.query_key)
+            .aggregate_with_function(crate::WorkItem::__TEAQL_FIELD_platform.query_key, alias, function)
     }
 
     pub fn group_by_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
-        self.query = self.query.group_by("platform_id");
+        self.query = self.query.group_by(crate::WorkItem::__TEAQL_FIELD_platform.query_key);
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "platform",
             "platform_id",
@@ -1620,7 +1620,7 @@ impl<R> WorkItemRequest<R> {
     }
 
     pub fn count_platform_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("platform_id", alias)
+        self.aggregate_count_field(crate::WorkItem::__TEAQL_FIELD_platform.query_key, alias)
     }
 
     pub fn unselect_platform(mut self) -> Self {

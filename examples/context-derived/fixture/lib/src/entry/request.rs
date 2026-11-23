@@ -46,8 +46,8 @@ impl<R> EntryRequest<R> {
     pub(crate) fn new() -> Self {
         Self {
             query: SelectQuery::new("Entry")
-                .project("id")
-                .project("version"),
+                .project(crate::Entry::__TEAQL_FIELD_id.query_key)
+                .project(crate::Entry::__TEAQL_FIELD_version.query_key),
             relation_selections: Vec::new(),
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
@@ -299,7 +299,7 @@ impl<R> EntryRequest<R> {
 
     pub fn deleted_rows_only(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self.query = self.query.and_filter(Expr::lte("version", 0_i64));
+        self.query = self.query.and_filter(Expr::lte(crate::Entry::__TEAQL_FIELD_version.query_key, 0_i64));
         self
     }
 
@@ -617,17 +617,17 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn select_self(mut self) -> Self {
-        self.query = self.query.project("id");
-        self.query = self.query.project("name");
-        self.query = self.query.project("born_at");
-        self.query = self.query.project("touched_at");
-        self.query = self.query.project("source_ip");
-        self.query = self.query.project("last_ip");
-        self.query = self.query.project("opened_by");
-        self.query = self.query.project("changed_by");
-        self.query = self.query.project("guarded_token");
-        self.query = self.query.project("version");
-        self.query = self.query.project("catalog_id");
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_id.query_key);
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_name.query_key);
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_born_at.query_key);
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_touched_at.query_key);
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_source_ip.query_key);
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_last_ip.query_key);
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_opened_by.query_key);
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_changed_by.query_key);
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_guarded_token.query_key);
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_version.query_key);
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_catalog.query_key);
         self
     }
 
@@ -765,15 +765,15 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn group_by_id(self) -> Self {
-        self.group_by("id")
+        self.group_by(crate::Entry::__TEAQL_FIELD_id.query_key)
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("id");
+        let mut request = self.group_by(crate::Entry::__TEAQL_FIELD_id.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("id"));
+            .project_expr(alias, Expr::column(crate::Entry::__TEAQL_FIELD_id.query_key));
         request
     }
 
@@ -782,8 +782,8 @@ impl<R> EntryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("id")
-            .aggregate_with_function("id", alias, function)
+        self.group_by(crate::Entry::__TEAQL_FIELD_id.query_key)
+            .aggregate_with_function(crate::Entry::__TEAQL_FIELD_id.query_key, alias, function)
     }
 
     pub fn count_id(self) -> Self {
@@ -791,7 +791,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("id", alias)
+        self.aggregate_count_field(crate::Entry::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn sum_id(self) -> Self {
@@ -799,7 +799,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn sum_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("id", alias)
+        self.aggregate_sum(crate::Entry::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn avg_id(self) -> Self {
@@ -807,7 +807,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn avg_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("id", alias)
+        self.aggregate_avg(crate::Entry::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn min_id(self) -> Self {
@@ -815,7 +815,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn min_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("id", alias)
+        self.aggregate_min(crate::Entry::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn max_id(self) -> Self {
@@ -823,7 +823,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn max_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("id", alias)
+        self.aggregate_max(crate::Entry::__TEAQL_FIELD_id.query_key, alias)
     }
 
 
@@ -833,7 +833,7 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "id",
+            crate::Entry::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -845,21 +845,21 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "id",
+            crate::Entry::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", value));
+        self.query = self.query.and_filter(Expr::eq(crate::Entry::__TEAQL_FIELD_id.query_key, value));
         self
     }
 
 
 
     pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", value));
+        self.query = self.query.and_filter(Expr::ne(crate::Entry::__TEAQL_FIELD_id.query_key, value));
         self
     }
 
@@ -886,28 +886,28 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn order_by_id_asc(mut self) -> Self {
-        self.query = self.query.order_asc("id");
+        self.query = self.query.order_asc(crate::Entry::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
-        self.query = self.query.order_desc("id");
+        self.query = self.query.order_desc(crate::Entry::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("id");
+        self.query = self.query.order_gbk_asc(crate::Entry::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("id");
+        self.query = self.query.order_gbk_desc(crate::Entry::__TEAQL_FIELD_id.query_key);
         self
     }
 
 
     pub fn select_name(mut self) -> Self {
-        self.query = self.query.project("name");
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_name.query_key);
         self
     }
 
@@ -927,15 +927,15 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn group_by_name(self) -> Self {
-        self.group_by("name")
+        self.group_by(crate::Entry::__TEAQL_FIELD_name.query_key)
     }
 
     pub fn group_by_name_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("name");
+        let mut request = self.group_by(crate::Entry::__TEAQL_FIELD_name.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("name"));
+            .project_expr(alias, Expr::column(crate::Entry::__TEAQL_FIELD_name.query_key));
         request
     }
 
@@ -944,8 +944,8 @@ impl<R> EntryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("name")
-            .aggregate_with_function("name", alias, function)
+        self.group_by(crate::Entry::__TEAQL_FIELD_name.query_key)
+            .aggregate_with_function(crate::Entry::__TEAQL_FIELD_name.query_key, alias, function)
     }
 
     pub fn count_name(self) -> Self {
@@ -953,7 +953,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn count_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("name", alias)
+        self.aggregate_count_field(crate::Entry::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn sum_name(self) -> Self {
@@ -961,7 +961,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn sum_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("name", alias)
+        self.aggregate_sum(crate::Entry::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn avg_name(self) -> Self {
@@ -969,7 +969,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn avg_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("name", alias)
+        self.aggregate_avg(crate::Entry::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn min_name(self) -> Self {
@@ -977,7 +977,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn min_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("name", alias)
+        self.aggregate_min(crate::Entry::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn max_name(self) -> Self {
@@ -985,7 +985,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn max_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("name", alias)
+        self.aggregate_max(crate::Entry::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn unselect_name(mut self) -> Self {
@@ -1001,7 +1001,7 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "name",
+            crate::Entry::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1013,41 +1013,41 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "name",
+            crate::Entry::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_name_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("name", value));
+        self.query = self.query.and_filter(Expr::eq(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
 
 
     pub fn with_name_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("name", value));
+        self.query = self.query.and_filter(Expr::ne(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("name", value));
+        self.query = self.query.and_filter(Expr::gte(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("name", value));
+        self.query = self.query.and_filter(Expr::lte(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
@@ -1056,7 +1056,7 @@ impl<R> EntryRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("name", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::Entry::__TEAQL_FIELD_name.query_key, lower, upper));
         self
     }
 
@@ -1065,7 +1065,7 @@ impl<R> EntryRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "name",
+            crate::Entry::__TEAQL_FIELD_name.query_key,
             range.start,
             range.end,
         ));
@@ -1095,17 +1095,17 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_name_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("name", value));
+        self.query = self.query.and_filter(Expr::contain(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("name", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("name", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
@@ -1115,7 +1115,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_name_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("name", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
@@ -1125,55 +1125,55 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_name_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("name", value));
+        self.query = self.query.and_filter(Expr::sound_like(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
     pub fn with_name_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("name"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Entry::__TEAQL_FIELD_name.query_key));
         self
     }
 
 
 
     pub fn with_name_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("name"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Entry::__TEAQL_FIELD_name.query_key));
         self
     }
 
 
     pub fn order_by_name_asc(mut self) -> Self {
-        self.query = self.query.order_asc("name");
+        self.query = self.query.order_asc(crate::Entry::__TEAQL_FIELD_name.query_key);
         self
     }
 
     pub fn order_by_name_desc(mut self) -> Self {
-        self.query = self.query.order_desc("name");
+        self.query = self.query.order_desc(crate::Entry::__TEAQL_FIELD_name.query_key);
         self
     }
 
     pub fn order_by_name_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("name");
+        self.query = self.query.order_gbk_asc(crate::Entry::__TEAQL_FIELD_name.query_key);
         self
     }
 
     pub fn order_by_name_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("name");
+        self.query = self.query.order_gbk_desc(crate::Entry::__TEAQL_FIELD_name.query_key);
         self
     }
 
 
     pub fn select_born_at(mut self) -> Self {
-        self.query = self.query.project("born_at");
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_born_at.query_key);
         self
     }
 
@@ -1193,15 +1193,15 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn group_by_born_at(self) -> Self {
-        self.group_by("born_at")
+        self.group_by(crate::Entry::__TEAQL_FIELD_born_at.query_key)
     }
 
     pub fn group_by_born_at_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("born_at");
+        let mut request = self.group_by(crate::Entry::__TEAQL_FIELD_born_at.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("born_at"));
+            .project_expr(alias, Expr::column(crate::Entry::__TEAQL_FIELD_born_at.query_key));
         request
     }
 
@@ -1210,8 +1210,8 @@ impl<R> EntryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("born_at")
-            .aggregate_with_function("born_at", alias, function)
+        self.group_by(crate::Entry::__TEAQL_FIELD_born_at.query_key)
+            .aggregate_with_function(crate::Entry::__TEAQL_FIELD_born_at.query_key, alias, function)
     }
 
     pub fn count_born_at(self) -> Self {
@@ -1219,7 +1219,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn count_born_at_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("born_at", alias)
+        self.aggregate_count_field(crate::Entry::__TEAQL_FIELD_born_at.query_key, alias)
     }
 
     pub fn sum_born_at(self) -> Self {
@@ -1227,7 +1227,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn sum_born_at_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("born_at", alias)
+        self.aggregate_sum(crate::Entry::__TEAQL_FIELD_born_at.query_key, alias)
     }
 
     pub fn avg_born_at(self) -> Self {
@@ -1235,7 +1235,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn avg_born_at_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("born_at", alias)
+        self.aggregate_avg(crate::Entry::__TEAQL_FIELD_born_at.query_key, alias)
     }
 
     pub fn min_born_at(self) -> Self {
@@ -1243,7 +1243,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn min_born_at_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("born_at", alias)
+        self.aggregate_min(crate::Entry::__TEAQL_FIELD_born_at.query_key, alias)
     }
 
     pub fn max_born_at(self) -> Self {
@@ -1251,7 +1251,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn max_born_at_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("born_at", alias)
+        self.aggregate_max(crate::Entry::__TEAQL_FIELD_born_at.query_key, alias)
     }
 
     pub fn unselect_born_at(mut self) -> Self {
@@ -1267,7 +1267,7 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "born_at",
+            crate::Entry::__TEAQL_FIELD_born_at.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1279,41 +1279,41 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "born_at",
+            crate::Entry::__TEAQL_FIELD_born_at.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_born_at_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("born_at", value));
+        self.query = self.query.and_filter(Expr::eq(crate::Entry::__TEAQL_FIELD_born_at.query_key, value));
         self
     }
 
 
 
     pub fn with_born_at_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("born_at", value));
+        self.query = self.query.and_filter(Expr::ne(crate::Entry::__TEAQL_FIELD_born_at.query_key, value));
         self
     }
 
     pub fn with_born_at_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("born_at", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_born_at.query_key, value));
         self
     }
 
     pub fn with_born_at_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("born_at", value));
+        self.query = self.query.and_filter(Expr::gte(crate::Entry::__TEAQL_FIELD_born_at.query_key, value));
         self
     }
 
     pub fn with_born_at_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("born_at", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_born_at.query_key, value));
         self
     }
 
     pub fn with_born_at_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("born_at", value));
+        self.query = self.query.and_filter(Expr::lte(crate::Entry::__TEAQL_FIELD_born_at.query_key, value));
         self
     }
 
@@ -1322,7 +1322,7 @@ impl<R> EntryRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("born_at", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::Entry::__TEAQL_FIELD_born_at.query_key, lower, upper));
         self
     }
 
@@ -1331,7 +1331,7 @@ impl<R> EntryRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "born_at",
+            crate::Entry::__TEAQL_FIELD_born_at.query_key,
             range.start,
             range.end,
         ));
@@ -1361,51 +1361,51 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_born_at_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("born_at", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_born_at.query_key, value));
         self
     }
 
     pub fn with_born_at_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("born_at", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_born_at.query_key, value));
         self
     }
 
     pub fn with_born_at_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("born_at"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Entry::__TEAQL_FIELD_born_at.query_key));
         self
     }
 
 
 
     pub fn with_born_at_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("born_at"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Entry::__TEAQL_FIELD_born_at.query_key));
         self
     }
 
 
     pub fn order_by_born_at_asc(mut self) -> Self {
-        self.query = self.query.order_asc("born_at");
+        self.query = self.query.order_asc(crate::Entry::__TEAQL_FIELD_born_at.query_key);
         self
     }
 
     pub fn order_by_born_at_desc(mut self) -> Self {
-        self.query = self.query.order_desc("born_at");
+        self.query = self.query.order_desc(crate::Entry::__TEAQL_FIELD_born_at.query_key);
         self
     }
 
     pub fn order_by_born_at_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("born_at");
+        self.query = self.query.order_gbk_asc(crate::Entry::__TEAQL_FIELD_born_at.query_key);
         self
     }
 
     pub fn order_by_born_at_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("born_at");
+        self.query = self.query.order_gbk_desc(crate::Entry::__TEAQL_FIELD_born_at.query_key);
         self
     }
 
 
     pub fn select_touched_at(mut self) -> Self {
-        self.query = self.query.project("touched_at");
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_touched_at.query_key);
         self
     }
 
@@ -1425,15 +1425,15 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn group_by_touched_at(self) -> Self {
-        self.group_by("touched_at")
+        self.group_by(crate::Entry::__TEAQL_FIELD_touched_at.query_key)
     }
 
     pub fn group_by_touched_at_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("touched_at");
+        let mut request = self.group_by(crate::Entry::__TEAQL_FIELD_touched_at.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("touched_at"));
+            .project_expr(alias, Expr::column(crate::Entry::__TEAQL_FIELD_touched_at.query_key));
         request
     }
 
@@ -1442,8 +1442,8 @@ impl<R> EntryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("touched_at")
-            .aggregate_with_function("touched_at", alias, function)
+        self.group_by(crate::Entry::__TEAQL_FIELD_touched_at.query_key)
+            .aggregate_with_function(crate::Entry::__TEAQL_FIELD_touched_at.query_key, alias, function)
     }
 
     pub fn count_touched_at(self) -> Self {
@@ -1451,7 +1451,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn count_touched_at_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("touched_at", alias)
+        self.aggregate_count_field(crate::Entry::__TEAQL_FIELD_touched_at.query_key, alias)
     }
 
     pub fn sum_touched_at(self) -> Self {
@@ -1459,7 +1459,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn sum_touched_at_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("touched_at", alias)
+        self.aggregate_sum(crate::Entry::__TEAQL_FIELD_touched_at.query_key, alias)
     }
 
     pub fn avg_touched_at(self) -> Self {
@@ -1467,7 +1467,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn avg_touched_at_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("touched_at", alias)
+        self.aggregate_avg(crate::Entry::__TEAQL_FIELD_touched_at.query_key, alias)
     }
 
     pub fn min_touched_at(self) -> Self {
@@ -1475,7 +1475,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn min_touched_at_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("touched_at", alias)
+        self.aggregate_min(crate::Entry::__TEAQL_FIELD_touched_at.query_key, alias)
     }
 
     pub fn max_touched_at(self) -> Self {
@@ -1483,7 +1483,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn max_touched_at_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("touched_at", alias)
+        self.aggregate_max(crate::Entry::__TEAQL_FIELD_touched_at.query_key, alias)
     }
 
     pub fn unselect_touched_at(mut self) -> Self {
@@ -1499,7 +1499,7 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "touched_at",
+            crate::Entry::__TEAQL_FIELD_touched_at.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1511,41 +1511,41 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "touched_at",
+            crate::Entry::__TEAQL_FIELD_touched_at.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_touched_at_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("touched_at", value));
+        self.query = self.query.and_filter(Expr::eq(crate::Entry::__TEAQL_FIELD_touched_at.query_key, value));
         self
     }
 
 
 
     pub fn with_touched_at_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("touched_at", value));
+        self.query = self.query.and_filter(Expr::ne(crate::Entry::__TEAQL_FIELD_touched_at.query_key, value));
         self
     }
 
     pub fn with_touched_at_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("touched_at", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_touched_at.query_key, value));
         self
     }
 
     pub fn with_touched_at_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("touched_at", value));
+        self.query = self.query.and_filter(Expr::gte(crate::Entry::__TEAQL_FIELD_touched_at.query_key, value));
         self
     }
 
     pub fn with_touched_at_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("touched_at", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_touched_at.query_key, value));
         self
     }
 
     pub fn with_touched_at_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("touched_at", value));
+        self.query = self.query.and_filter(Expr::lte(crate::Entry::__TEAQL_FIELD_touched_at.query_key, value));
         self
     }
 
@@ -1554,7 +1554,7 @@ impl<R> EntryRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("touched_at", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::Entry::__TEAQL_FIELD_touched_at.query_key, lower, upper));
         self
     }
 
@@ -1563,7 +1563,7 @@ impl<R> EntryRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "touched_at",
+            crate::Entry::__TEAQL_FIELD_touched_at.query_key,
             range.start,
             range.end,
         ));
@@ -1593,51 +1593,51 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_touched_at_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("touched_at", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_touched_at.query_key, value));
         self
     }
 
     pub fn with_touched_at_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("touched_at", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_touched_at.query_key, value));
         self
     }
 
     pub fn with_touched_at_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("touched_at"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Entry::__TEAQL_FIELD_touched_at.query_key));
         self
     }
 
 
 
     pub fn with_touched_at_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("touched_at"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Entry::__TEAQL_FIELD_touched_at.query_key));
         self
     }
 
 
     pub fn order_by_touched_at_asc(mut self) -> Self {
-        self.query = self.query.order_asc("touched_at");
+        self.query = self.query.order_asc(crate::Entry::__TEAQL_FIELD_touched_at.query_key);
         self
     }
 
     pub fn order_by_touched_at_desc(mut self) -> Self {
-        self.query = self.query.order_desc("touched_at");
+        self.query = self.query.order_desc(crate::Entry::__TEAQL_FIELD_touched_at.query_key);
         self
     }
 
     pub fn order_by_touched_at_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("touched_at");
+        self.query = self.query.order_gbk_asc(crate::Entry::__TEAQL_FIELD_touched_at.query_key);
         self
     }
 
     pub fn order_by_touched_at_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("touched_at");
+        self.query = self.query.order_gbk_desc(crate::Entry::__TEAQL_FIELD_touched_at.query_key);
         self
     }
 
 
     pub fn select_source_ip(mut self) -> Self {
-        self.query = self.query.project("source_ip");
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_source_ip.query_key);
         self
     }
 
@@ -1657,15 +1657,15 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn group_by_source_ip(self) -> Self {
-        self.group_by("source_ip")
+        self.group_by(crate::Entry::__TEAQL_FIELD_source_ip.query_key)
     }
 
     pub fn group_by_source_ip_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("source_ip");
+        let mut request = self.group_by(crate::Entry::__TEAQL_FIELD_source_ip.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("source_ip"));
+            .project_expr(alias, Expr::column(crate::Entry::__TEAQL_FIELD_source_ip.query_key));
         request
     }
 
@@ -1674,8 +1674,8 @@ impl<R> EntryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("source_ip")
-            .aggregate_with_function("source_ip", alias, function)
+        self.group_by(crate::Entry::__TEAQL_FIELD_source_ip.query_key)
+            .aggregate_with_function(crate::Entry::__TEAQL_FIELD_source_ip.query_key, alias, function)
     }
 
     pub fn count_source_ip(self) -> Self {
@@ -1683,7 +1683,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn count_source_ip_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("source_ip", alias)
+        self.aggregate_count_field(crate::Entry::__TEAQL_FIELD_source_ip.query_key, alias)
     }
 
     pub fn sum_source_ip(self) -> Self {
@@ -1691,7 +1691,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn sum_source_ip_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("source_ip", alias)
+        self.aggregate_sum(crate::Entry::__TEAQL_FIELD_source_ip.query_key, alias)
     }
 
     pub fn avg_source_ip(self) -> Self {
@@ -1699,7 +1699,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn avg_source_ip_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("source_ip", alias)
+        self.aggregate_avg(crate::Entry::__TEAQL_FIELD_source_ip.query_key, alias)
     }
 
     pub fn min_source_ip(self) -> Self {
@@ -1707,7 +1707,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn min_source_ip_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("source_ip", alias)
+        self.aggregate_min(crate::Entry::__TEAQL_FIELD_source_ip.query_key, alias)
     }
 
     pub fn max_source_ip(self) -> Self {
@@ -1715,7 +1715,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn max_source_ip_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("source_ip", alias)
+        self.aggregate_max(crate::Entry::__TEAQL_FIELD_source_ip.query_key, alias)
     }
 
     pub fn unselect_source_ip(mut self) -> Self {
@@ -1731,7 +1731,7 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "source_ip",
+            crate::Entry::__TEAQL_FIELD_source_ip.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1743,41 +1743,41 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "source_ip",
+            crate::Entry::__TEAQL_FIELD_source_ip.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_source_ip_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("source_ip", value));
+        self.query = self.query.and_filter(Expr::eq(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
 
 
     pub fn with_source_ip_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("source_ip", value));
+        self.query = self.query.and_filter(Expr::ne(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
     pub fn with_source_ip_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("source_ip", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
     pub fn with_source_ip_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("source_ip", value));
+        self.query = self.query.and_filter(Expr::gte(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
     pub fn with_source_ip_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("source_ip", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
     pub fn with_source_ip_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("source_ip", value));
+        self.query = self.query.and_filter(Expr::lte(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
@@ -1786,7 +1786,7 @@ impl<R> EntryRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("source_ip", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::Entry::__TEAQL_FIELD_source_ip.query_key, lower, upper));
         self
     }
 
@@ -1795,7 +1795,7 @@ impl<R> EntryRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "source_ip",
+            crate::Entry::__TEAQL_FIELD_source_ip.query_key,
             range.start,
             range.end,
         ));
@@ -1825,17 +1825,17 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_source_ip_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("source_ip", value));
+        self.query = self.query.and_filter(Expr::contain(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
     pub fn with_source_ip_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("source_ip", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
     pub fn with_source_ip_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("source_ip", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
@@ -1845,7 +1845,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_source_ip_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("source_ip", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
@@ -1855,55 +1855,55 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_source_ip_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("source_ip", value));
+        self.query = self.query.and_filter(Expr::sound_like(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
     pub fn with_source_ip_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("source_ip", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
     pub fn with_source_ip_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("source_ip", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_source_ip.query_key, value));
         self
     }
 
     pub fn with_source_ip_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("source_ip"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Entry::__TEAQL_FIELD_source_ip.query_key));
         self
     }
 
 
 
     pub fn with_source_ip_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("source_ip"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Entry::__TEAQL_FIELD_source_ip.query_key));
         self
     }
 
 
     pub fn order_by_source_ip_asc(mut self) -> Self {
-        self.query = self.query.order_asc("source_ip");
+        self.query = self.query.order_asc(crate::Entry::__TEAQL_FIELD_source_ip.query_key);
         self
     }
 
     pub fn order_by_source_ip_desc(mut self) -> Self {
-        self.query = self.query.order_desc("source_ip");
+        self.query = self.query.order_desc(crate::Entry::__TEAQL_FIELD_source_ip.query_key);
         self
     }
 
     pub fn order_by_source_ip_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("source_ip");
+        self.query = self.query.order_gbk_asc(crate::Entry::__TEAQL_FIELD_source_ip.query_key);
         self
     }
 
     pub fn order_by_source_ip_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("source_ip");
+        self.query = self.query.order_gbk_desc(crate::Entry::__TEAQL_FIELD_source_ip.query_key);
         self
     }
 
 
     pub fn select_last_ip(mut self) -> Self {
-        self.query = self.query.project("last_ip");
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_last_ip.query_key);
         self
     }
 
@@ -1923,15 +1923,15 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn group_by_last_ip(self) -> Self {
-        self.group_by("last_ip")
+        self.group_by(crate::Entry::__TEAQL_FIELD_last_ip.query_key)
     }
 
     pub fn group_by_last_ip_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("last_ip");
+        let mut request = self.group_by(crate::Entry::__TEAQL_FIELD_last_ip.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("last_ip"));
+            .project_expr(alias, Expr::column(crate::Entry::__TEAQL_FIELD_last_ip.query_key));
         request
     }
 
@@ -1940,8 +1940,8 @@ impl<R> EntryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("last_ip")
-            .aggregate_with_function("last_ip", alias, function)
+        self.group_by(crate::Entry::__TEAQL_FIELD_last_ip.query_key)
+            .aggregate_with_function(crate::Entry::__TEAQL_FIELD_last_ip.query_key, alias, function)
     }
 
     pub fn count_last_ip(self) -> Self {
@@ -1949,7 +1949,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn count_last_ip_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("last_ip", alias)
+        self.aggregate_count_field(crate::Entry::__TEAQL_FIELD_last_ip.query_key, alias)
     }
 
     pub fn sum_last_ip(self) -> Self {
@@ -1957,7 +1957,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn sum_last_ip_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("last_ip", alias)
+        self.aggregate_sum(crate::Entry::__TEAQL_FIELD_last_ip.query_key, alias)
     }
 
     pub fn avg_last_ip(self) -> Self {
@@ -1965,7 +1965,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn avg_last_ip_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("last_ip", alias)
+        self.aggregate_avg(crate::Entry::__TEAQL_FIELD_last_ip.query_key, alias)
     }
 
     pub fn min_last_ip(self) -> Self {
@@ -1973,7 +1973,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn min_last_ip_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("last_ip", alias)
+        self.aggregate_min(crate::Entry::__TEAQL_FIELD_last_ip.query_key, alias)
     }
 
     pub fn max_last_ip(self) -> Self {
@@ -1981,7 +1981,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn max_last_ip_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("last_ip", alias)
+        self.aggregate_max(crate::Entry::__TEAQL_FIELD_last_ip.query_key, alias)
     }
 
     pub fn unselect_last_ip(mut self) -> Self {
@@ -1997,7 +1997,7 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "last_ip",
+            crate::Entry::__TEAQL_FIELD_last_ip.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -2009,41 +2009,41 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "last_ip",
+            crate::Entry::__TEAQL_FIELD_last_ip.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_last_ip_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("last_ip", value));
+        self.query = self.query.and_filter(Expr::eq(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
 
 
     pub fn with_last_ip_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("last_ip", value));
+        self.query = self.query.and_filter(Expr::ne(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
     pub fn with_last_ip_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("last_ip", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
     pub fn with_last_ip_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("last_ip", value));
+        self.query = self.query.and_filter(Expr::gte(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
     pub fn with_last_ip_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("last_ip", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
     pub fn with_last_ip_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("last_ip", value));
+        self.query = self.query.and_filter(Expr::lte(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
@@ -2052,7 +2052,7 @@ impl<R> EntryRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("last_ip", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::Entry::__TEAQL_FIELD_last_ip.query_key, lower, upper));
         self
     }
 
@@ -2061,7 +2061,7 @@ impl<R> EntryRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "last_ip",
+            crate::Entry::__TEAQL_FIELD_last_ip.query_key,
             range.start,
             range.end,
         ));
@@ -2091,17 +2091,17 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_last_ip_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("last_ip", value));
+        self.query = self.query.and_filter(Expr::contain(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
     pub fn with_last_ip_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("last_ip", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
     pub fn with_last_ip_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("last_ip", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
@@ -2111,7 +2111,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_last_ip_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("last_ip", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
@@ -2121,55 +2121,55 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_last_ip_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("last_ip", value));
+        self.query = self.query.and_filter(Expr::sound_like(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
     pub fn with_last_ip_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("last_ip", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
     pub fn with_last_ip_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("last_ip", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_last_ip.query_key, value));
         self
     }
 
     pub fn with_last_ip_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("last_ip"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Entry::__TEAQL_FIELD_last_ip.query_key));
         self
     }
 
 
 
     pub fn with_last_ip_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("last_ip"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Entry::__TEAQL_FIELD_last_ip.query_key));
         self
     }
 
 
     pub fn order_by_last_ip_asc(mut self) -> Self {
-        self.query = self.query.order_asc("last_ip");
+        self.query = self.query.order_asc(crate::Entry::__TEAQL_FIELD_last_ip.query_key);
         self
     }
 
     pub fn order_by_last_ip_desc(mut self) -> Self {
-        self.query = self.query.order_desc("last_ip");
+        self.query = self.query.order_desc(crate::Entry::__TEAQL_FIELD_last_ip.query_key);
         self
     }
 
     pub fn order_by_last_ip_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("last_ip");
+        self.query = self.query.order_gbk_asc(crate::Entry::__TEAQL_FIELD_last_ip.query_key);
         self
     }
 
     pub fn order_by_last_ip_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("last_ip");
+        self.query = self.query.order_gbk_desc(crate::Entry::__TEAQL_FIELD_last_ip.query_key);
         self
     }
 
 
     pub fn select_opened_by(mut self) -> Self {
-        self.query = self.query.project("opened_by");
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_opened_by.query_key);
         self
     }
 
@@ -2189,15 +2189,15 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn group_by_opened_by(self) -> Self {
-        self.group_by("opened_by")
+        self.group_by(crate::Entry::__TEAQL_FIELD_opened_by.query_key)
     }
 
     pub fn group_by_opened_by_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("opened_by");
+        let mut request = self.group_by(crate::Entry::__TEAQL_FIELD_opened_by.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("opened_by"));
+            .project_expr(alias, Expr::column(crate::Entry::__TEAQL_FIELD_opened_by.query_key));
         request
     }
 
@@ -2206,8 +2206,8 @@ impl<R> EntryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("opened_by")
-            .aggregate_with_function("opened_by", alias, function)
+        self.group_by(crate::Entry::__TEAQL_FIELD_opened_by.query_key)
+            .aggregate_with_function(crate::Entry::__TEAQL_FIELD_opened_by.query_key, alias, function)
     }
 
     pub fn count_opened_by(self) -> Self {
@@ -2215,7 +2215,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn count_opened_by_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("opened_by", alias)
+        self.aggregate_count_field(crate::Entry::__TEAQL_FIELD_opened_by.query_key, alias)
     }
 
     pub fn sum_opened_by(self) -> Self {
@@ -2223,7 +2223,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn sum_opened_by_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("opened_by", alias)
+        self.aggregate_sum(crate::Entry::__TEAQL_FIELD_opened_by.query_key, alias)
     }
 
     pub fn avg_opened_by(self) -> Self {
@@ -2231,7 +2231,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn avg_opened_by_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("opened_by", alias)
+        self.aggregate_avg(crate::Entry::__TEAQL_FIELD_opened_by.query_key, alias)
     }
 
     pub fn min_opened_by(self) -> Self {
@@ -2239,7 +2239,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn min_opened_by_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("opened_by", alias)
+        self.aggregate_min(crate::Entry::__TEAQL_FIELD_opened_by.query_key, alias)
     }
 
     pub fn max_opened_by(self) -> Self {
@@ -2247,7 +2247,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn max_opened_by_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("opened_by", alias)
+        self.aggregate_max(crate::Entry::__TEAQL_FIELD_opened_by.query_key, alias)
     }
 
     pub fn unselect_opened_by(mut self) -> Self {
@@ -2263,7 +2263,7 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "opened_by",
+            crate::Entry::__TEAQL_FIELD_opened_by.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -2275,41 +2275,41 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "opened_by",
+            crate::Entry::__TEAQL_FIELD_opened_by.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_opened_by_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("opened_by", value));
+        self.query = self.query.and_filter(Expr::eq(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
 
 
     pub fn with_opened_by_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("opened_by", value));
+        self.query = self.query.and_filter(Expr::ne(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
     pub fn with_opened_by_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("opened_by", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
     pub fn with_opened_by_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("opened_by", value));
+        self.query = self.query.and_filter(Expr::gte(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
     pub fn with_opened_by_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("opened_by", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
     pub fn with_opened_by_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("opened_by", value));
+        self.query = self.query.and_filter(Expr::lte(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
@@ -2318,7 +2318,7 @@ impl<R> EntryRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("opened_by", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::Entry::__TEAQL_FIELD_opened_by.query_key, lower, upper));
         self
     }
 
@@ -2327,7 +2327,7 @@ impl<R> EntryRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "opened_by",
+            crate::Entry::__TEAQL_FIELD_opened_by.query_key,
             range.start,
             range.end,
         ));
@@ -2357,17 +2357,17 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_opened_by_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("opened_by", value));
+        self.query = self.query.and_filter(Expr::contain(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
     pub fn with_opened_by_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("opened_by", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
     pub fn with_opened_by_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("opened_by", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
@@ -2377,7 +2377,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_opened_by_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("opened_by", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
@@ -2387,55 +2387,55 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_opened_by_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("opened_by", value));
+        self.query = self.query.and_filter(Expr::sound_like(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
     pub fn with_opened_by_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("opened_by", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
     pub fn with_opened_by_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("opened_by", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_opened_by.query_key, value));
         self
     }
 
     pub fn with_opened_by_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("opened_by"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Entry::__TEAQL_FIELD_opened_by.query_key));
         self
     }
 
 
 
     pub fn with_opened_by_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("opened_by"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Entry::__TEAQL_FIELD_opened_by.query_key));
         self
     }
 
 
     pub fn order_by_opened_by_asc(mut self) -> Self {
-        self.query = self.query.order_asc("opened_by");
+        self.query = self.query.order_asc(crate::Entry::__TEAQL_FIELD_opened_by.query_key);
         self
     }
 
     pub fn order_by_opened_by_desc(mut self) -> Self {
-        self.query = self.query.order_desc("opened_by");
+        self.query = self.query.order_desc(crate::Entry::__TEAQL_FIELD_opened_by.query_key);
         self
     }
 
     pub fn order_by_opened_by_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("opened_by");
+        self.query = self.query.order_gbk_asc(crate::Entry::__TEAQL_FIELD_opened_by.query_key);
         self
     }
 
     pub fn order_by_opened_by_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("opened_by");
+        self.query = self.query.order_gbk_desc(crate::Entry::__TEAQL_FIELD_opened_by.query_key);
         self
     }
 
 
     pub fn select_changed_by(mut self) -> Self {
-        self.query = self.query.project("changed_by");
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_changed_by.query_key);
         self
     }
 
@@ -2455,15 +2455,15 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn group_by_changed_by(self) -> Self {
-        self.group_by("changed_by")
+        self.group_by(crate::Entry::__TEAQL_FIELD_changed_by.query_key)
     }
 
     pub fn group_by_changed_by_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("changed_by");
+        let mut request = self.group_by(crate::Entry::__TEAQL_FIELD_changed_by.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("changed_by"));
+            .project_expr(alias, Expr::column(crate::Entry::__TEAQL_FIELD_changed_by.query_key));
         request
     }
 
@@ -2472,8 +2472,8 @@ impl<R> EntryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("changed_by")
-            .aggregate_with_function("changed_by", alias, function)
+        self.group_by(crate::Entry::__TEAQL_FIELD_changed_by.query_key)
+            .aggregate_with_function(crate::Entry::__TEAQL_FIELD_changed_by.query_key, alias, function)
     }
 
     pub fn count_changed_by(self) -> Self {
@@ -2481,7 +2481,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn count_changed_by_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("changed_by", alias)
+        self.aggregate_count_field(crate::Entry::__TEAQL_FIELD_changed_by.query_key, alias)
     }
 
     pub fn sum_changed_by(self) -> Self {
@@ -2489,7 +2489,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn sum_changed_by_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("changed_by", alias)
+        self.aggregate_sum(crate::Entry::__TEAQL_FIELD_changed_by.query_key, alias)
     }
 
     pub fn avg_changed_by(self) -> Self {
@@ -2497,7 +2497,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn avg_changed_by_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("changed_by", alias)
+        self.aggregate_avg(crate::Entry::__TEAQL_FIELD_changed_by.query_key, alias)
     }
 
     pub fn min_changed_by(self) -> Self {
@@ -2505,7 +2505,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn min_changed_by_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("changed_by", alias)
+        self.aggregate_min(crate::Entry::__TEAQL_FIELD_changed_by.query_key, alias)
     }
 
     pub fn max_changed_by(self) -> Self {
@@ -2513,7 +2513,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn max_changed_by_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("changed_by", alias)
+        self.aggregate_max(crate::Entry::__TEAQL_FIELD_changed_by.query_key, alias)
     }
 
     pub fn unselect_changed_by(mut self) -> Self {
@@ -2529,7 +2529,7 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "changed_by",
+            crate::Entry::__TEAQL_FIELD_changed_by.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -2541,41 +2541,41 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "changed_by",
+            crate::Entry::__TEAQL_FIELD_changed_by.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_changed_by_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("changed_by", value));
+        self.query = self.query.and_filter(Expr::eq(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
 
 
     pub fn with_changed_by_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("changed_by", value));
+        self.query = self.query.and_filter(Expr::ne(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
     pub fn with_changed_by_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("changed_by", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
     pub fn with_changed_by_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("changed_by", value));
+        self.query = self.query.and_filter(Expr::gte(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
     pub fn with_changed_by_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("changed_by", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
     pub fn with_changed_by_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("changed_by", value));
+        self.query = self.query.and_filter(Expr::lte(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
@@ -2584,7 +2584,7 @@ impl<R> EntryRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("changed_by", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::Entry::__TEAQL_FIELD_changed_by.query_key, lower, upper));
         self
     }
 
@@ -2593,7 +2593,7 @@ impl<R> EntryRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "changed_by",
+            crate::Entry::__TEAQL_FIELD_changed_by.query_key,
             range.start,
             range.end,
         ));
@@ -2623,17 +2623,17 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_changed_by_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("changed_by", value));
+        self.query = self.query.and_filter(Expr::contain(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
     pub fn with_changed_by_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("changed_by", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
     pub fn with_changed_by_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("changed_by", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
@@ -2643,7 +2643,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_changed_by_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("changed_by", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
@@ -2653,55 +2653,55 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_changed_by_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("changed_by", value));
+        self.query = self.query.and_filter(Expr::sound_like(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
     pub fn with_changed_by_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("changed_by", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
     pub fn with_changed_by_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("changed_by", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_changed_by.query_key, value));
         self
     }
 
     pub fn with_changed_by_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("changed_by"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Entry::__TEAQL_FIELD_changed_by.query_key));
         self
     }
 
 
 
     pub fn with_changed_by_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("changed_by"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Entry::__TEAQL_FIELD_changed_by.query_key));
         self
     }
 
 
     pub fn order_by_changed_by_asc(mut self) -> Self {
-        self.query = self.query.order_asc("changed_by");
+        self.query = self.query.order_asc(crate::Entry::__TEAQL_FIELD_changed_by.query_key);
         self
     }
 
     pub fn order_by_changed_by_desc(mut self) -> Self {
-        self.query = self.query.order_desc("changed_by");
+        self.query = self.query.order_desc(crate::Entry::__TEAQL_FIELD_changed_by.query_key);
         self
     }
 
     pub fn order_by_changed_by_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("changed_by");
+        self.query = self.query.order_gbk_asc(crate::Entry::__TEAQL_FIELD_changed_by.query_key);
         self
     }
 
     pub fn order_by_changed_by_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("changed_by");
+        self.query = self.query.order_gbk_desc(crate::Entry::__TEAQL_FIELD_changed_by.query_key);
         self
     }
 
 
     pub fn select_guarded_token(mut self) -> Self {
-        self.query = self.query.project("guarded_token");
+        self.query = self.query.project(crate::Entry::__TEAQL_FIELD_guarded_token.query_key);
         self
     }
 
@@ -2721,15 +2721,15 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn group_by_guarded_token(self) -> Self {
-        self.group_by("guarded_token")
+        self.group_by(crate::Entry::__TEAQL_FIELD_guarded_token.query_key)
     }
 
     pub fn group_by_guarded_token_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("guarded_token");
+        let mut request = self.group_by(crate::Entry::__TEAQL_FIELD_guarded_token.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("guarded_token"));
+            .project_expr(alias, Expr::column(crate::Entry::__TEAQL_FIELD_guarded_token.query_key));
         request
     }
 
@@ -2738,8 +2738,8 @@ impl<R> EntryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("guarded_token")
-            .aggregate_with_function("guarded_token", alias, function)
+        self.group_by(crate::Entry::__TEAQL_FIELD_guarded_token.query_key)
+            .aggregate_with_function(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, alias, function)
     }
 
     pub fn count_guarded_token(self) -> Self {
@@ -2747,7 +2747,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn count_guarded_token_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("guarded_token", alias)
+        self.aggregate_count_field(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, alias)
     }
 
     pub fn sum_guarded_token(self) -> Self {
@@ -2755,7 +2755,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn sum_guarded_token_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("guarded_token", alias)
+        self.aggregate_sum(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, alias)
     }
 
     pub fn avg_guarded_token(self) -> Self {
@@ -2763,7 +2763,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn avg_guarded_token_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("guarded_token", alias)
+        self.aggregate_avg(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, alias)
     }
 
     pub fn min_guarded_token(self) -> Self {
@@ -2771,7 +2771,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn min_guarded_token_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("guarded_token", alias)
+        self.aggregate_min(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, alias)
     }
 
     pub fn max_guarded_token(self) -> Self {
@@ -2779,7 +2779,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn max_guarded_token_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("guarded_token", alias)
+        self.aggregate_max(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, alias)
     }
 
     pub fn unselect_guarded_token(mut self) -> Self {
@@ -2795,7 +2795,7 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "guarded_token",
+            crate::Entry::__TEAQL_FIELD_guarded_token.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -2807,41 +2807,41 @@ impl<R> EntryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "guarded_token",
+            crate::Entry::__TEAQL_FIELD_guarded_token.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_guarded_token_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("guarded_token", value));
+        self.query = self.query.and_filter(Expr::eq(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
 
 
     pub fn with_guarded_token_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("guarded_token", value));
+        self.query = self.query.and_filter(Expr::ne(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
     pub fn with_guarded_token_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("guarded_token", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
     pub fn with_guarded_token_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("guarded_token", value));
+        self.query = self.query.and_filter(Expr::gte(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
     pub fn with_guarded_token_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("guarded_token", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
     pub fn with_guarded_token_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("guarded_token", value));
+        self.query = self.query.and_filter(Expr::lte(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
@@ -2850,7 +2850,7 @@ impl<R> EntryRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("guarded_token", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, lower, upper));
         self
     }
 
@@ -2859,7 +2859,7 @@ impl<R> EntryRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "guarded_token",
+            crate::Entry::__TEAQL_FIELD_guarded_token.query_key,
             range.start,
             range.end,
         ));
@@ -2889,17 +2889,17 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_guarded_token_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("guarded_token", value));
+        self.query = self.query.and_filter(Expr::contain(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
     pub fn with_guarded_token_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("guarded_token", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
     pub fn with_guarded_token_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("guarded_token", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
@@ -2909,7 +2909,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_guarded_token_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("guarded_token", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
@@ -2919,62 +2919,62 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn with_guarded_token_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("guarded_token", value));
+        self.query = self.query.and_filter(Expr::sound_like(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
     pub fn with_guarded_token_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("guarded_token", value));
+        self.query = self.query.and_filter(Expr::lt(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
     pub fn with_guarded_token_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("guarded_token", value));
+        self.query = self.query.and_filter(Expr::gt(crate::Entry::__TEAQL_FIELD_guarded_token.query_key, value));
         self
     }
 
     pub fn with_guarded_token_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("guarded_token"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Entry::__TEAQL_FIELD_guarded_token.query_key));
         self
     }
 
 
 
     pub fn with_guarded_token_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("guarded_token"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Entry::__TEAQL_FIELD_guarded_token.query_key));
         self
     }
 
 
     pub fn order_by_guarded_token_asc(mut self) -> Self {
-        self.query = self.query.order_asc("guarded_token");
+        self.query = self.query.order_asc(crate::Entry::__TEAQL_FIELD_guarded_token.query_key);
         self
     }
 
     pub fn order_by_guarded_token_desc(mut self) -> Self {
-        self.query = self.query.order_desc("guarded_token");
+        self.query = self.query.order_desc(crate::Entry::__TEAQL_FIELD_guarded_token.query_key);
         self
     }
 
     pub fn order_by_guarded_token_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("guarded_token");
+        self.query = self.query.order_gbk_asc(crate::Entry::__TEAQL_FIELD_guarded_token.query_key);
         self
     }
 
     pub fn order_by_guarded_token_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("guarded_token");
+        self.query = self.query.order_gbk_desc(crate::Entry::__TEAQL_FIELD_guarded_token.query_key);
         self
     }
 
     pub fn group_by_version(self) -> Self {
-        self.group_by("version")
+        self.group_by(crate::Entry::__TEAQL_FIELD_version.query_key)
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("version");
+        let mut request = self.group_by(crate::Entry::__TEAQL_FIELD_version.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("version"));
+            .project_expr(alias, Expr::column(crate::Entry::__TEAQL_FIELD_version.query_key));
         request
     }
 
@@ -2983,8 +2983,8 @@ impl<R> EntryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("version")
-            .aggregate_with_function("version", alias, function)
+        self.group_by(crate::Entry::__TEAQL_FIELD_version.query_key)
+            .aggregate_with_function(crate::Entry::__TEAQL_FIELD_version.query_key, alias, function)
     }
 
     pub fn count_version(self) -> Self {
@@ -2992,7 +2992,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("version", alias)
+        self.aggregate_count_field(crate::Entry::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn sum_version(self) -> Self {
@@ -3000,7 +3000,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn sum_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("version", alias)
+        self.aggregate_sum(crate::Entry::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn avg_version(self) -> Self {
@@ -3008,7 +3008,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn avg_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("version", alias)
+        self.aggregate_avg(crate::Entry::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn min_version(self) -> Self {
@@ -3016,7 +3016,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn min_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("version", alias)
+        self.aggregate_min(crate::Entry::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn max_version(self) -> Self {
@@ -3024,30 +3024,30 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn max_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("version", alias)
+        self.aggregate_max(crate::Entry::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn order_by_version_asc(mut self) -> Self {
-        self.query = self.query.order_asc("version");
+        self.query = self.query.order_asc(crate::Entry::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
-        self.query = self.query.order_desc("version");
+        self.query = self.query.order_desc(crate::Entry::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("version");
+        self.query = self.query.order_gbk_asc(crate::Entry::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("version");
+        self.query = self.query.order_gbk_desc(crate::Entry::__TEAQL_FIELD_version.query_key);
         self
     }
     pub fn filter_by_catalog(mut self, value: impl EntityReference) -> Self {
-        self.query = self.query.and_filter(Expr::eq("catalog_id", value.entity_id_value()));
+        self.query = self.query.and_filter(Expr::eq(crate::Entry::__TEAQL_FIELD_catalog.query_key, value.entity_id_value()));
         self
     }
 
@@ -3078,26 +3078,26 @@ impl<R> EntryRequest<R> {
 
 
     pub fn have_catalog(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("catalog_id"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Entry::__TEAQL_FIELD_catalog.query_key));
         self
     }
 
     pub fn have_no_catalog(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("catalog_id"));
+        self.query = self.query.and_filter(Expr::is_null(crate::Entry::__TEAQL_FIELD_catalog.query_key));
         self
     }
 
 
     pub fn group_by_catalog(self) -> Self {
-        self.group_by("catalog_id")
+        self.group_by(crate::Entry::__TEAQL_FIELD_catalog.query_key)
     }
 
     pub fn group_by_catalog_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("catalog_id");
+        let mut request = self.group_by(crate::Entry::__TEAQL_FIELD_catalog.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("catalog_id"));
+            .project_expr(alias, Expr::column(crate::Entry::__TEAQL_FIELD_catalog.query_key));
         request
     }
 
@@ -3106,12 +3106,12 @@ impl<R> EntryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("catalog_id")
-            .aggregate_with_function("catalog_id", alias, function)
+        self.group_by(crate::Entry::__TEAQL_FIELD_catalog.query_key)
+            .aggregate_with_function(crate::Entry::__TEAQL_FIELD_catalog.query_key, alias, function)
     }
 
     pub fn group_by_catalog_with(mut self, request: impl Into<QuerySelection>) -> Self {
-        self.query = self.query.group_by("catalog_id");
+        self.query = self.query.group_by(crate::Entry::__TEAQL_FIELD_catalog.query_key);
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "catalog",
             "catalog_id",
@@ -3144,7 +3144,7 @@ impl<R> EntryRequest<R> {
     }
 
     pub fn count_catalog_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("catalog_id", alias)
+        self.aggregate_count_field(crate::Entry::__TEAQL_FIELD_catalog.query_key, alias)
     }
 
     pub fn unselect_catalog(mut self) -> Self {

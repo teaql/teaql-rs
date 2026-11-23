@@ -114,65 +114,300 @@ pub struct ScalarTypeProbe {
 }
 
 impl ScalarTypeProbe {
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_id: crate::GeneratedField = crate::GeneratedField {
+        model_key: "id",
+        query_key: "id",
+        member_name: "id",
+        column_name: "id",
+        load_index: 0,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_type_platform: crate::GeneratedField = crate::GeneratedField {
+        model_key: "type_platform",
+        query_key: "type_platform_id",
+        member_name: "type_platform_id",
+        column_name: "type_platform",
+        load_index: 1,
+        reference: true,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_required_string: crate::GeneratedField = crate::GeneratedField {
+        model_key: "required_string",
+        query_key: "required_string",
+        member_name: "required_string",
+        column_name: "required_string",
+        load_index: 2,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_optional_string: crate::GeneratedField = crate::GeneratedField {
+        model_key: "optional_string",
+        query_key: "optional_string",
+        member_name: "optional_string",
+        column_name: "optional_string",
+        load_index: 3,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_large_text: crate::GeneratedField = crate::GeneratedField {
+        model_key: "large_text",
+        query_key: "large_text",
+        member_name: "large_text",
+        column_name: "large_text",
+        load_index: 4,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_required_boolean: crate::GeneratedField = crate::GeneratedField {
+        model_key: "required_boolean",
+        query_key: "required_boolean",
+        member_name: "required_boolean",
+        column_name: "required_boolean",
+        load_index: 5,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_optional_boolean: crate::GeneratedField = crate::GeneratedField {
+        model_key: "optional_boolean",
+        query_key: "optional_boolean",
+        member_name: "optional_boolean",
+        column_name: "optional_boolean",
+        load_index: 6,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_required_integer: crate::GeneratedField = crate::GeneratedField {
+        model_key: "required_integer",
+        query_key: "required_integer",
+        member_name: "required_integer",
+        column_name: "required_integer",
+        load_index: 7,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_optional_integer: crate::GeneratedField = crate::GeneratedField {
+        model_key: "optional_integer",
+        query_key: "optional_integer",
+        member_name: "optional_integer",
+        column_name: "optional_integer",
+        load_index: 8,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_required_long: crate::GeneratedField = crate::GeneratedField {
+        model_key: "required_long",
+        query_key: "required_long",
+        member_name: "required_long",
+        column_name: "required_long",
+        load_index: 9,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_optional_long: crate::GeneratedField = crate::GeneratedField {
+        model_key: "optional_long",
+        query_key: "optional_long",
+        member_name: "optional_long",
+        column_name: "optional_long",
+        load_index: 10,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_required_decimal: crate::GeneratedField = crate::GeneratedField {
+        model_key: "required_decimal",
+        query_key: "required_decimal",
+        member_name: "required_decimal",
+        column_name: "required_decimal",
+        load_index: 11,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_optional_decimal: crate::GeneratedField = crate::GeneratedField {
+        model_key: "optional_decimal",
+        query_key: "optional_decimal",
+        member_name: "optional_decimal",
+        column_name: "optional_decimal",
+        load_index: 12,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_required_float: crate::GeneratedField = crate::GeneratedField {
+        model_key: "required_float",
+        query_key: "required_float",
+        member_name: "required_float",
+        column_name: "required_float",
+        load_index: 13,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_optional_float: crate::GeneratedField = crate::GeneratedField {
+        model_key: "optional_float",
+        query_key: "optional_float",
+        member_name: "optional_float",
+        column_name: "optional_float",
+        load_index: 14,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_required_double: crate::GeneratedField = crate::GeneratedField {
+        model_key: "required_double",
+        query_key: "required_double",
+        member_name: "required_double",
+        column_name: "required_double",
+        load_index: 15,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_optional_double: crate::GeneratedField = crate::GeneratedField {
+        model_key: "optional_double",
+        query_key: "optional_double",
+        member_name: "optional_double",
+        column_name: "optional_double",
+        load_index: 16,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_required_date: crate::GeneratedField = crate::GeneratedField {
+        model_key: "required_date",
+        query_key: "required_date",
+        member_name: "required_date",
+        column_name: "required_date",
+        load_index: 17,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_optional_date: crate::GeneratedField = crate::GeneratedField {
+        model_key: "optional_date",
+        query_key: "optional_date",
+        member_name: "optional_date",
+        column_name: "optional_date",
+        load_index: 18,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_required_time: crate::GeneratedField = crate::GeneratedField {
+        model_key: "required_time",
+        query_key: "required_time",
+        member_name: "required_time",
+        column_name: "required_time",
+        load_index: 19,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_optional_time: crate::GeneratedField = crate::GeneratedField {
+        model_key: "optional_time",
+        query_key: "optional_time",
+        member_name: "optional_time",
+        column_name: "optional_time",
+        load_index: 20,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_required_datetime: crate::GeneratedField = crate::GeneratedField {
+        model_key: "required_datetime",
+        query_key: "required_datetime",
+        member_name: "required_datetime",
+        column_name: "required_datetime",
+        load_index: 21,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_optional_datetime: crate::GeneratedField = crate::GeneratedField {
+        model_key: "optional_datetime",
+        query_key: "optional_datetime",
+        member_name: "optional_datetime",
+        column_name: "optional_datetime",
+        load_index: 22,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_create_time: crate::GeneratedField = crate::GeneratedField {
+        model_key: "create_time",
+        query_key: "create_time",
+        member_name: "create_time",
+        column_name: "create_time",
+        load_index: 23,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_update_time: crate::GeneratedField = crate::GeneratedField {
+        model_key: "update_time",
+        query_key: "update_time",
+        member_name: "update_time",
+        column_name: "update_time",
+        load_index: 24,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_version: crate::GeneratedField = crate::GeneratedField {
+        model_key: "version",
+        query_key: "version",
+        member_name: "version",
+        column_name: "version",
+        load_index: 25,
+        reference: false,
+    };
+
     pub const ENTITY_NAME: &'static str = "Scalar Type Probe";
 
     // Framework metadata: complete fixed layout, including overflow slots.
     pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "8d1d53171c01628f604255bcfa7e7d52b6260332cee701781027b0233eae926b";
     pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
-        ("id", 0),
-        ("type_platform", 1),
-        ("required_string", 2),
-        ("optional_string", 3),
-        ("large_text", 4),
-        ("required_boolean", 5),
-        ("optional_boolean", 6),
-        ("required_integer", 7),
-        ("optional_integer", 8),
-        ("required_long", 9),
-        ("optional_long", 10),
-        ("required_decimal", 11),
-        ("optional_decimal", 12),
-        ("required_float", 13),
-        ("optional_float", 14),
-        ("required_double", 15),
-        ("optional_double", 16),
-        ("required_date", 17),
-        ("optional_date", 18),
-        ("required_time", 19),
-        ("optional_time", 20),
-        ("required_datetime", 21),
-        ("optional_datetime", 22),
-        ("create_time", 23),
-        ("update_time", 24),
-        ("version", 25),
+        (Self::__TEAQL_FIELD_id.model_key, Self::__TEAQL_FIELD_id.load_index),
+        (Self::__TEAQL_FIELD_type_platform.model_key, Self::__TEAQL_FIELD_type_platform.load_index),
+        (Self::__TEAQL_FIELD_required_string.model_key, Self::__TEAQL_FIELD_required_string.load_index),
+        (Self::__TEAQL_FIELD_optional_string.model_key, Self::__TEAQL_FIELD_optional_string.load_index),
+        (Self::__TEAQL_FIELD_large_text.model_key, Self::__TEAQL_FIELD_large_text.load_index),
+        (Self::__TEAQL_FIELD_required_boolean.model_key, Self::__TEAQL_FIELD_required_boolean.load_index),
+        (Self::__TEAQL_FIELD_optional_boolean.model_key, Self::__TEAQL_FIELD_optional_boolean.load_index),
+        (Self::__TEAQL_FIELD_required_integer.model_key, Self::__TEAQL_FIELD_required_integer.load_index),
+        (Self::__TEAQL_FIELD_optional_integer.model_key, Self::__TEAQL_FIELD_optional_integer.load_index),
+        (Self::__TEAQL_FIELD_required_long.model_key, Self::__TEAQL_FIELD_required_long.load_index),
+        (Self::__TEAQL_FIELD_optional_long.model_key, Self::__TEAQL_FIELD_optional_long.load_index),
+        (Self::__TEAQL_FIELD_required_decimal.model_key, Self::__TEAQL_FIELD_required_decimal.load_index),
+        (Self::__TEAQL_FIELD_optional_decimal.model_key, Self::__TEAQL_FIELD_optional_decimal.load_index),
+        (Self::__TEAQL_FIELD_required_float.model_key, Self::__TEAQL_FIELD_required_float.load_index),
+        (Self::__TEAQL_FIELD_optional_float.model_key, Self::__TEAQL_FIELD_optional_float.load_index),
+        (Self::__TEAQL_FIELD_required_double.model_key, Self::__TEAQL_FIELD_required_double.load_index),
+        (Self::__TEAQL_FIELD_optional_double.model_key, Self::__TEAQL_FIELD_optional_double.load_index),
+        (Self::__TEAQL_FIELD_required_date.model_key, Self::__TEAQL_FIELD_required_date.load_index),
+        (Self::__TEAQL_FIELD_optional_date.model_key, Self::__TEAQL_FIELD_optional_date.load_index),
+        (Self::__TEAQL_FIELD_required_time.model_key, Self::__TEAQL_FIELD_required_time.load_index),
+        (Self::__TEAQL_FIELD_optional_time.model_key, Self::__TEAQL_FIELD_optional_time.load_index),
+        (Self::__TEAQL_FIELD_required_datetime.model_key, Self::__TEAQL_FIELD_required_datetime.load_index),
+        (Self::__TEAQL_FIELD_optional_datetime.model_key, Self::__TEAQL_FIELD_optional_datetime.load_index),
+        (Self::__TEAQL_FIELD_create_time.model_key, Self::__TEAQL_FIELD_create_time.load_index),
+        (Self::__TEAQL_FIELD_update_time.model_key, Self::__TEAQL_FIELD_update_time.load_index),
+        (Self::__TEAQL_FIELD_version.model_key, Self::__TEAQL_FIELD_version.load_index),
     ];
     pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
-        ("id", "id", "id"),
-        ("type_platform", "type_platform_id", "type_platform"),
-        ("required_string", "required_string", "required_string"),
-        ("optional_string", "optional_string", "optional_string"),
-        ("large_text", "large_text", "large_text"),
-        ("required_boolean", "required_boolean", "required_boolean"),
-        ("optional_boolean", "optional_boolean", "optional_boolean"),
-        ("required_integer", "required_integer", "required_integer"),
-        ("optional_integer", "optional_integer", "optional_integer"),
-        ("required_long", "required_long", "required_long"),
-        ("optional_long", "optional_long", "optional_long"),
-        ("required_decimal", "required_decimal", "required_decimal"),
-        ("optional_decimal", "optional_decimal", "optional_decimal"),
-        ("required_float", "required_float", "required_float"),
-        ("optional_float", "optional_float", "optional_float"),
-        ("required_double", "required_double", "required_double"),
-        ("optional_double", "optional_double", "optional_double"),
-        ("required_date", "required_date", "required_date"),
-        ("optional_date", "optional_date", "optional_date"),
-        ("required_time", "required_time", "required_time"),
-        ("optional_time", "optional_time", "optional_time"),
-        ("required_datetime", "required_datetime", "required_datetime"),
-        ("optional_datetime", "optional_datetime", "optional_datetime"),
-        ("create_time", "create_time", "create_time"),
-        ("update_time", "update_time", "update_time"),
-        ("version", "version", "version"),
+        (Self::__TEAQL_FIELD_id.model_key, Self::__TEAQL_FIELD_id.member_name, Self::__TEAQL_FIELD_id.column_name),
+        (Self::__TEAQL_FIELD_type_platform.model_key, Self::__TEAQL_FIELD_type_platform.member_name, Self::__TEAQL_FIELD_type_platform.column_name),
+        (Self::__TEAQL_FIELD_required_string.model_key, Self::__TEAQL_FIELD_required_string.member_name, Self::__TEAQL_FIELD_required_string.column_name),
+        (Self::__TEAQL_FIELD_optional_string.model_key, Self::__TEAQL_FIELD_optional_string.member_name, Self::__TEAQL_FIELD_optional_string.column_name),
+        (Self::__TEAQL_FIELD_large_text.model_key, Self::__TEAQL_FIELD_large_text.member_name, Self::__TEAQL_FIELD_large_text.column_name),
+        (Self::__TEAQL_FIELD_required_boolean.model_key, Self::__TEAQL_FIELD_required_boolean.member_name, Self::__TEAQL_FIELD_required_boolean.column_name),
+        (Self::__TEAQL_FIELD_optional_boolean.model_key, Self::__TEAQL_FIELD_optional_boolean.member_name, Self::__TEAQL_FIELD_optional_boolean.column_name),
+        (Self::__TEAQL_FIELD_required_integer.model_key, Self::__TEAQL_FIELD_required_integer.member_name, Self::__TEAQL_FIELD_required_integer.column_name),
+        (Self::__TEAQL_FIELD_optional_integer.model_key, Self::__TEAQL_FIELD_optional_integer.member_name, Self::__TEAQL_FIELD_optional_integer.column_name),
+        (Self::__TEAQL_FIELD_required_long.model_key, Self::__TEAQL_FIELD_required_long.member_name, Self::__TEAQL_FIELD_required_long.column_name),
+        (Self::__TEAQL_FIELD_optional_long.model_key, Self::__TEAQL_FIELD_optional_long.member_name, Self::__TEAQL_FIELD_optional_long.column_name),
+        (Self::__TEAQL_FIELD_required_decimal.model_key, Self::__TEAQL_FIELD_required_decimal.member_name, Self::__TEAQL_FIELD_required_decimal.column_name),
+        (Self::__TEAQL_FIELD_optional_decimal.model_key, Self::__TEAQL_FIELD_optional_decimal.member_name, Self::__TEAQL_FIELD_optional_decimal.column_name),
+        (Self::__TEAQL_FIELD_required_float.model_key, Self::__TEAQL_FIELD_required_float.member_name, Self::__TEAQL_FIELD_required_float.column_name),
+        (Self::__TEAQL_FIELD_optional_float.model_key, Self::__TEAQL_FIELD_optional_float.member_name, Self::__TEAQL_FIELD_optional_float.column_name),
+        (Self::__TEAQL_FIELD_required_double.model_key, Self::__TEAQL_FIELD_required_double.member_name, Self::__TEAQL_FIELD_required_double.column_name),
+        (Self::__TEAQL_FIELD_optional_double.model_key, Self::__TEAQL_FIELD_optional_double.member_name, Self::__TEAQL_FIELD_optional_double.column_name),
+        (Self::__TEAQL_FIELD_required_date.model_key, Self::__TEAQL_FIELD_required_date.member_name, Self::__TEAQL_FIELD_required_date.column_name),
+        (Self::__TEAQL_FIELD_optional_date.model_key, Self::__TEAQL_FIELD_optional_date.member_name, Self::__TEAQL_FIELD_optional_date.column_name),
+        (Self::__TEAQL_FIELD_required_time.model_key, Self::__TEAQL_FIELD_required_time.member_name, Self::__TEAQL_FIELD_required_time.column_name),
+        (Self::__TEAQL_FIELD_optional_time.model_key, Self::__TEAQL_FIELD_optional_time.member_name, Self::__TEAQL_FIELD_optional_time.column_name),
+        (Self::__TEAQL_FIELD_required_datetime.model_key, Self::__TEAQL_FIELD_required_datetime.member_name, Self::__TEAQL_FIELD_required_datetime.column_name),
+        (Self::__TEAQL_FIELD_optional_datetime.model_key, Self::__TEAQL_FIELD_optional_datetime.member_name, Self::__TEAQL_FIELD_optional_datetime.column_name),
+        (Self::__TEAQL_FIELD_create_time.model_key, Self::__TEAQL_FIELD_create_time.member_name, Self::__TEAQL_FIELD_create_time.column_name),
+        (Self::__TEAQL_FIELD_update_time.model_key, Self::__TEAQL_FIELD_update_time.member_name, Self::__TEAQL_FIELD_update_time.column_name),
+        (Self::__TEAQL_FIELD_version.model_key, Self::__TEAQL_FIELD_version.member_name, Self::__TEAQL_FIELD_version.column_name),
     ];
 
     pub fn with_id(id: u64) -> teaql_core::Value {
@@ -241,17 +476,17 @@ impl ScalarTypeProbe {
     pub fn update_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "id", value);
-        self.__load_state.mark_loaded("id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_id.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_id.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "id")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_id.model_key)
     }
 
     pub fn eval_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_id.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "id".to_string(), attempted_path: "id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.id())
@@ -265,17 +500,17 @@ impl ScalarTypeProbe {
     pub fn update_required_string(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.required_string = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.required_string.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "required_string", value);
-        self.__load_state.mark_loaded("required_string").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_required_string.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_required_string.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_required_string(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "required_string")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_required_string.model_key)
     }
 
     pub fn eval_required_string(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("required_string") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_required_string.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "required_string".to_string(), attempted_path: "required_string".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.required_string())
@@ -289,17 +524,17 @@ impl ScalarTypeProbe {
     pub fn update_optional_string(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.optional_string = if matches!(value, teaql_core::Value::Null) { None } else { value.try_text().map(|value| value.trim().to_owned()).map(Some).unwrap_or_else(|| self.optional_string.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "optional_string", value);
-        self.__load_state.mark_loaded("optional_string").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_optional_string.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_optional_string.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_optional_string(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "optional_string")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_optional_string.model_key)
     }
 
     pub fn eval_optional_string(&self) -> teaql_core::eval::EvalResult<Option<String>> {
-        if !self.is_loaded("optional_string") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_optional_string.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "optional_string".to_string(), attempted_path: "optional_string".to_string() }
                 } else {
                     match &self.optional_string {
@@ -316,17 +551,17 @@ impl ScalarTypeProbe {
     pub fn update_large_text(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.large_text = if matches!(value, teaql_core::Value::Null) { None } else { value.try_text().map(|value| value.trim().to_owned()).map(Some).unwrap_or_else(|| self.large_text.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "large_text", value);
-        self.__load_state.mark_loaded("large_text").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_large_text.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_large_text.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_large_text(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "large_text")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_large_text.model_key)
     }
 
     pub fn eval_large_text(&self) -> teaql_core::eval::EvalResult<Option<String>> {
-        if !self.is_loaded("large_text") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_large_text.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "large_text".to_string(), attempted_path: "large_text".to_string() }
                 } else {
                     match &self.large_text {
@@ -343,17 +578,17 @@ impl ScalarTypeProbe {
     pub fn update_required_boolean(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.required_boolean = value.try_bool().unwrap_or(self.required_boolean.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "required_boolean", value);
-        self.__load_state.mark_loaded("required_boolean").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_required_boolean.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_required_boolean.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_required_boolean(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "required_boolean")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_required_boolean.model_key)
     }
 
     pub fn eval_required_boolean(&self) -> teaql_core::eval::EvalResult<bool> {
-        if !self.is_loaded("required_boolean") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_required_boolean.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "required_boolean".to_string(), attempted_path: "required_boolean".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.required_boolean())
@@ -367,17 +602,17 @@ impl ScalarTypeProbe {
     pub fn update_optional_boolean(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.optional_boolean = if matches!(value, teaql_core::Value::Null) { None } else { value.try_bool().map(Some).unwrap_or_else(|| self.optional_boolean.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "optional_boolean", value);
-        self.__load_state.mark_loaded("optional_boolean").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_optional_boolean.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_optional_boolean.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_optional_boolean(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "optional_boolean")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_optional_boolean.model_key)
     }
 
     pub fn eval_optional_boolean(&self) -> teaql_core::eval::EvalResult<Option<bool>> {
-        if !self.is_loaded("optional_boolean") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_optional_boolean.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "optional_boolean".to_string(), attempted_path: "optional_boolean".to_string() }
                 } else {
                     match &self.optional_boolean {
@@ -394,17 +629,17 @@ impl ScalarTypeProbe {
     pub fn update_required_integer(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.required_integer = value.try_i64().map(|value| value as i64).unwrap_or(self.required_integer.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "required_integer", value);
-        self.__load_state.mark_loaded("required_integer").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_required_integer.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_required_integer.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_required_integer(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "required_integer")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_required_integer.model_key)
     }
 
     pub fn eval_required_integer(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("required_integer") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_required_integer.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "required_integer".to_string(), attempted_path: "required_integer".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.required_integer())
@@ -418,17 +653,17 @@ impl ScalarTypeProbe {
     pub fn update_optional_integer(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.optional_integer = if matches!(value, teaql_core::Value::Null) { None } else { value.try_i64().map(|value| value as i64).map(Some).unwrap_or_else(|| self.optional_integer.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "optional_integer", value);
-        self.__load_state.mark_loaded("optional_integer").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_optional_integer.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_optional_integer.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_optional_integer(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "optional_integer")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_optional_integer.model_key)
     }
 
     pub fn eval_optional_integer(&self) -> teaql_core::eval::EvalResult<Option<i64>> {
-        if !self.is_loaded("optional_integer") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_optional_integer.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "optional_integer".to_string(), attempted_path: "optional_integer".to_string() }
                 } else {
                     match &self.optional_integer {
@@ -445,17 +680,17 @@ impl ScalarTypeProbe {
     pub fn update_required_long(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.required_long = value.try_i64().unwrap_or(self.required_long.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "required_long", value);
-        self.__load_state.mark_loaded("required_long").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_required_long.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_required_long.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_required_long(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "required_long")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_required_long.model_key)
     }
 
     pub fn eval_required_long(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("required_long") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_required_long.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "required_long".to_string(), attempted_path: "required_long".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.required_long())
@@ -469,17 +704,17 @@ impl ScalarTypeProbe {
     pub fn update_optional_long(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.optional_long = if matches!(value, teaql_core::Value::Null) { None } else { value.try_i64().map(Some).unwrap_or_else(|| self.optional_long.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "optional_long", value);
-        self.__load_state.mark_loaded("optional_long").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_optional_long.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_optional_long.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_optional_long(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "optional_long")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_optional_long.model_key)
     }
 
     pub fn eval_optional_long(&self) -> teaql_core::eval::EvalResult<Option<i64>> {
-        if !self.is_loaded("optional_long") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_optional_long.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "optional_long".to_string(), attempted_path: "optional_long".to_string() }
                 } else {
                     match &self.optional_long {
@@ -496,17 +731,17 @@ impl ScalarTypeProbe {
     pub fn update_required_decimal(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.required_decimal = value.try_decimal().unwrap_or(self.required_decimal.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "required_decimal", value);
-        self.__load_state.mark_loaded("required_decimal").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_required_decimal.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_required_decimal.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_required_decimal(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "required_decimal")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_required_decimal.model_key)
     }
 
     pub fn eval_required_decimal(&self) -> teaql_core::eval::EvalResult<rust_decimal::Decimal> {
-        if !self.is_loaded("required_decimal") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_required_decimal.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "required_decimal".to_string(), attempted_path: "required_decimal".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.required_decimal())
@@ -520,17 +755,17 @@ impl ScalarTypeProbe {
     pub fn update_optional_decimal(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.optional_decimal = if matches!(value, teaql_core::Value::Null) { None } else { value.try_decimal().map(Some).unwrap_or_else(|| self.optional_decimal.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "optional_decimal", value);
-        self.__load_state.mark_loaded("optional_decimal").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_optional_decimal.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_optional_decimal.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_optional_decimal(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "optional_decimal")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_optional_decimal.model_key)
     }
 
     pub fn eval_optional_decimal(&self) -> teaql_core::eval::EvalResult<Option<rust_decimal::Decimal>> {
-        if !self.is_loaded("optional_decimal") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_optional_decimal.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "optional_decimal".to_string(), attempted_path: "optional_decimal".to_string() }
                 } else {
                     match &self.optional_decimal {
@@ -547,17 +782,17 @@ impl ScalarTypeProbe {
     pub fn update_required_float(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.required_float = value.try_f64().map(|value| value as f32).unwrap_or(self.required_float.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "required_float", value);
-        self.__load_state.mark_loaded("required_float").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_required_float.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_required_float.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_required_float(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "required_float")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_required_float.model_key)
     }
 
     pub fn eval_required_float(&self) -> teaql_core::eval::EvalResult<f32> {
-        if !self.is_loaded("required_float") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_required_float.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "required_float".to_string(), attempted_path: "required_float".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.required_float())
@@ -571,17 +806,17 @@ impl ScalarTypeProbe {
     pub fn update_optional_float(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.optional_float = if matches!(value, teaql_core::Value::Null) { None } else { value.try_f64().map(|value| value as f32).map(Some).unwrap_or_else(|| self.optional_float.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "optional_float", value);
-        self.__load_state.mark_loaded("optional_float").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_optional_float.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_optional_float.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_optional_float(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "optional_float")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_optional_float.model_key)
     }
 
     pub fn eval_optional_float(&self) -> teaql_core::eval::EvalResult<Option<f32>> {
-        if !self.is_loaded("optional_float") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_optional_float.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "optional_float".to_string(), attempted_path: "optional_float".to_string() }
                 } else {
                     match &self.optional_float {
@@ -598,17 +833,17 @@ impl ScalarTypeProbe {
     pub fn update_required_double(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.required_double = value.try_f64().unwrap_or(self.required_double.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "required_double", value);
-        self.__load_state.mark_loaded("required_double").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_required_double.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_required_double.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_required_double(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "required_double")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_required_double.model_key)
     }
 
     pub fn eval_required_double(&self) -> teaql_core::eval::EvalResult<f64> {
-        if !self.is_loaded("required_double") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_required_double.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "required_double".to_string(), attempted_path: "required_double".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.required_double())
@@ -622,17 +857,17 @@ impl ScalarTypeProbe {
     pub fn update_optional_double(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.optional_double = if matches!(value, teaql_core::Value::Null) { None } else { value.try_f64().map(Some).unwrap_or_else(|| self.optional_double.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "optional_double", value);
-        self.__load_state.mark_loaded("optional_double").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_optional_double.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_optional_double.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_optional_double(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "optional_double")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_optional_double.model_key)
     }
 
     pub fn eval_optional_double(&self) -> teaql_core::eval::EvalResult<Option<f64>> {
-        if !self.is_loaded("optional_double") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_optional_double.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "optional_double".to_string(), attempted_path: "optional_double".to_string() }
                 } else {
                     match &self.optional_double {
@@ -649,17 +884,17 @@ impl ScalarTypeProbe {
     pub fn update_required_date(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.required_date = value.try_date().unwrap_or(self.required_date.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "required_date", value);
-        self.__load_state.mark_loaded("required_date").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_required_date.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_required_date.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_required_date(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "required_date")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_required_date.model_key)
     }
 
     pub fn eval_required_date(&self) -> teaql_core::eval::EvalResult<chrono::NaiveDate> {
-        if !self.is_loaded("required_date") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_required_date.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "required_date".to_string(), attempted_path: "required_date".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.required_date())
@@ -673,17 +908,17 @@ impl ScalarTypeProbe {
     pub fn update_optional_date(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.optional_date = if matches!(value, teaql_core::Value::Null) { None } else { value.try_date().map(Some).unwrap_or_else(|| self.optional_date.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "optional_date", value);
-        self.__load_state.mark_loaded("optional_date").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_optional_date.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_optional_date.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_optional_date(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "optional_date")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_optional_date.model_key)
     }
 
     pub fn eval_optional_date(&self) -> teaql_core::eval::EvalResult<Option<chrono::NaiveDate>> {
-        if !self.is_loaded("optional_date") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_optional_date.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "optional_date".to_string(), attempted_path: "optional_date".to_string() }
                 } else {
                     match &self.optional_date {
@@ -700,17 +935,17 @@ impl ScalarTypeProbe {
     pub fn update_required_time(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.required_time = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.required_time.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "required_time", value);
-        self.__load_state.mark_loaded("required_time").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_required_time.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_required_time.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_required_time(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "required_time")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_required_time.model_key)
     }
 
     pub fn eval_required_time(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("required_time") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_required_time.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "required_time".to_string(), attempted_path: "required_time".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.required_time())
@@ -724,17 +959,17 @@ impl ScalarTypeProbe {
     pub fn update_optional_time(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.optional_time = if matches!(value, teaql_core::Value::Null) { None } else { value.try_text().map(|value| value.trim().to_owned()).map(Some).unwrap_or_else(|| self.optional_time.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "optional_time", value);
-        self.__load_state.mark_loaded("optional_time").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_optional_time.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_optional_time.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_optional_time(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "optional_time")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_optional_time.model_key)
     }
 
     pub fn eval_optional_time(&self) -> teaql_core::eval::EvalResult<Option<String>> {
-        if !self.is_loaded("optional_time") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_optional_time.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "optional_time".to_string(), attempted_path: "optional_time".to_string() }
                 } else {
                     match &self.optional_time {
@@ -751,16 +986,16 @@ impl ScalarTypeProbe {
     pub fn update_required_datetime(&mut self, value: teaql_core::time::Timestamp) -> &mut Self {
         self.required_datetime = value;
         let value = teaql_core::Value::from(value);
-        self.__teaql_runtime_state().set(self.entity_key(), "required_datetime", value);
-        self.__load_state.mark_loaded("required_datetime").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_required_datetime.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_required_datetime.query_key).expect("generated field layout");
         self
     }
     pub fn changed_required_datetime(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "required_datetime")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_required_datetime.model_key)
     }
 
     pub fn eval_required_datetime(&self) -> teaql_core::eval::EvalResult<teaql_core::time::Timestamp> {
-        if !self.is_loaded("required_datetime") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_required_datetime.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "required_datetime".to_string(), attempted_path: "required_datetime".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.required_datetime())
@@ -774,16 +1009,16 @@ impl ScalarTypeProbe {
     pub fn update_optional_datetime(&mut self, value: Option<teaql_core::time::Timestamp>) -> &mut Self {
         self.optional_datetime = value;
         let value = value.map(teaql_core::Value::from).unwrap_or(teaql_core::Value::Null);
-        self.__teaql_runtime_state().set(self.entity_key(), "optional_datetime", value);
-        self.__load_state.mark_loaded("optional_datetime").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_optional_datetime.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_optional_datetime.query_key).expect("generated field layout");
         self
     }
     pub fn changed_optional_datetime(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "optional_datetime")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_optional_datetime.model_key)
     }
 
     pub fn eval_optional_datetime(&self) -> teaql_core::eval::EvalResult<Option<teaql_core::time::Timestamp>> {
-        if !self.is_loaded("optional_datetime") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_optional_datetime.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "optional_datetime".to_string(), attempted_path: "optional_datetime".to_string() }
                 } else {
                     match &self.optional_datetime {
@@ -800,16 +1035,16 @@ impl ScalarTypeProbe {
     pub fn update_create_time(&mut self, value: teaql_core::time::Timestamp) -> &mut Self {
         self.create_time = value;
         let value = teaql_core::Value::from(value);
-        self.__teaql_runtime_state().set(self.entity_key(), "create_time", value);
-        self.__load_state.mark_loaded("create_time").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_create_time.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_create_time.query_key).expect("generated field layout");
         self
     }
     pub fn changed_create_time(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "create_time")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_create_time.model_key)
     }
 
     pub fn eval_create_time(&self) -> teaql_core::eval::EvalResult<teaql_core::time::Timestamp> {
-        if !self.is_loaded("create_time") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_create_time.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "create_time".to_string(), attempted_path: "create_time".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.create_time())
@@ -823,16 +1058,16 @@ impl ScalarTypeProbe {
     pub fn update_update_time(&mut self, value: teaql_core::time::Timestamp) -> &mut Self {
         self.update_time = value;
         let value = teaql_core::Value::from(value);
-        self.__teaql_runtime_state().set(self.entity_key(), "update_time", value);
-        self.__load_state.mark_loaded("update_time").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_update_time.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_update_time.query_key).expect("generated field layout");
         self
     }
     pub fn changed_update_time(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "update_time")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_update_time.model_key)
     }
 
     pub fn eval_update_time(&self) -> teaql_core::eval::EvalResult<teaql_core::time::Timestamp> {
-        if !self.is_loaded("update_time") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_update_time.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "update_time".to_string(), attempted_path: "update_time".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.update_time())
@@ -846,17 +1081,17 @@ impl ScalarTypeProbe {
     pub fn update_version(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "version", value);
-        self.__load_state.mark_loaded("version").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_version.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_version.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_version(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "version")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_version.model_key)
     }
 
     pub fn eval_version(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("version") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_version.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "version".to_string(), attempted_path: "version".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.version())
@@ -869,17 +1104,17 @@ impl ScalarTypeProbe {
     pub fn update_type_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.type_platform_id = value.try_u64().unwrap_or(self.type_platform_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "type_platform", value);
-        self.__load_state.mark_loaded("type_platform_id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_type_platform.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_type_platform.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_type_platform_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "type_platform")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_type_platform.model_key)
     }
 
     pub fn eval_type_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("type_platform_id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_type_platform.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "type_platform_id".to_string(), attempted_path: "type_platform_id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.type_platform_id())
