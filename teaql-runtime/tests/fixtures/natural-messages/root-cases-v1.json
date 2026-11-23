@@ -1,0 +1,41 @@
+{
+  "schema": "teaql.checker-root-cases/v1",
+  "modelFixture": "cases-v1.json",
+  "cases": [
+    {
+      "name": "root-known-required",
+      "path": [],
+      "locale": "en",
+      "rule": "checker.required",
+      "shape": "DEEP",
+      "expected": "The catalog is required.\nLocation: catalog"
+    },
+    {
+      "name": "root-array-known-required-zh",
+      "path": [
+        1
+      ],
+      "locale": "zh-CN",
+      "rule": "checker.required",
+      "shape": "DEEP",
+      "expected": "请填写目录。\n位置：第2项目录"
+    },
+    {
+      "name": "root-missing-origin",
+      "origin": null,
+      "path": [],
+      "locale": "en",
+      "rule": "checker.invalid",
+      "shape": "DEEP",
+      "expected": "The current object is invalid.\nLocation: current object"
+    },
+    {
+      "name": "root-unknown-rule",
+      "path": [],
+      "locale": "en",
+      "rule": "checker.custom",
+      "shape": "DEEP",
+      "expected": "The catalog is invalid.\nLocation: catalog"
+    }
+  ]
+}

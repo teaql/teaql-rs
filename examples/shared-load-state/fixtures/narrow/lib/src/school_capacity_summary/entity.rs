@@ -4,6 +4,9 @@ use std::collections::BTreeMap;
 
 use teaql_macros::{teaql_entity, TeaqlEntity};
 
+// Fail to compile against a runtime without modeled Integer-width support.
+const _: fn(teaql_core::PropertyDescriptor) -> teaql_core::PropertyDescriptor = teaql_core::PropertyDescriptor::int32;
+
 
 /// [TEAQL AI WARNING]
 /// TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
@@ -24,9 +27,11 @@ pub struct SchoolCapacitySummary {
     name: String,
 
 // @source main.xml:16
+#[teaql(integer32)]
     total_capacity: i64,
 
 // @source main.xml:16
+#[teaql(integer32)]
     school_count: i64,
 #[teaql(version)]
     version: i64,
@@ -43,25 +48,80 @@ pub struct SchoolCapacitySummary {
 }
 
 impl SchoolCapacitySummary {
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_id: crate::GeneratedField = crate::GeneratedField {
+        model_key: "id",
+        query_key: "id",
+        member_name: "id",
+        column_name: "id",
+        load_index: 0,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_platform: crate::GeneratedField = crate::GeneratedField {
+        model_key: "platform",
+        query_key: "platform_id",
+        member_name: "platform_id",
+        column_name: "platform",
+        load_index: 1,
+        reference: true,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_name: crate::GeneratedField = crate::GeneratedField {
+        model_key: "name",
+        query_key: "name",
+        member_name: "name",
+        column_name: "name",
+        load_index: 2,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_total_capacity: crate::GeneratedField = crate::GeneratedField {
+        model_key: "total_capacity",
+        query_key: "total_capacity",
+        member_name: "total_capacity",
+        column_name: "total_capacity",
+        load_index: 3,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_school_count: crate::GeneratedField = crate::GeneratedField {
+        model_key: "school_count",
+        query_key: "school_count",
+        member_name: "school_count",
+        column_name: "school_count",
+        load_index: 4,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_version: crate::GeneratedField = crate::GeneratedField {
+        model_key: "version",
+        query_key: "version",
+        member_name: "version",
+        column_name: "version",
+        load_index: 5,
+        reference: false,
+    };
+
     pub const ENTITY_NAME: &'static str = "School Capacity Summary";
 
     // Framework metadata: complete fixed layout, including overflow slots.
     pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "f571f4dcc37bd33fc29f0aa97e881485bf74a0130eef2c5230fe6c7e15c257f4";
     pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
-        ("id", 0),
-        ("platform", 1),
-        ("name", 2),
-        ("total_capacity", 3),
-        ("school_count", 4),
-        ("version", 5),
+        (Self::__TEAQL_FIELD_id.model_key, Self::__TEAQL_FIELD_id.load_index),
+        (Self::__TEAQL_FIELD_platform.model_key, Self::__TEAQL_FIELD_platform.load_index),
+        (Self::__TEAQL_FIELD_name.model_key, Self::__TEAQL_FIELD_name.load_index),
+        (Self::__TEAQL_FIELD_total_capacity.model_key, Self::__TEAQL_FIELD_total_capacity.load_index),
+        (Self::__TEAQL_FIELD_school_count.model_key, Self::__TEAQL_FIELD_school_count.load_index),
+        (Self::__TEAQL_FIELD_version.model_key, Self::__TEAQL_FIELD_version.load_index),
     ];
     pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
-        ("id", "id", "id"),
-        ("platform", "platform_id", "platform"),
-        ("name", "name", "name"),
-        ("total_capacity", "total_capacity", "total_capacity"),
-        ("school_count", "school_count", "school_count"),
-        ("version", "version", "version"),
+        (Self::__TEAQL_FIELD_id.model_key, Self::__TEAQL_FIELD_id.member_name, Self::__TEAQL_FIELD_id.column_name),
+        (Self::__TEAQL_FIELD_platform.model_key, Self::__TEAQL_FIELD_platform.member_name, Self::__TEAQL_FIELD_platform.column_name),
+        (Self::__TEAQL_FIELD_name.model_key, Self::__TEAQL_FIELD_name.member_name, Self::__TEAQL_FIELD_name.column_name),
+        (Self::__TEAQL_FIELD_total_capacity.model_key, Self::__TEAQL_FIELD_total_capacity.member_name, Self::__TEAQL_FIELD_total_capacity.column_name),
+        (Self::__TEAQL_FIELD_school_count.model_key, Self::__TEAQL_FIELD_school_count.member_name, Self::__TEAQL_FIELD_school_count.column_name),
+        (Self::__TEAQL_FIELD_version.model_key, Self::__TEAQL_FIELD_version.member_name, Self::__TEAQL_FIELD_version.column_name),
     ];
 
     pub fn with_id(id: u64) -> teaql_core::Value {
@@ -110,17 +170,17 @@ impl SchoolCapacitySummary {
     pub fn update_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "id", value);
-        self.__load_state.mark_loaded("id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_id.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_id.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "id")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_id.model_key)
     }
 
     pub fn eval_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_id.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "id".to_string(), attempted_path: "id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.id())
@@ -134,17 +194,17 @@ impl SchoolCapacitySummary {
     pub fn update_name(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.name = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.name.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "name", value);
-        self.__load_state.mark_loaded("name").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_name.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_name.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_name(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "name")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_name.model_key)
     }
 
     pub fn eval_name(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("name") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_name.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "name".to_string(), attempted_path: "name".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.name())
@@ -158,17 +218,17 @@ impl SchoolCapacitySummary {
     pub fn update_total_capacity(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.total_capacity = value.try_i64().map(|value| value as i64).unwrap_or(self.total_capacity.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "total_capacity", value);
-        self.__load_state.mark_loaded("total_capacity").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_total_capacity.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_total_capacity.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_total_capacity(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "total_capacity")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_total_capacity.model_key)
     }
 
     pub fn eval_total_capacity(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("total_capacity") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_total_capacity.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "total_capacity".to_string(), attempted_path: "total_capacity".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.total_capacity())
@@ -182,17 +242,17 @@ impl SchoolCapacitySummary {
     pub fn update_school_count(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.school_count = value.try_i64().map(|value| value as i64).unwrap_or(self.school_count.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "school_count", value);
-        self.__load_state.mark_loaded("school_count").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_school_count.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_school_count.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_school_count(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "school_count")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_school_count.model_key)
     }
 
     pub fn eval_school_count(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("school_count") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_school_count.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "school_count".to_string(), attempted_path: "school_count".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.school_count())
@@ -206,17 +266,17 @@ impl SchoolCapacitySummary {
     pub fn update_version(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "version", value);
-        self.__load_state.mark_loaded("version").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_version.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_version.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_version(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "version")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_version.model_key)
     }
 
     pub fn eval_version(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("version") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_version.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "version".to_string(), attempted_path: "version".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.version())
@@ -229,17 +289,17 @@ impl SchoolCapacitySummary {
     pub fn update_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.platform_id = value.try_u64().unwrap_or(self.platform_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "platform_id", value);
-        self.__load_state.mark_loaded("platform_id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_platform.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_platform.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_platform_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "platform_id")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_platform.model_key)
     }
 
     pub fn eval_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("platform_id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_platform.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "platform_id".to_string(), attempted_path: "platform_id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.platform_id())

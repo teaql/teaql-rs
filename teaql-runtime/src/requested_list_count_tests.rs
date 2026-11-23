@@ -45,6 +45,31 @@ fn explicit_count_splits_rows_and_total_without_changing_membership() {
 }
 
 #[test]
+fn list_count_diagnostics_keep_entity_order_and_filters_without_a_fake_statistical_projection() {
+    let source = SelectQuery::new("Probe")
+        .filter(Expr::eq("status", "VISIBLE-RUN"))
+        .projects(vec!["id", "name"])
+        .order_by(teaql_core::OrderBy::asc("id"))
+        .count("total")
+        .page(1, 2);
+    let original = source.clone();
+    let mut query = authorize(source);
+    let (_, count) = query
+        .take_requested_list_count(&options(Some("total")))
+        .unwrap();
+    let diagnostic = count.diagnostic_source().unwrap();
+    assert!(diagnostic.aggregates.is_empty());
+    assert!(!diagnostic.requires_statistical_plan());
+    assert_eq!(diagnostic.filter, original.filter);
+    assert_eq!(diagnostic.order_by, original.order_by);
+    assert_eq!(diagnostic.projection, original.projection);
+    assert_eq!(diagnostic.slice, original.slice);
+    assert_eq!(count.as_query().aggregates.len(), 1);
+    assert_eq!(count.as_query().aggregates[0].alias, "total");
+    assert!(count.as_query().order_by.is_empty());
+}
+
+#[test]
 fn ordinary_list_does_not_invent_count() {
     let mut query = authorize(SelectQuery::new("Probe").limit(2));
     assert!(
@@ -64,12 +89,9 @@ fn ordinary_list_does_not_invent_count() {
 }
 
 #[test]
-fn grouped_and_mixed_aggregates_keep_their_semantics() {
+fn grouped_and_field_counts_keep_their_projection_semantics() {
     let queries = [
         SelectQuery::new("Probe").count("count").group_by("status"),
-        SelectQuery::new("Probe")
-            .count("count")
-            .sum("amount", "sum"),
         SelectQuery::new("Probe").count_field("name", "count"),
     ];
     for source in queries {
@@ -78,6 +100,26 @@ fn grouped_and_mixed_aggregates_keep_their_semantics() {
         assert!(query.take_requested_list_count(&options(None)).is_none());
         assert_eq!(query.as_query(), &before);
     }
+}
+
+#[test]
+fn named_count_splits_independently_of_other_scalar_aliases() {
+    let source = SelectQuery::new("Probe")
+        .filter(Expr::eq("status", "ACTIVE"))
+        .sum("amount", "sum")
+        .count("count")
+        .page(1, 2);
+    let mut query = authorize(source);
+    let (_, count) = query.take_requested_list_count(&options(None)).unwrap();
+    assert_eq!(query.as_query().aggregates.len(), 1);
+    assert_eq!(query.as_query().aggregates[0].alias, "sum");
+    assert_eq!(count.as_query().aggregates.len(), 1);
+    assert_eq!(count.as_query().aggregates[0].alias, "count");
+    assert!(count.as_query().slice.is_none());
+    assert_eq!(query.as_query().filter, count.as_query().filter);
+    let diagnostic = count.diagnostic_source().unwrap();
+    assert_eq!(diagnostic.aggregates.len(), 1);
+    assert_eq!(diagnostic.aggregates[0].alias, "sum");
 }
 
 #[derive(Default)]

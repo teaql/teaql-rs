@@ -13,6 +13,13 @@ use teaql_runtime::{
 
 const TRACEPARENT: &str = "00-11111111111111111111111111111111-aaaaaaaaaaaaaaaa-01";
 
+fn prepare_fixture_stream(stream: &std::net::TcpStream) -> std::io::Result<()> {
+    // Accepted sockets can inherit the listener's nonblocking mode. This raw
+    // HTTP fixture deliberately uses blocking reads with a bounded timeout.
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))
+}
+
 struct ExampleTelemetry {
     operations: Arc<Mutex<Vec<RuntimeOperation>>>,
 }
@@ -39,41 +46,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while served < 2 {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
-                        .unwrap();
+                    prepare_fixture_stream(&stream).unwrap();
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
-                    let mut first = String::new();
-                    reader.read_line(&mut first).unwrap();
-                    if served == 0 {
-                        assert!(first.starts_with("GET /api/orders/1?"));
-                    } else {
-                        assert!(first.starts_with("POST /api/orders/1?"));
-                    }
-                    first.clear();
-                    let mut content_length = 0;
-                    let mut traceparent = None;
-                    while reader.read_line(&mut first).unwrap() > 0 && first != "\r\n" {
-                        if first.to_ascii_lowercase().starts_with("content-length:") {
-                            content_length = first[15..].trim().parse::<usize>().unwrap();
+                    // Reqwest may reuse the connection for the POST. Handle both
+                    // requests on one socket, or accept another after read timeout.
+                    while served < 2 {
+                        let mut first = String::new();
+                        if !matches!(reader.read_line(&mut first), Ok(n) if n > 0) {
+                            break;
                         }
-                        if first.to_ascii_lowercase().starts_with("traceparent:") {
-                            traceparent = Some(first[12..].trim().to_owned());
+                        if served == 0 {
+                            assert!(first.starts_with("GET /api/orders/1?"));
+                        } else {
+                            assert!(first.starts_with("POST /api/orders/1?"));
                         }
                         first.clear();
-                    }
-                    assert_eq!(traceparent.as_deref(), Some(TRACEPARENT));
-                    let mut incoming_body = vec![0; content_length];
-                    reader.read_exact(&mut incoming_body).unwrap();
-                    let body = b"{\"status\":\"submitted\"}";
-                    write!(
+                        let mut content_length = 0;
+                        let mut traceparent = None;
+                        while reader.read_line(&mut first).unwrap() > 0 && first != "\r\n" {
+                            if first.to_ascii_lowercase().starts_with("content-length:") {
+                                content_length = first[15..].trim().parse::<usize>().unwrap();
+                            }
+                            if first.to_ascii_lowercase().starts_with("traceparent:") {
+                                traceparent = Some(first[12..].trim().to_owned());
+                            }
+                            first.clear();
+                        }
+                        assert_eq!(traceparent.as_deref(), Some(TRACEPARENT));
+                        let mut incoming_body = vec![0; content_length];
+                        reader.read_exact(&mut incoming_body).unwrap();
+                        let body = b"{\"status\":\"submitted\"}";
+                        write!(
                         stream,
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
                         body.len()
                     )
                     .unwrap();
-                    stream.write_all(body).unwrap();
-                    served += 1;
+                        stream.write_all(body).unwrap();
+                        stream.flush().unwrap();
+                        served += 1;
+                    }
                 }
                 Err(error)
                     if error.kind() == std::io::ErrorKind::WouldBlock
@@ -154,4 +166,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!diagnostic.contains("PRIVATE_BODY"));
     println!("HTTP_RESILIENCE_PASS status=200 attempts=1 requests=2 trace=2 lineage=3");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpStream;
+
+    #[test]
+    fn accepted_fixture_stream_waits_for_delayed_request_bytes() {
+        let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let sender = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            std::thread::sleep(Duration::from_millis(40));
+            stream.write_all(b"GET /probe HTTP/1.1\r\n").unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("fixture accept failed: {error}"),
+            }
+        };
+        prepare_fixture_stream(&stream).unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        assert_eq!(line, "GET /probe HTTP/1.1\r\n");
+        sender.join().unwrap();
+    }
 }

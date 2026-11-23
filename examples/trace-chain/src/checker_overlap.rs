@@ -132,7 +132,8 @@ pub async fn checker_overlap(
             let mut root = Q::customer_orders()
                 .comment("what: prepare overlap root")
                 .purpose("why: seed persistent Checker fixture")
-                .new_entity(context);
+                .new_entity(context)
+                .expect("reserve trace fixture identity");
             root.update_platform_id(platform.id());
             root.update_order_number(format!("CHECKER-OVERLAP-{index}"));
             root.update_description("Checker overlap initial state");
@@ -186,7 +187,8 @@ pub async fn checker_overlap(
         let mut good_child = Q::order_items()
             .comment("what: compose valid child")
             .purpose("why: exercise generated required-name Checker")
-            .new_entity(context);
+            .new_entity(context)
+            .expect("reserve trace fixture identity");
         good_child.update_customer_order_id(good_id);
         good_child.update_name("Accepted checker overlap child");
         let good_child_id = good_child.id();
@@ -195,7 +197,8 @@ pub async fn checker_overlap(
         let mut bad_child = Q::order_items()
             .comment("what: compose invalid child")
             .purpose("why: prove a real generated required-field rejection")
-            .new_entity(context);
+            .new_entity(context)
+            .expect("reserve trace fixture identity");
         bad_child.update_customer_order_id(bad_id);
         // Intentionally omit update_name. Do not replace the real Checker with
         // a fake failure or assume that blank text is the generated rule.

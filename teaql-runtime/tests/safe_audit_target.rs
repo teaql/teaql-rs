@@ -32,7 +32,7 @@ fn safe_target_survives_root_only_lineage_and_non_id_changes_for_all_mutation_ki
             Some(1),
             Some(values.clone()),
         ),
-        RawAuditEvent::recovered_with_old_values("OrderItem", id, -1, Some(values)),
+        RawAuditEvent::recovered_with_old_values("OrderItem", id, -1, Some(values)).unwrap(),
     ];
     for mut raw in events {
         root_only(&mut raw);

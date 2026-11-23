@@ -21,7 +21,7 @@ pub fn rust_type_to_data_type(ty: &Type) -> proc_macro2::TokenStream {
         Some("u64") | Some("u32") | Some("u16") => quote! { ::teaql_core::DataType::U64 },
         Some("f64") | Some("f32") => quote! { ::teaql_core::DataType::F64 },
         Some("Decimal") => quote! { ::teaql_core::DataType::Decimal },
-        Some("String") | Some("str") => quote! { ::teaql_core::DataType::Text },
+        Some("String") | Some("str") | Some("NaiveTime") => quote! { ::teaql_core::DataType::Text },
         Some("NaiveDate") => quote! { ::teaql_core::DataType::Date },
         Some("DateTime") | Some("Timestamp") => quote! { ::teaql_core::DataType::Timestamp },
         _ => quote! { ::teaql_core::DataType::Json },

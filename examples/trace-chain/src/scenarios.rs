@@ -114,7 +114,7 @@ pub async fn query_three_relations(
     let payment_id = attempt.as_ref().unwrap().payment().unwrap().id();
     let order_id = attempt.as_ref().unwrap().payment().unwrap().customer_order().unwrap().id();
     let mut hidden = Q::payments_minimal().with_id_is(payment_id).limit(1)
-        .select_customer_order_with(Q::customer_orders_minimal().with_id_is(0).limit(1))
+        .select_customer_order_with(Q::customer_orders_minimal().with_id_is(0_u64).limit(1))
         .comment("load filtered forward identity").purpose("distinguish unfetched detail from null")
         .execute_for_one(context).await?.expect("payment exists");
     assert_eq!(E::payment(&hidden).get_customer_order_id().eval(), Some(order_id));
@@ -150,7 +150,8 @@ fn prepare_graph(
     let mut order = Q::customer_orders()
         .comment("what: prepare an independent concurrent root")
         .purpose("why: verify operation-local graph ownership")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     order.update_platform_id(platform_id);
     order.update_order_number(format!("TRACE-CONCURRENT-{lane}"));
     order.update_description("Concurrent draft");
@@ -158,7 +159,8 @@ fn prepare_graph(
     let mut payment = Q::payments()
         .comment("what: prepare an independent payment branch")
         .purpose("why: verify operation-local branch ownership")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     payment.update_customer_order_id(root_id);
     payment.update_reference_code(format!("TRACE-CONCURRENT-PAYMENT-{lane}"));
     let payment_id = payment.id();
@@ -166,14 +168,16 @@ fn prepare_graph(
     let mut attempt = Q::payment_attempts()
         .comment("what: prepare an independent grandchild")
         .purpose("why: verify inherited branch ancestry")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     attempt.update_payment_id(payment_id);
     attempt.update_reference_code(format!("TRACE-CONCURRENT-ATTEMPT-{lane}"));
     let attempt_id = attempt.id();
     let mut shipment = Q::shipments()
         .comment("what: prepare an independent sibling")
         .purpose("why: verify concurrent sibling isolation")
-        .new_entity(context);
+        .new_entity(context)
+        .expect("reserve trace fixture identity");
     shipment.update_customer_order_id(root_id);
     shipment.update_reference_code(format!("TRACE-CONCURRENT-SHIPMENT-{lane}"));
     let shipment_id = shipment.id();

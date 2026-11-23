@@ -76,7 +76,8 @@ pub async fn scalar_streams(
         let mut row = Q::customer_orders()
             .comment("what: prepare stream fixture")
             .purpose("why: isolate bounded stream probes from prior rows")
-            .new_entity(context);
+            .new_entity(context)
+            .expect("reserve trace fixture identity");
         row.update_platform_id(1);
         row.update_order_number(format!("STREAM-{index}"));
         row.update_description("Stream fixture");
