@@ -314,6 +314,7 @@ where
                 context.dynamic_graph_provider()?;
             }
             capture_ledger_trace_scopes(&root, &node)?;
+            let changes = root.current_change_set();
             let entity = node.entity.clone();
             let executor = context
                 .require_resource::<E>()
@@ -329,7 +330,8 @@ where
                 .unwrap_or(Value::I64(0));
             let root_key = crate::EntityKey::new(entity.clone(), current_id);
             reject_cancelled_new_root(&root, &root_key)?;
-            let policy_plan = crate::ledger_policy_plan(context, &node, &root)?;
+            let policy_plan =
+                crate::mutation_policy::ledger_policy_plan_from(context, &node, &root, &changes)?;
             let governance = context.review_mutation_plan(&policy_plan)?;
             let tx = teaql_data_service::TransactionExecutor::begin(executor)
                 .await
@@ -338,7 +340,7 @@ where
                 context,
                 crate::with_mutation_governance(governance, async {
                     let eds = crate::EntityDataService::for_executor(context, &entity, &tx)
-                        .with_ledger_privacy(&root)
+                        .with_ledger_privacy_from(&root, &changes)
                         .map_err(DataServiceError::Runtime)?
                         .with_mutation_intent(
                             teaql_core::MutationIntent::from_optional(node.comment.as_deref())
@@ -347,7 +349,11 @@ where
                         );
                     let locations = ledger_object_locations(&node);
                     let mut generated_ids = eds
-                        .execute_ledger_plan_internal(root.clone(), &locations)
+                        .execute_ledger_plan_internal_with_changes(
+                            root.clone(),
+                            &locations,
+                            &changes,
+                        )
                         .await?;
                     if let Some(readbacks) = &mut generated_ids.dynamic_readbacks {
                         node.dynamic_fields = readbacks
@@ -415,9 +421,9 @@ fn loaded_relation_fields<T: Entity>(entity: &T) -> Vec<String> {
     // the entity. No relationship objects or mutation ownership are cloned.
     T::entity_descriptor()
         .relations
-        .into_iter()
+        .iter()
         .filter(|relation| entity.is_field_loaded(&relation.name))
-        .map(|relation| relation.name)
+        .map(|relation| relation.name.clone())
         .collect()
 }
 
@@ -1436,7 +1442,11 @@ fn graph_node_from_values(
     let descriptor = context.require_entity(entity)?;
     let mut node = GraphNode::new(entity);
 
-    for (field, value) in values {
+    if let Some(symbols) = values.symbols().or(descriptor.symbols) {
+        node.values = MutationValues::indexed_with_capacity(symbols, values.len()).into();
+    }
+    for (field_id, value) in values.into_fields() {
+        let field = field_id.name();
         if field == "_comment" {
             if let Value::Text(comment) = value {
                 node.set_comment(comment);
@@ -1479,22 +1489,25 @@ fn graph_node_from_values(
             }
             continue;
         }
-        let Some(relation) = descriptor.relation_by_name(&field) else {
-            node.values.insert(field, value);
+        let Some(relation) = descriptor.relation_by_name(field) else {
+            node.values.insert_field(field_id, value);
             continue;
         };
 
         match value {
             Value::Null => {
-                node.relations.entry(field).or_default();
+                node.relations.entry(field.to_owned()).or_default();
             }
             Value::Object(record) => {
                 let child =
                     graph_node_from_values(context, &relation.target_entity, record.into())?;
-                node.relations.entry(field).or_default().push(child);
+                node.relations
+                    .entry(field.to_owned())
+                    .or_default()
+                    .push(child);
             }
             Value::List(values) => {
-                let children = node.relations.entry(field.clone()).or_default();
+                let children = node.relations.entry(field.to_owned()).or_default();
                 for value in values {
                     let Value::Object(record) = value else {
                         return Err(RuntimeError::Graph(format!(
@@ -2179,6 +2192,15 @@ fn hydrate_ledger_relations(
     node: &mut GraphNode,
     visited: &mut BTreeSet<crate::EntityKey>,
 ) -> Result<(), RuntimeError> {
+    root.with_preflight_view(|view| hydrate_ledger_relations_borrowed(context, view, node, visited))
+}
+
+fn hydrate_ledger_relations_borrowed(
+    context: &UserContext,
+    view: &crate::entity_runtime::LedgerPreflightView<'_>,
+    node: &mut GraphNode,
+    visited: &mut BTreeSet<crate::EntityKey>,
+) -> Result<(), RuntimeError> {
     let descriptor = context.require_entity(&node.entity)?;
     for relation in &descriptor.relations {
         let Some(local_value) = node.values.get(&relation.local_key).cloned() else {
@@ -2196,25 +2218,18 @@ fn hydrate_ledger_relations(
             })
             .collect::<BTreeSet<_>>();
         let mut discovered = Vec::new();
-        let changes = root.current_change_set();
-        let mut pending = changes.changes().keys().cloned().collect::<BTreeSet<_>>();
-        if let Some(dynamic) = changes.dynamic_changes() {
-            pending.extend(dynamic.keys().cloned());
-        }
-        pending.extend(root.deleted_keys());
-        pending.extend(root.recovered_keys());
-        pending.extend(root.new_keys());
+        let pending = view.pending_keys();
         for key in &pending {
             if key.entity.as_ref() != relation.target_entity || existing_keys.contains(key) {
                 continue;
             }
-            let original_values = root.original_values_for(key);
-            let target_descriptor = context.require_entity(&key.entity)?;
+            let original_values = view.original_values(key);
+            let target_descriptor = context.require_entity_key(key)?;
             let mut values: crate::EntityValues = original_values
                 .clone()
                 .map(|values| BTreeMap::from(values).into())
                 .unwrap_or_default();
-            if let Some(changes) = changes.changes().get(key) {
+            if let Some(changes) = view.changes.changes().get(key) {
                 values.extend(storage_values_from_ledger(target_descriptor, changes)?);
             }
             let foreign_value = if relation.foreign_key == "id" {
@@ -2239,11 +2254,11 @@ fn hydrate_ledger_relations(
             values
                 .entry("id".to_owned())
                 .or_insert_with(|| key.id.clone());
-            let operation = if root.deleted_keys().contains(key) {
+            let operation = if view.is_deleted(key) {
                 GraphOperation::Remove
-            } else if root.is_marked_as_recover(key) {
+            } else if view.is_recovered(key) {
                 GraphOperation::Recover
-            } else if root.new_keys().contains(key) || root.get_original_version(key).is_none() {
+            } else if view.is_new(key) || view.original_version(key).is_none() {
                 GraphOperation::Create
             } else {
                 GraphOperation::Upsert
@@ -2251,14 +2266,14 @@ fn hydrate_ledger_relations(
             let mut child = GraphNode::new(key.entity.to_string());
             child.values = values;
             child.operation = operation;
-            child.comment = root.get_entity_comment(key);
+            child.comment = view.comment(key);
             child.original_values = original_values;
             child.dirty_fields = Some(storage_fields_from_ledger(
                 target_descriptor,
-                &root.changed_field_names(key),
+                &view.dirty_fields(key),
             )?);
             if operation != GraphOperation::Remove {
-                hydrate_ledger_relations(context, root, &mut child, visited)?;
+                hydrate_ledger_relations_borrowed(context, view, &mut child, visited)?;
             }
             discovered.push(child);
         }
@@ -2516,7 +2531,7 @@ where
         context: &'a UserContext,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Entity, RuntimeError>> + Send + 'a>> {
         Box::pin(context.observe_runtime_mutation_request(
-            || T::entity_descriptor().name,
+            || T::entity_descriptor().name.clone(),
             with_graph_fix_scope(context, async move {
                 let entity = self.into_entity(); // applies comment onto the entity
                 let root = entity
@@ -2568,7 +2583,7 @@ where
 {
     context
         .observe_runtime_mutation_request(
-            || T::entity_descriptor().name,
+            || T::entity_descriptor().name.clone(),
             with_graph_fix_scope(context, save_audited_ledger_entity_inner(audited, context)),
         )
         .await
@@ -2592,7 +2607,7 @@ where
 {
     context
         .observe_runtime_mutation_request(
-            || T::entity_descriptor().name,
+            || T::entity_descriptor().name.clone(),
             with_graph_fix_scope(
                 context,
                 save_audited_ledger_entity_with_executor_inner(audited, context, executor),
@@ -2632,7 +2647,7 @@ where
 
     if let Some(root) = root {
         let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
-        let root_key = crate::EntityKey::new(node.entity.clone(), root_id);
+        let root_key = crate::EntityKey::for_type::<T>(root_id);
         reject_cancelled_new_root(&root, &root_key)?;
         if let Some(changes) = root.current_change_set().changes().get(&root_key) {
             let descriptor = context.require_entity(&node.entity)?;
@@ -2648,7 +2663,8 @@ where
         restoration::prepare(context, &root, &mut node)?;
         preflight_pending_dynamic_entities(context, &root, &node)?;
         capture_ledger_trace_scopes(&root, &node)?;
-        let has_ledger_changes = !root.current_change_set().is_empty()
+        let changes = root.current_change_set();
+        let has_ledger_changes = !changes.is_empty()
             || !root.deleted_keys().is_empty()
             || !root.recovered_keys().is_empty()
             || !root.new_keys().is_empty();
@@ -2661,16 +2677,21 @@ where
             })?;
             let data_service =
                 crate::EntityDataService::for_executor(context, &entity_name, executor)
-                    .with_ledger_privacy(&root)?
+                    .with_ledger_privacy_from(&root, &changes)?
                     .with_mutation_intent(teaql_core::MutationIntent::from_optional(
                         node.comment.as_deref(),
                     )?);
             let locations = ledger_object_locations(&node);
-            let policy_plan = crate::ledger_policy_plan(context, &node, &root)?;
+            let policy_plan =
+                crate::mutation_policy::ledger_policy_plan_from(context, &node, &root, &changes)?;
             let governance = context.review_mutation_plan(&policy_plan)?;
             let mut generated_ids = crate::with_mutation_governance(
                 governance,
-                data_service.execute_ledger_plan_internal(root.clone(), &locations),
+                data_service.execute_ledger_plan_internal_with_changes(
+                    root.clone(),
+                    &locations,
+                    &changes,
+                ),
             )
             .await
             .map_err(data_service_error_into_runtime)?;
@@ -2794,7 +2815,7 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
 
     if let Some(root) = root {
         let root_id = node.values.get("id").cloned().unwrap_or(Value::I64(0));
-        let root_key = crate::EntityKey::new(node.entity.clone(), root_id);
+        let root_key = crate::EntityKey::for_type::<T>(root_id);
         reject_cancelled_new_root(&root, &root_key)?;
         if let Some(changes) = root.current_change_set().changes().get(&root_key) {
             let descriptor = context.require_entity(&node.entity)?;
@@ -2810,7 +2831,8 @@ async fn save_ledger_entity_body<T: Entity + Send + 'static>(
         restoration::prepare(context, &root, &mut node)?;
         preflight_pending_dynamic_entities(context, &root, &node)?;
         capture_ledger_trace_scopes(&root, &node)?;
-        let has_ledger_changes = !root.current_change_set().is_empty()
+        let changes = root.current_change_set();
+        let has_ledger_changes = !changes.is_empty()
             || !root.deleted_keys().is_empty()
             || !root.recovered_keys().is_empty()
             || !root.new_keys().is_empty();

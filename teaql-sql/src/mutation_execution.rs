@@ -492,12 +492,13 @@ async fn execute_inherited<D: SqlDialect + Sync, T: SqlTransport>(
         // complete generated policies preserve exact per-field masking.
         storage.audit_mask_fields.clear();
         storage.audit_mask_fields_declared = true;
-        for property in &storage.properties {
+        let storage_data: &mut teaql_core::EntityDescriptorData = &mut storage;
+        for property in &storage_data.properties {
             use teaql_data_service::SqlParameterLogPolicy as Policy;
             match SqlIntentRedactions::field_policy(entity, &property.name) {
-                Policy::Unknown => storage.audit_mask_fields_declared = false,
+                Policy::Unknown => storage_data.audit_mask_fields_declared = false,
                 Policy::Masked | Policy::Credential => {
-                    storage.audit_mask_fields.push(property.name.clone())
+                    storage_data.audit_mask_fields.push(property.name.clone())
                 }
                 Policy::Plain => {}
             }

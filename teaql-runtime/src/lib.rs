@@ -135,7 +135,7 @@ pub use mutation_policy::{
     NoMutationPolicyApprovalProvider,
 };
 pub(crate) use mutation_policy::{
-    current_mutation_governance, graph_policy_plan, ledger_policy_plan, with_mutation_governance,
+    current_mutation_governance, graph_policy_plan, with_mutation_governance,
 };
 pub use registry::{
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry,

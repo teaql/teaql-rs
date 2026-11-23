@@ -384,7 +384,7 @@ mod empty_aggregate_tests {
 }
 
 pub(super) fn ensure_initial_version(
-    values: &mut BTreeMap<String, Value>,
+    values: &mut teaql_core::MutationValues,
     descriptor: &EntityDescriptor,
 ) {
     if let Some(version_property) = descriptor.version_property() {
@@ -393,13 +393,13 @@ pub(super) fn ensure_initial_version(
             None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
         );
         if needs_version {
-            values.insert(version_property.name.clone(), Value::I64(1));
+            values.insert_named(&version_property.name, Value::I64(1));
         }
     }
 }
 
 pub(super) fn ensure_timestamps(
-    values: &mut BTreeMap<String, Value>,
+    values: &mut teaql_core::MutationValues,
     descriptor: &EntityDescriptor,
     is_new: bool,
     context: &crate::UserContext,
@@ -423,10 +423,10 @@ pub(super) fn ensure_timestamps(
     // never introduce an independent wall-clock instant after validation.
     let now = Value::Timestamp(context.fix_time());
     if create {
-        values.insert("create_time".to_owned(), now.clone());
+        values.insert_named("create_time", now.clone());
     }
     if update {
-        values.insert("update_time".to_owned(), now);
+        values.insert_named("update_time", now);
     }
 }
 
@@ -467,7 +467,7 @@ mod timestamp_fallback_tests {
     }
     #[test]
     fn missing_create_and_update_timestamps_use_the_business_clock() {
-        let mut values = BTreeMap::new();
+        let mut values = teaql_core::MutationValues::new();
         ensure_timestamps(&mut values, &descriptor(), true, &context());
         assert_eq!(
             values.get("create_time"),
@@ -480,7 +480,10 @@ mod timestamp_fallback_tests {
     }
     #[test]
     fn sparse_update_fallback_never_introduces_a_create_time() {
-        let mut values = BTreeMap::from([("name".into(), Value::from("updated"))]);
+        let mut values = teaql_core::MutationValues::from(BTreeMap::from([(
+            "name".into(),
+            Value::from("updated"),
+        )]));
         ensure_timestamps(&mut values, &descriptor(), false, &context());
         assert!(!values.contains_key("create_time"));
         assert_eq!(values.get("name"), Some(&Value::from("updated")));
@@ -492,15 +495,15 @@ mod timestamp_fallback_tests {
     #[test]
     fn explicit_times_and_the_epoch_are_preserved_without_clock_access() {
         let context = UserContext::new().with_business_clock(NoClock);
-        let mut values = BTreeMap::from([
+        let mut values = teaql_core::MutationValues::from(BTreeMap::from([
             ("create_time".into(), Value::Timestamp(Timestamp(0))),
             ("update_time".into(), Value::Timestamp(Timestamp(123))),
-        ]);
+        ]));
         let before = values.clone();
         ensure_timestamps(&mut values, &descriptor(), true, &context);
         assert_eq!(values, before);
         ensure_timestamps(
-            &mut BTreeMap::new(),
+            &mut teaql_core::MutationValues::new(),
             &EntityDescriptor::new("Untimed"),
             true,
             &context,
@@ -511,10 +514,10 @@ mod timestamp_fallback_tests {
         for placeholder in [Value::Null, Value::I64(0), Value::U64(0)] {
             let ticks = Arc::new(AtomicI64::new(FIXED));
             let context = UserContext::new().with_business_clock(AdvancingClock(ticks.clone()));
-            let mut values = BTreeMap::from([
+            let mut values = teaql_core::MutationValues::from(BTreeMap::from([
                 ("create_time".into(), placeholder.clone()),
                 ("update_time".into(), placeholder),
-            ]);
+            ]));
             ensure_timestamps(&mut values, &descriptor(), true, &context);
             assert_eq!(values.get("create_time"), values.get("update_time"));
             assert_eq!(
@@ -530,7 +533,7 @@ mod timestamp_fallback_tests {
         let context = UserContext::new().with_business_clock(AdvancingClock(ticks.clone()));
         crate::entity_save::with_fix_time(&context, || {
             for create in [true, false, true] {
-                let mut values = BTreeMap::new();
+                let mut values = teaql_core::MutationValues::new();
                 ensure_timestamps(&mut values, &descriptor(), create, &context);
                 assert_eq!(
                     values.get("update_time"),
@@ -549,14 +552,14 @@ mod timestamp_fallback_tests {
             Utc.timestamp_millis_opt(9000).unwrap(),
         ));
         crate::entity_save::with_fix_time(&first, || {
-            let mut values = BTreeMap::new();
+            let mut values = teaql_core::MutationValues::new();
             ensure_timestamps(&mut values, &descriptor(), false, &second);
             assert_eq!(
                 values.get("update_time"),
                 Some(&Value::Timestamp(Timestamp(9000)))
             );
         });
-        let mut values = BTreeMap::new();
+        let mut values = teaql_core::MutationValues::new();
         ensure_timestamps(&mut values, &descriptor(), false, &first);
         assert_eq!(
             values.get("update_time"),
@@ -600,14 +603,14 @@ pub(super) fn ensure_relation_target<ExecError>(
 }
 
 pub(crate) fn increment_version(
-    values: &mut BTreeMap<String, Value>,
+    values: &mut teaql_core::MutationValues,
     descriptor: &EntityDescriptor,
     original_version: Option<i64>,
 ) -> Result<(), RuntimeError> {
     if let Some(prop) = descriptor.version_property() {
         let next_version =
             crate::mutation_version::updated(&descriptor.name, original_version)?.unwrap_or(2);
-        values.insert(prop.name.clone(), teaql_core::Value::I64(next_version));
+        values.insert_named(&prop.name, teaql_core::Value::I64(next_version));
     }
     Ok(())
 }
