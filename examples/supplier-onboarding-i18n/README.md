@@ -4,7 +4,7 @@ The [KSML model](model.xml) describes a warehouse with suppliers. The [semantic 
 
 ## Run and select a locale
 
-Rust and Cargo, a C compiler for the SQLite dependency, and Python 3.9 or newer. The verified compiler was Rust 1.97.1. This example uses local Rust runtime 8.1.0 source. The runner compiles the generated console against the enclosing runtime and maps its TeaQL crates to the same local source via temporary Cargo config arguments.
+Rust and Cargo, a C compiler for the SQLite dependency, and Python 3.9 or newer. The verified compiler was Rust 1.97.1. This example uses local Rust runtime 8.2.0 source. The runner compiles the generated console against the enclosing runtime and maps its TeaQL crates to the same local source via temporary Cargo config arguments.
 
 ```sh
 bash examples/supplier-onboarding-i18n/run.sh
