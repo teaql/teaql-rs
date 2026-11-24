@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut order = Q::customer_orders()
             .comment("prepare standard stream fixture")
             .purpose("prepare bounded stream records")
-            .new_entity(&context);
+            .new_entity(&context)?;
         order.update_platform_id(1);
         order.update_order_number(format!("STREAM-{index}"));
         order.update_description("bounded stream fixture");
@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "second stream waits on SQLite lease"
     );
     let other = Q::platforms_minimal()
-        .with_id_is(1)
+        .with_id_is(1_u64)
         .limit(1)
         .comment("run independent query between stream polls")
         .purpose("verify stream context isolation")

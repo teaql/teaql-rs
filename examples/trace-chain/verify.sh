@@ -114,8 +114,11 @@ for allocation_pass in 1 2; do
     nested_typed_selection_executes_its_related_counts_once; do
     native_case_passed "$membership_case" "$membership_log"
   done
-  rg -Fq 'test result: ok. 13 passed; 0 failed; 0 ignored' "$membership_log"
-  printf 'PASS native relation membership replay %s (13 cases, including nested metrics and projection ownership)\n' "$allocation_pass"
+  if ! rg -Fq 'test result: ok. 15 passed; 0 failed; 0 ignored' "$membership_log"; then
+    printf 'FAIL incomplete native relation membership replay %s; inspect %s\n' "$allocation_pass" "$membership_log" >&2
+    exit 1
+  fi
+  printf 'PASS native relation membership replay %s (15 cases, including complete nested populations and projection ownership)\n' "$allocation_pass"
 done
 trace_library_before="$(generated_hash)"
 for trace_pass in 1 2; do

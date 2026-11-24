@@ -16,6 +16,9 @@ use teaql_runtime::{
 };
 use teaql_sql::SqlDataServiceExecutor;
 
+#[path = "dynamic_field_query/restoration.rs"]
+mod restoration;
+
 #[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
 #[teaql(entity = "DynamicSchool", table = "dynamic_school", indexed_layout)]

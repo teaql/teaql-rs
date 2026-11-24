@@ -68,12 +68,23 @@ jobs:
     env:
       TEAQL_TEST_POSTGRES_URL: postgresql://teaql_ci:teaql-ci-test-only@127.0.0.1:5432/teaql_rust_provider_ci_postgres
       TEAQL_TEST_MYSQL_URL: mysql://teaql_ci:teaql-ci-test-only@127.0.0.1:3306/teaql_rust_provider_ci_mysql
+      TEAQL_ROLLUP_TEST_POSTGRES_URL: postgresql://teaql_ci:teaql-ci-test-only@127.0.0.1:5432/teaql_rollup_326
     steps:
       - uses: actions/checkout@v7
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+      - name: Provision separate ownership-checked statistics fixture
+        run: |
+          docker exec -i '${{ job.services.postgres.id }}' \
+            psql -X -U teaql_ci -v ON_ERROR_STOP=1 -d postgres <<'SQL'
+          CREATE DATABASE teaql_rollup_326;
+          COMMENT ON DATABASE teaql_rollup_326 IS 'TeaQL #326 owned layered statistics fixture';
+          SQL
+          docker exec -i '${{ job.services.postgres.id }}' \
+            psql -X -U teaql_ci -v ON_ERROR_STOP=1 -d teaql_rollup_326 \
+            -c 'CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;'
       - name: Verify live providers with exact zero-ignored counts
         run: ./scripts/verify-live-sql-providers.sh
 

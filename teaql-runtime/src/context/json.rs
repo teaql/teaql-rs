@@ -196,7 +196,12 @@ fn scalar(
     let invalid = || error(entity, &format!("invalid field type: {}", property.name));
     Ok(match property.data_type {
         DataType::Bool => Value::Bool(value.as_bool().ok_or_else(invalid)?),
-        DataType::I64 => Value::I64(value.as_i64().ok_or_else(invalid)?),
+        DataType::I64 => Value::I64(
+            value
+                .as_i64()
+                .filter(|value| !property.is_int32 || i32::try_from(*value).is_ok())
+                .ok_or_else(invalid)?,
+        ),
         DataType::U64 => Value::U64(value.as_u64().ok_or_else(invalid)?),
         DataType::F64 => Value::F64(
             value
@@ -214,6 +219,9 @@ fn scalar(
         }
         DataType::Text | DataType::LargeText => {
             Value::Text(value.as_str().ok_or_else(invalid)?.to_owned())
+        }
+        DataType::Binary => {
+            Value::binary_from_base64(value.as_str().ok_or_else(invalid)?).ok_or_else(invalid)?
         }
         DataType::Json => {
             if value.is_null() {

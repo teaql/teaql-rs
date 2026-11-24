@@ -1,0 +1,47 @@
+name: HTTP resilience cross-OS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/http-platforms.yml
+      - Cargo.toml
+      - Cargo.lock
+      - teaql-core/**
+      - teaql-runtime/**
+      - teaql-http-reqwest/**
+      - examples/**
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/http-platforms.yml
+      - Cargo.toml
+      - Cargo.lock
+      - teaql-core/**
+      - teaql-runtime/**
+      - teaql-http-reqwest/**
+      - examples/**
+
+permissions:
+  contents: read
+
+jobs:
+  http-resilience:
+    name: HTTP contract and example (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-26-intel, windows-2025]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run HTTP contract and Context-owned example twice
+        run: bash examples/http-resilience/verify.sh

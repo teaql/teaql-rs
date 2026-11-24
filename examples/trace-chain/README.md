@@ -206,13 +206,18 @@ CARGO_TARGET_DIR=/path/to/shared-cargo-target \
   -Dteaql.rs.dir=/path/to/teaql-rs test
 ```
 
-The model explicitly selects `teaql_rs_version="5.0.5"`. This is the dependency
+The model explicitly selects `teaql_rs_version="5.0.7"`. This is the dependency
 label; local patches select the source revision under test. Read the generated
 [AGENTS.md](AGENTS.md) and only the relevant retained Assist before changing
 application code. Do not read generated library source for API discovery or
 hand-patch it. `src/observation.rs` is a framework SPI test observer: it delegates
 the exact generated executor and its transactions, and never creates business
 mutations or fabricated metadata.
+
+Creation reserves identity before save and returns `Result<Entity, RuntimeError>`.
+The runnable telemetry binaries propagate allocation failures with `?`; acceptance
+fixtures use a labeled `expect` to fail immediately if fixture allocation fails.
+Both use the current generated API, rather than a frozen infallible constructor.
 
 Generated Q retains its typed executor binding. The fixture therefore also
 installs that executor's opt-in `with_query_metadata_observer` during trusted

@@ -1,11 +1,21 @@
 extern crate self as teaql_runtime;
+
+pub use context_fix::{ContextFixError, ContextFixInput, ContextFixResolver};
+
+/// Compile-time contract for generated contextual-ownership save admission.
+#[doc(hidden)]
+pub const CONTEXT_ROOT_SAVE_ADMISSION_REVISION: u32 = 1;
 mod business_id;
 mod checker;
+pub mod checker_messages;
+mod checker_privacy;
 mod commit_audit;
 mod context;
+mod context_fix;
 mod data_service;
 mod document_round_trip;
 pub mod dynamic_fields;
+pub mod entity_json;
 mod entity_reference;
 mod entity_runtime;
 pub mod entity_save;
@@ -19,9 +29,15 @@ mod i18n;
 mod id;
 pub mod inmemory_engine;
 mod language;
+mod ledger_keys;
 pub mod log_formatter;
 mod log_privacy;
+mod runtime_logging;
+pub use runtime_logging::{
+    RuntimeLogger, RuntimeLoggingError, RuntimeLoggingOptions, parse_log_size,
+};
 mod mutation_policy;
+mod mutation_version;
 pub mod object_storage;
 #[cfg(test)]
 mod requested_list_count_tests;
@@ -102,7 +118,9 @@ pub(crate) use id::local_id_generator;
 pub use id::{
     AtomicCounterIdGenerator, InternalIdGenerator, SnowflakeIdGenerator, canonical_id_space_entity,
 };
-pub use inmemory_engine::{ExprEvaluator, InMemoryQueryEngine};
+pub use inmemory_engine::{
+    ExprEvaluator, InMemoryQueryEngine, InMemoryQueryError, InMemoryQueryErrorKind,
+};
 pub use language::{
     BuiltinTranslator, Language, Locale, MessageTranslator, translate_check_result,
     translate_location,
@@ -117,7 +135,7 @@ pub use mutation_policy::{
     NoMutationPolicyApprovalProvider,
 };
 pub(crate) use mutation_policy::{
-    current_mutation_governance, graph_policy_plan, ledger_policy_plan, with_mutation_governance,
+    current_mutation_governance, graph_policy_plan, with_mutation_governance,
 };
 pub use registry::{
     EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityRegistry,
@@ -230,6 +248,7 @@ mod tests {
                 DataType::Json => Ok("JSONB".to_owned()),
                 DataType::Date => Ok("DATE".to_owned()),
                 DataType::Timestamp => Ok("TIMESTAMPTZ".to_owned()),
+                DataType::Binary => Ok("BYTEA".to_owned()),
             }
         }
     }
@@ -2263,11 +2282,11 @@ mod tests {
         match error {
             RuntimeError::Check(results) => {
                 assert_eq!(results.len(), 1);
-                assert!(
-                    results[0]
-                        .message
-                        .as_ref()
-                        .is_some_and(|message| message.contains("必填"))
+                assert_eq!(results[0].rule, CheckRule::Required);
+                assert_eq!(results[0].location.instance_path(), "/name");
+                assert_eq!(
+                    results[0].message.as_deref(),
+                    Some("请填写name。\n位置：当前对象")
                 );
             }
             other => panic!("unexpected checker error: {other:?}"),

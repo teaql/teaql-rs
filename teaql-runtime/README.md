@@ -6,6 +6,24 @@ Minimal runtime repository and graph persistence layer for TeaQL Rust.
 assembly, behaviors, checkers, events, graph planning, and in-memory execution.
 Database execution is supplied by provider crates.
 
+## Fallible in-memory query execution
+
+The approved source candidate makes `InMemoryQueryEngine::execute` return
+`Result<QueryResult, InMemoryQueryError>`. Direct callers must propagate or
+handle that result; the Linux provider retains the structured error as its
+source. Do not replace a failed query with an empty result or a null SUM.
+
+SUM retains integer and Decimal domains instead of routing exact values through
+`f64`. Empty/all-null SUM remains null; a genuine cancelling sum is numeric zero.
+Overflow, non-numeric inputs, non-finite floats, incompatible floating/exact
+domains, and unrepresentable Decimal precision are explicit errors. Diagnostics
+identify the field, alias and error code without retaining input values.
+
+This is a local source adoption, not a public version or installed-package
+acceptance claim. Its implementation and tests are unchanged from qualified
+candidate `894672f10babbd8c347514f4feb926a42fe6e75f`; private-package verification
+remains a separate gate.
+
 ## What It Provides
 
 - `UserContext` for metadata, typed resources, request locals, and runtime options

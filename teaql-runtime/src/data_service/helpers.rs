@@ -10,10 +10,67 @@ use crate::{DataServiceError, GraphNode, RuntimeError};
 
 use super::{AggregationCacheBackend, RelationLoadPlan};
 
-pub(super) fn default_aggregate_value(single_result: bool) -> Value {
-    match single_result {
-        true => Value::U64(0),
-        false => Value::List(Vec::new()),
+pub(crate) fn default_aggregate_value(aggregate: &RelationAggregate) -> Value {
+    if !aggregate.single_result {
+        return Value::List(Vec::new());
+    }
+    let scalar = |item: &teaql_core::Aggregate| {
+        if matches!(
+            item.function,
+            teaql_core::AggregateFunction::Count | teaql_core::AggregateFunction::CountDistinct
+        ) {
+            Value::U64(0)
+        } else {
+            Value::Null
+        }
+    };
+    match aggregate.query.aggregates.as_slice() {
+        [] => Value::U64(0),
+        [item] => scalar(item),
+        items => Value::Object(
+            items
+                .iter()
+                .map(|item| (item.alias.clone(), scalar(item)))
+                .collect(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod smart_list_aggregate_default_tests {
+    use super::*;
+
+    #[test]
+    fn missing_relation_buckets_preserve_empty_sql_scalar_semantics() {
+        let count =
+            RelationAggregate::new("items", "count", SelectQuery::new("Item").count("n"), true);
+        let sum = RelationAggregate::new(
+            "items",
+            "total",
+            SelectQuery::new("Item").sum("amount", "total"),
+            true,
+        );
+        assert_eq!(default_aggregate_value(&count), Value::U64(0));
+        assert_eq!(default_aggregate_value(&sum), Value::Null);
+        assert_eq!(relation_aggregate_value(&[], &sum), Value::Null);
+        let present_null = CompactRow::from(BTreeMap::from([("total".to_owned(), Value::Null)]));
+        assert_eq!(relation_aggregate_value(&[present_null], &sum), Value::Null);
+        let multiple = RelationAggregate::new(
+            "items",
+            "stats",
+            SelectQuery::new("Item").count("n").sum("amount", "sum"),
+            true,
+        );
+        assert_eq!(
+            default_aggregate_value(&multiple),
+            Value::Object(BTreeMap::from([
+                ("n".to_owned(), Value::U64(0)),
+                ("sum".to_owned(), Value::Null),
+            ]))
+        );
+        let mut parents = vec![CompactRow::from(BTreeMap::new())];
+        attach_empty_relation_aggregate(&mut parents, &sum);
+        assert_eq!(parents[0].get("total"), Some(&Value::Null));
     }
 }
 
@@ -33,6 +90,7 @@ pub(super) fn relation_bucket_key(value: &Value) -> String {
         Value::F64(v) => format!("f:{v}"),
         Value::Decimal(v) => format!("d:{v}"),
         Value::Text(v) => format!("t:{v}"),
+        Value::Binary(v) => format!("binary:{v:02x?}"),
         Value::Json(v) => format!("j:{v}"),
         Value::Date(v) => format!("d:{v}"),
         Value::Timestamp(v) => format!("ts:{}", v.0),
@@ -179,12 +237,11 @@ pub(super) fn ensure_projection(query: &mut SelectQuery, field: &str) {
 
 pub(super) fn attach_empty_relation_aggregate(
     parent_rows: &mut [CompactRow],
-    alias: &str,
-    single_result: bool,
+    aggregate: &RelationAggregate,
 ) {
-    let value = default_aggregate_value(single_result);
+    let value = default_aggregate_value(aggregate);
     for parent in parent_rows {
-        parent.insert(alias.to_owned(), value.clone());
+        parent.insert(aggregate.alias.clone(), value.clone());
     }
 }
 
@@ -246,18 +303,21 @@ pub(super) fn attach_relation_aggregate_rows(
         let value = keys
             .get(&plan.local_key)
             .and_then(|local_value| buckets.get(&graph_identity_key(local_value)))
-            .map(|rows| relation_aggregate_value(rows, aggregate.single_result))
-            .unwrap_or_else(|| default_aggregate_value(aggregate.single_result));
+            .map(|rows| relation_aggregate_value(rows, aggregate))
+            .unwrap_or_else(|| default_aggregate_value(aggregate));
         parent.insert(aggregate.alias.clone(), value);
     }
 }
 
-pub(super) fn relation_aggregate_value(rows: &[CompactRow], single_result: bool) -> Value {
-    match single_result {
+pub(super) fn relation_aggregate_value(
+    rows: &[CompactRow],
+    aggregate: &RelationAggregate,
+) -> Value {
+    match aggregate.single_result {
         true => rows
             .first()
             .map(single_relation_aggregate_value)
-            .unwrap_or(Value::U64(0)),
+            .unwrap_or_else(|| default_aggregate_value(aggregate)),
         false => Value::List(
             rows.iter()
                 .cloned()
@@ -274,8 +334,57 @@ pub(super) fn single_relation_aggregate_value(row: &CompactRow) -> Value {
     }
 }
 
+#[cfg(test)]
+mod empty_aggregate_tests {
+    use super::*;
+    use teaql_core::Aggregate;
+
+    #[test]
+    fn empty_aggregate_sql_bucket_does_not_invent_sum_zero() {
+        let plan = RelationLoadPlan {
+            parent_entity: "Owner".into(),
+            relation_name: "lines".into(),
+            path: "lines".into(),
+            target_entity: "Line".into(),
+            local_key: "id".into(),
+            foreign_key: "owner".into(),
+            many: true,
+            query: None,
+            children: vec![],
+            operation: None,
+        };
+        for (query, expected) in [
+            (SelectQuery::new("Line"), Value::U64(0)),
+            (
+                SelectQuery::new("Line").aggregate(Aggregate::count("value")),
+                Value::U64(0),
+            ),
+            (
+                SelectQuery::new("Line").aggregate(Aggregate::sum("amount", "value")),
+                Value::Null,
+            ),
+        ] {
+            let keys = vec![CompactRow::from_map(BTreeMap::from([(
+                "id".into(),
+                Value::U64(1),
+            )]))];
+            let mut parents = keys.clone();
+            let aggregate = RelationAggregate::new("lines", "total", query, true);
+            attach_relation_aggregate_rows(&mut parents, &keys, &plan, &aggregate, vec![]);
+            assert_eq!(parents[0].get("total"), Some(&expected));
+            assert!(
+                Value::object(parents[0].clone().into_map())
+                    .to_json_value()
+                    .as_object()
+                    .unwrap()
+                    .contains_key("total")
+            );
+        }
+    }
+}
+
 pub(super) fn ensure_initial_version(
-    values: &mut BTreeMap<String, Value>,
+    values: &mut teaql_core::MutationValues,
     descriptor: &EntityDescriptor,
 ) {
     if let Some(version_property) = descriptor.version_property() {
@@ -284,38 +393,178 @@ pub(super) fn ensure_initial_version(
             None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
         );
         if needs_version {
-            values.insert(version_property.name.clone(), Value::I64(1));
+            values.insert_named(&version_property.name, Value::I64(1));
         }
     }
 }
 
 pub(super) fn ensure_timestamps(
-    values: &mut BTreeMap<String, Value>,
+    values: &mut teaql_core::MutationValues,
     descriptor: &EntityDescriptor,
     is_new: bool,
+    context: &crate::UserContext,
 ) {
-    let now = Value::Timestamp(teaql_core::time::Timestamp::now());
     let has_property =
         |name: &str| -> bool { descriptor.properties.iter().any(|p| p.name == name) };
-
-    if is_new && has_property("create_time") {
-        let needs_time = matches!(
-            values.get("create_time"),
+    let missing_time = |name: &str| {
+        matches!(
+            values.get(name),
             None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
-        );
-        if needs_time {
-            values.insert("create_time".to_owned(), now.clone());
+        )
+    };
+    let create = is_new && has_property("create_time") && missing_time("create_time");
+    let update = has_property("update_time") && missing_time("update_time");
+    if !create && !update {
+        return;
+    }
+    // A frozen clock can produce the same value as the loaded row, so typed
+    // Fix need not put this managed field into the sparse mutation delta. The
+    // persistence fallback must use that same invocation's Business Clock,
+    // never introduce an independent wall-clock instant after validation.
+    let now = Value::Timestamp(context.fix_time());
+    if create {
+        values.insert_named("create_time", now.clone());
+    }
+    if update {
+        values.insert_named("update_time", now);
+    }
+}
+
+#[cfg(test)]
+mod timestamp_fallback_tests {
+    use super::*;
+    use crate::{BusinessClock, FixedBusinessClock, UserContext};
+    use chrono::{DateTime, TimeZone, Utc};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    };
+    use teaql_core::{DataType, PropertyDescriptor, time::Timestamp};
+
+    const FIXED: i64 = 1_961_662_530_000;
+    fn descriptor() -> EntityDescriptor {
+        EntityDescriptor::new("TimestampFallback")
+            .property(PropertyDescriptor::new("create_time", DataType::Timestamp))
+            .property(PropertyDescriptor::new("update_time", DataType::Timestamp))
+    }
+    fn context() -> UserContext {
+        UserContext::new().with_business_clock(FixedBusinessClock::new(
+            Utc.timestamp_millis_opt(FIXED).unwrap(),
+        ))
+    }
+    struct AdvancingClock(Arc<AtomicI64>);
+    impl BusinessClock for AdvancingClock {
+        fn business_time(&self) -> DateTime<Utc> {
+            Utc.timestamp_millis_opt(self.0.fetch_add(1, Ordering::SeqCst))
+                .unwrap()
         }
     }
-
-    if has_property("update_time") {
-        let needs_time = matches!(
-            values.get("update_time"),
-            None | Some(Value::Null) | Some(Value::I64(0)) | Some(Value::U64(0))
-        );
-        if needs_time {
-            values.insert("update_time".to_owned(), now);
+    struct NoClock;
+    impl BusinessClock for NoClock {
+        fn business_time(&self) -> DateTime<Utc> {
+            panic!("complete or unrelated payloads must not consult the clock")
         }
+    }
+    #[test]
+    fn missing_create_and_update_timestamps_use_the_business_clock() {
+        let mut values = teaql_core::MutationValues::new();
+        ensure_timestamps(&mut values, &descriptor(), true, &context());
+        assert_eq!(
+            values.get("create_time"),
+            Some(&Value::Timestamp(Timestamp(FIXED)))
+        );
+        assert_eq!(
+            values.get("update_time"),
+            Some(&Value::Timestamp(Timestamp(FIXED)))
+        );
+    }
+    #[test]
+    fn sparse_update_fallback_never_introduces_a_create_time() {
+        let mut values = teaql_core::MutationValues::from(BTreeMap::from([(
+            "name".into(),
+            Value::from("updated"),
+        )]));
+        ensure_timestamps(&mut values, &descriptor(), false, &context());
+        assert!(!values.contains_key("create_time"));
+        assert_eq!(values.get("name"), Some(&Value::from("updated")));
+        assert_eq!(
+            values.get("update_time"),
+            Some(&Value::Timestamp(Timestamp(FIXED)))
+        );
+    }
+    #[test]
+    fn explicit_times_and_the_epoch_are_preserved_without_clock_access() {
+        let context = UserContext::new().with_business_clock(NoClock);
+        let mut values = teaql_core::MutationValues::from(BTreeMap::from([
+            ("create_time".into(), Value::Timestamp(Timestamp(0))),
+            ("update_time".into(), Value::Timestamp(Timestamp(123))),
+        ]));
+        let before = values.clone();
+        ensure_timestamps(&mut values, &descriptor(), true, &context);
+        assert_eq!(values, before);
+        ensure_timestamps(
+            &mut teaql_core::MutationValues::new(),
+            &EntityDescriptor::new("Untimed"),
+            true,
+            &context,
+        );
+    }
+    #[test]
+    fn null_and_legacy_zero_placeholders_share_one_standalone_instant() {
+        for placeholder in [Value::Null, Value::I64(0), Value::U64(0)] {
+            let ticks = Arc::new(AtomicI64::new(FIXED));
+            let context = UserContext::new().with_business_clock(AdvancingClock(ticks.clone()));
+            let mut values = teaql_core::MutationValues::from(BTreeMap::from([
+                ("create_time".into(), placeholder.clone()),
+                ("update_time".into(), placeholder),
+            ]));
+            ensure_timestamps(&mut values, &descriptor(), true, &context);
+            assert_eq!(values.get("create_time"), values.get("update_time"));
+            assert_eq!(
+                values.get("update_time"),
+                Some(&Value::Timestamp(Timestamp(FIXED)))
+            );
+            assert_eq!(ticks.load(Ordering::SeqCst), FIXED + 1);
+        }
+    }
+    #[test]
+    fn multiple_entities_reuse_the_enclosing_fix_snapshot() {
+        let ticks = Arc::new(AtomicI64::new(FIXED));
+        let context = UserContext::new().with_business_clock(AdvancingClock(ticks.clone()));
+        crate::entity_save::with_fix_time(&context, || {
+            for create in [true, false, true] {
+                let mut values = teaql_core::MutationValues::new();
+                ensure_timestamps(&mut values, &descriptor(), create, &context);
+                assert_eq!(
+                    values.get("update_time"),
+                    Some(&Value::Timestamp(Timestamp(FIXED)))
+                );
+            }
+        });
+        assert_eq!(ticks.load(Ordering::SeqCst), FIXED + 1);
+    }
+    #[test]
+    fn fallback_contexts_and_later_invocations_do_not_share_time() {
+        let ticks = Arc::new(AtomicI64::new(FIXED));
+        let first = UserContext::new().with_business_clock(AdvancingClock(ticks.clone()));
+        let mut second = context();
+        second.set_business_clock(FixedBusinessClock::new(
+            Utc.timestamp_millis_opt(9000).unwrap(),
+        ));
+        crate::entity_save::with_fix_time(&first, || {
+            let mut values = teaql_core::MutationValues::new();
+            ensure_timestamps(&mut values, &descriptor(), false, &second);
+            assert_eq!(
+                values.get("update_time"),
+                Some(&Value::Timestamp(Timestamp(9000)))
+            );
+        });
+        let mut values = teaql_core::MutationValues::new();
+        ensure_timestamps(&mut values, &descriptor(), false, &first);
+        assert_eq!(
+            values.get("update_time"),
+            Some(&Value::Timestamp(Timestamp(FIXED + 1)))
+        );
     }
 }
 
@@ -354,12 +603,14 @@ pub(super) fn ensure_relation_target<ExecError>(
 }
 
 pub(crate) fn increment_version(
-    values: &mut BTreeMap<String, Value>,
+    values: &mut teaql_core::MutationValues,
     descriptor: &EntityDescriptor,
     original_version: Option<i64>,
-) {
+) -> Result<(), RuntimeError> {
     if let Some(prop) = descriptor.version_property() {
-        let next_version = original_version.map(|v| v + 1).unwrap_or(2);
-        values.insert(prop.name.clone(), teaql_core::Value::I64(next_version));
+        let next_version =
+            crate::mutation_version::updated(&descriptor.name, original_version)?.unwrap_or(2);
+        values.insert_named(&prop.name, teaql_core::Value::I64(next_version));
     }
+    Ok(())
 }
