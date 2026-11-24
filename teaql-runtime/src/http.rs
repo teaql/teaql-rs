@@ -388,6 +388,12 @@ impl HttpResponse {
 
 #[async_trait]
 pub trait HttpRequestService: Send + Sync {
+    /// Only the installed transport can attest to the configured profile.
+    /// Sensitive protocols fail closed when this is false.
+    fn profile_is_encrypted_or_loopback(&self, _profile: &str) -> bool {
+        false
+    }
+
     async fn execute(
         &self,
         context: &UserContext,

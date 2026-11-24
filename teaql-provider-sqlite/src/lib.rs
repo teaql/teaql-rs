@@ -27,6 +27,10 @@ use teaql_sql::{
     quote_identifier_if_needed, schema_index_specs,
 };
 
+pub mod committed_delivery;
+pub mod committed_events;
+pub mod committed_observation;
+pub mod committed_security;
 mod decimal_functions;
 mod dynamic_fields;
 mod gbk_encoding;
@@ -374,6 +378,8 @@ fn compile_sqlite_create_table(
 pub enum MutationExecutorError {
     Sqlite(rusqlite::Error),
     SqlCompile(SqlCompileError),
+    RollbackOnly,
+    ReadOnlyTarget,
     UnsupportedValue(&'static str),
     UnsupportedColumnType(String),
     Bind(String),
@@ -383,8 +389,16 @@ pub enum MutationExecutorError {
 impl std::fmt::Display for MutationExecutorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ReadOnlyTarget => write!(
+                f,
+                "READ_ONLY_TARGET: ordinary mutations are disabled on this replication target"
+            ),
             Self::Sqlite(err) => err.fmt(f),
             Self::SqlCompile(err) => err.fmt(f),
+            Self::RollbackOnly => write!(
+                f,
+                "SQLite transaction is rollback-only after a failed operation"
+            ),
             Self::UnsupportedValue(kind) => {
                 write!(
                     f,
@@ -424,6 +438,7 @@ pub struct SqliteMutationExecutor {
     column_layout_cache: Arc<Mutex<HashMap<String, Arc<ColumnLayout>>>>,
     transaction_lease: Arc<futures_util::lock::Mutex<()>>,
     storage_instance_id: u64,
+    ordinary_mutations_read_only: Arc<std::sync::atomic::AtomicBool>,
 }
 
 static NEXT_STORAGE_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -439,6 +454,7 @@ impl SqliteMutationExecutor {
         }
         Self {
             connection,
+            ordinary_mutations_read_only: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             functions_registered: Arc::new(AtomicBool::new(false)),
             column_layout_cache: Arc::new(Mutex::new(HashMap::new())),
             transaction_lease: Arc::new(futures_util::lock::Mutex::new(())),
@@ -458,6 +474,39 @@ impl SqliteMutationExecutor {
 
     pub fn connection(&self) -> Arc<Mutex<Connection>> {
         Arc::clone(&self.connection)
+    }
+
+    // Monotonic, provider-owned startup restriction, shared by existing clones.
+    // The receiver applies canonical facts directly inside its private transaction;
+    // it does not borrow ordinary Mutation authority or a temporary bypass flag.
+    pub(crate) fn restrict_ordinary_mutations(&self) {
+        self.ordinary_mutations_read_only
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn require_ordinary_mutation_allowed(&self) -> Result<(), MutationExecutorError> {
+        if self
+            .ordinary_mutations_read_only
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            Err(MutationExecutorError::ReadOnlyTarget)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn require_read_only_statement(
+        &self,
+        statement: &rusqlite::Statement<'_>,
+    ) -> Result<(), MutationExecutorError> {
+        if self
+            .ordinary_mutations_read_only
+            .load(std::sync::atomic::Ordering::Acquire)
+            && !statement.readonly()
+        {
+            return Err(MutationExecutorError::ReadOnlyTarget);
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -668,6 +717,7 @@ impl SqliteMutationExecutor {
     }
 
     pub fn execute(&self, query: &CompiledQuery) -> Result<u64, MutationExecutorError> {
+        self.require_ordinary_mutation_allowed()?;
         let params = bind_values(&query.params)?;
         let rows = self
             .lock()?
@@ -683,6 +733,7 @@ impl SqliteMutationExecutor {
         let connection = self.lock()?;
         let sql = query.sql_with_comment();
         let mut statement = connection.prepare_cached(&sql)?;
+        self.require_read_only_statement(&statement)?;
         let layout = cached_column_layout(&self.column_layout_cache, &query.sql, &statement);
         let mut rows = statement.query(params_from_iter(params.iter()))?;
         let mut result = Vec::new();
@@ -704,6 +755,7 @@ impl SqliteMutationExecutor {
         let connection = self.lock()?;
         let sql = template.sql_with_comment();
         let mut statement = connection.prepare_cached(&sql)?;
+        self.require_read_only_statement(&statement)?;
         let layout = cached_column_layout(&self.column_layout_cache, &template.sql, &statement);
         let mut result = Vec::new();
         let mut query_params = template.params.clone();
@@ -732,6 +784,7 @@ impl SqliteMutationExecutor {
         let connection = self.lock()?;
         let sql = query.sql_with_comment();
         let mut statement = connection.prepare_cached(&sql)?;
+        self.require_read_only_statement(&statement)?;
         let layout = cached_column_layout(&self.column_layout_cache, &query.sql, &statement);
         let mut rows = statement.query(params_from_iter(params.iter()))?;
 
@@ -1339,12 +1392,16 @@ impl SqliteMutationExecutor {
         let connection = self.connection.clone();
         let column_layout_cache = self.column_layout_cache.clone();
         let transaction_lease = self.transaction_lease.clone();
+        let ordinary_mutations_read_only = self.ordinary_mutations_read_only.clone();
         Box::pin(async_stream::try_stream! {
             let _lease = if acquire_lease { Some(transaction_lease.lock_owned().await) } else { None };
             let params = bind_values(&query.params)?;
             let guard = connection.lock().map_err(|err| MutationExecutorError::Lock(err.to_string()))?;
             let sql = query.sql_with_comment();
             let mut statement = guard.prepare_cached(&sql)?;
+            if ordinary_mutations_read_only.load(std::sync::atomic::Ordering::Acquire) && !statement.readonly() {
+                Err(MutationExecutorError::ReadOnlyTarget)?;
+            }
             let layout = cached_column_layout(&column_layout_cache, &query.sql, &statement);
             let mut rows = statement.query(params_from_iter(params.iter()))?;
             // Allocate nothing for an empty cursor. A short prefix avoids
@@ -1564,7 +1621,24 @@ impl SchemaProvider for SqliteSchemaProvider {
         _invocation: &'a teaql_runtime::SchemaInvocation,
     ) -> Pin<Box<dyn Future<Output = Result<(), RuntimeError>> + Send + 'a>> {
         Box::pin(async move {
-            ensure_sqlite_schema_for(context).map_err(|err| RuntimeError::Schema(err.to_string()))
+            ensure_sqlite_schema_for(context)
+                .map_err(|err| RuntimeError::Schema(err.to_string()))?;
+            if context.committed_event_source().is_some()
+                || context
+                    .get_resource::<committed_events::CommittedEventTarget>()
+                    .is_some()
+            {
+                context
+                    .get_resource::<SqliteMutationExecutor>()
+                    .ok_or_else(|| {
+                        RuntimeError::Schema(
+                            "committed-event SQLite executor is not installed".into(),
+                        )
+                    })?
+                    .ensure_committed_event_schema()
+                    .map_err(|err| RuntimeError::Schema(err.to_string()))?;
+            }
+            Ok(())
         })
     }
 }
@@ -2163,6 +2237,9 @@ fn decode_sqlite_values(
         } else {
             match value_ref {
                 ValueRef::Null => Value::Null,
+                ValueRef::Integer(value) if column.decode_kind == SqliteDecodeKind::Timestamp => {
+                    Value::Timestamp(teaql_core::time::Timestamp(value))
+                }
                 ValueRef::Integer(value) => Value::I64(value),
                 ValueRef::Real(value) if value.is_finite() => Value::F64(value),
                 ValueRef::Real(_) => {
@@ -2367,7 +2444,7 @@ mod tests {
         SelectQuery, TeaqlEntity as _, UpdateCommand,
     };
     use teaql_macros::{TeaqlEntity, teaql_entity};
-    use teaql_runtime::{GraphNode, InMemoryMetadataStore};
+    use teaql_runtime::{CommittedEventSource, GraphNode, InMemoryMetadataStore};
 
     #[test]
     fn finite_float_bind_rejects_nonfinite_numbers_instead_of_silent_null() {
@@ -2413,6 +2490,10 @@ mod tests {
         #[teaql(version)]
         version: i64,
         name: String,
+        memo: String,
+        stable: String,
+        optional_note: Option<String>,
+        occurred_at: teaql_core::time::Timestamp,
     }
 
     #[derive(Debug, PartialEq, TeaqlEntity)]
@@ -2452,17 +2533,238 @@ mod tests {
             let key = teaql_runtime::EntityKey::new("TransactionSchool", id);
             state.mark_as_new(key.clone());
             state.set(key.clone(), "id", id);
-            state.set(key, "name", name);
+            state.set(key.clone(), "name", name);
+            state.set(key.clone(), "memo", "initial memo");
+            state.set(key.clone(), "stable", "unchanged");
+            state.set(key.clone(), "optional_note", teaql_core::Value::Null);
+            state.set(
+                key,
+                "occurred_at",
+                teaql_core::time::Timestamp(-315_619_199_877),
+            );
             (
                 Self {
                     id,
                     version: 0,
                     name: name.to_owned(),
+                    memo: "initial memo".to_owned(),
+                    stable: "unchanged".to_owned(),
+                    optional_note: None,
+                    occurred_at: teaql_core::time::Timestamp(-315_619_199_877),
                     __teaql_runtime_state: state.clone(),
                 },
                 state,
             )
         }
+    }
+
+    #[test]
+    fn audited_graph_save_captures_authoritative_sqlite_row_before_commit() {
+        futures_executor::block_on(async {
+            let executor = SqliteMutationExecutor::from_connection(
+                Connection::open_in_memory().expect("open committed graph fixture"),
+            );
+            let metadata = InMemoryMetadataStore::new()
+                .with_entity(TransactionSchool::entity_descriptor().clone());
+            let data_service = teaql_sql::SqlDataServiceExecutor::new(
+                SqliteDialect,
+                executor.clone(),
+                metadata.clone(),
+            );
+            let mut context = UserContext::new()
+                .with_metadata(metadata)
+                .with_committed_event_source(
+                    CommittedEventSource::new(
+                        "rust-graph-source",
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                    )
+                    .unwrap(),
+                );
+            context.use_sqlite_provider(executor.clone());
+            context.register_executor(data_service);
+            context.ensure_schema().await.unwrap();
+            executor
+                .lock()
+                .unwrap()
+                .execute_batch(
+                    "CREATE TRIGGER committed_school_default AFTER INSERT ON transaction_school \
+                 BEGIN UPDATE transaction_school SET name = 'database trigger value' \
+                 WHERE id = NEW.id; END",
+                )
+                .unwrap();
+
+            let (school, _) = TransactionSchool::new(101, "pre-save value");
+            let mut saved = teaql_runtime::save_audited_ledger_entity(
+                school.audit_as("create committed school"),
+                &context,
+            )
+            .await
+            .unwrap();
+            assert_eq!(saved.name, "database trigger value");
+            let outbox = executor
+                .committed_outbox_after("rust-graph-source", 0, 10)
+                .unwrap();
+            assert_eq!(outbox.len(), 1);
+            let body: serde_json::Value = serde_json::from_str(&outbox[0].payload_json).unwrap();
+            assert_eq!(body["source_sequence"], "1");
+            assert_eq!(body["audit"]["comment"], "create committed school");
+            assert_eq!(
+                body["mutations"][0]["fields"]["name"],
+                "database trigger value"
+            );
+            assert!(body["mutations"][0]["fields"]["optional_note"].is_null());
+            assert_eq!(
+                body["mutations"][0]["fields"]["occurred_at"],
+                "-315619199877"
+            );
+            assert_eq!(body["mutations"][0]["committed_version"], "1");
+
+            saved = teaql_runtime::save_audited_ledger_entity(
+                saved.audit_as("no-op committed school"),
+                &context,
+            )
+            .await
+            .unwrap();
+            assert_eq!(saved.version, 1);
+            assert_eq!(
+                executor
+                    .committed_outbox_after("rust-graph-source", 0, 10)
+                    .unwrap()
+                    .len(),
+                1
+            );
+
+            let key = teaql_runtime::EntityKey::new("TransactionSchool", 101_u64);
+            executor
+                .lock()
+                .unwrap()
+                .execute_batch(
+                    "CREATE TRIGGER committed_school_update AFTER UPDATE OF name ON transaction_school \
+                     WHEN NEW.name = 'reviewed' \
+                     BEGIN UPDATE transaction_school SET memo = 'database update' \
+                     WHERE id = NEW.id; END",
+                )
+                .unwrap();
+            saved
+                .__teaql_runtime_state
+                .set_original_version(key.clone(), 1);
+            saved
+                .__teaql_runtime_state
+                .set(key.clone(), "name", "reviewed");
+            saved.name = "reviewed".into();
+            let updated = teaql_runtime::save_audited_ledger_entity(
+                saved.audit_as("review committed school"),
+                &context,
+            )
+            .await
+            .unwrap();
+            let next = executor
+                .committed_outbox_after("rust-graph-source", 1, 10)
+                .unwrap();
+            assert_eq!(next.len(), 1);
+            let body: serde_json::Value = serde_json::from_str(&next[0].payload_json).unwrap();
+            assert_eq!(body["mutations"][0]["operation"], "update");
+            assert_eq!(body["mutations"][0]["base_version"], "1");
+            assert_eq!(body["mutations"][0]["committed_version"], "2");
+            assert_eq!(body["mutations"][0]["fields"]["name"], "reviewed");
+            assert_eq!(body["mutations"][0]["fields"]["memo"], "database update");
+            assert!(body["mutations"][0]["fields"].get("stable").is_none());
+
+            updated
+                .__teaql_runtime_state
+                .set_original_version(key.clone(), 2);
+            updated
+                .__teaql_runtime_state
+                .set(key.clone(), "optional_note", "submitted note");
+            let mut updated = updated;
+            updated.optional_note = Some("submitted note".into());
+            let updated = teaql_runtime::save_audited_ledger_entity(
+                updated.audit_as("set optional note"),
+                &context,
+            )
+            .await
+            .unwrap();
+            let next = executor
+                .committed_outbox_after("rust-graph-source", 2, 10)
+                .unwrap();
+            assert_eq!(next.len(), 1);
+            let body: serde_json::Value = serde_json::from_str(&next[0].payload_json).unwrap();
+            assert_eq!(
+                body["mutations"][0]["fields"]["optional_note"],
+                "submitted note"
+            );
+            assert_eq!(body["mutations"][0]["fields"].as_object().unwrap().len(), 1);
+
+            updated
+                .__teaql_runtime_state
+                .set_original_version(key.clone(), 3);
+            updated.__teaql_runtime_state.set(
+                key.clone(),
+                "optional_note",
+                teaql_core::Value::Null,
+            );
+            let mut updated = updated;
+            updated.optional_note = None;
+            let updated = teaql_runtime::save_audited_ledger_entity(
+                updated.audit_as("clear optional note"),
+                &context,
+            )
+            .await
+            .unwrap();
+            let next = executor
+                .committed_outbox_after("rust-graph-source", 3, 10)
+                .unwrap();
+            assert_eq!(next.len(), 1);
+            let body: serde_json::Value = serde_json::from_str(&next[0].payload_json).unwrap();
+            assert!(body["mutations"][0]["fields"]["optional_note"].is_null());
+            assert_eq!(body["mutations"][0]["fields"].as_object().unwrap().len(), 1);
+
+            updated
+                .__teaql_runtime_state
+                .set_original_version(key.clone(), 4);
+            updated.__teaql_runtime_state.mark_as_delete(key);
+            let deleted = teaql_runtime::save_audited_ledger_entity(
+                updated.audit_as("delete committed school"),
+                &context,
+            )
+            .await
+            .unwrap();
+            assert_eq!(deleted.version, -5);
+            let next = executor
+                .committed_outbox_after("rust-graph-source", 4, 10)
+                .unwrap();
+            assert_eq!(next.len(), 1);
+            let body: serde_json::Value = serde_json::from_str(&next[0].payload_json).unwrap();
+            assert_eq!(body["mutations"][0]["operation"], "delete");
+            assert_eq!(body["mutations"][0]["base_version"], "4");
+            assert_eq!(body["mutations"][0]["committed_version"], "-5");
+            assert_eq!(body["mutations"][0]["fields"].as_object().unwrap().len(), 0);
+
+            executor
+                .lock()
+                .unwrap()
+                .execute_batch("DROP TABLE teaql_event_outbox")
+                .unwrap();
+            let (second, _) = TransactionSchool::new(102, "must roll back");
+            assert!(
+                teaql_runtime::save_audited_ledger_entity(
+                    second.audit_as("reject broken outbox"),
+                    &context,
+                )
+                .await
+                .is_err()
+            );
+            let count: i64 = executor
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM transaction_school WHERE id = 102",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0);
+        });
     }
 
     #[test]
@@ -3704,7 +4006,7 @@ mod tests {
             .lock()
             .expect("lock audited transaction fixture")
             .execute_batch(
-                "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL)",
+                "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL, memo TEXT NOT NULL, stable TEXT NOT NULL, optional_note TEXT, occurred_at TIMESTAMP NOT NULL)",
             )
             .expect("create audited transaction fixture");
 

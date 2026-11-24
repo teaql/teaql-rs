@@ -1550,6 +1550,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "rustls-pki-types",
  "rustls-webpki",
@@ -1925,6 +1926,7 @@ version = "8.2.0"
 dependencies = [
  "async-trait",
  "reqwest",
+ "rustls",
  "teaql-runtime",
  "tokio",
  "url",
@@ -1948,10 +1950,13 @@ dependencies = [
  "encoding_rs",
  "futures-core",
  "futures-util",
+ "hmac",
  "num-bigint",
  "rusqlite",
  "rust_decimal",
+ "serde",
  "serde_json",
+ "sha2",
  "teaql-core",
  "teaql-data-service",
  "teaql-runtime",
@@ -1970,6 +1975,7 @@ dependencies = [
  "futures-util",
  "hkdf",
  "hmac",
+ "libc",
  "num-bigint",
  "num-traits",
  "opentelemetry",
@@ -1988,6 +1994,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2247,6 +2254,7 @@ version = "1.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea5fab0d6c3c01ae70085a09cb03d4c7a1d6314e2b3e075392783396d724ca0a"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "wasm-bindgen",
 ]

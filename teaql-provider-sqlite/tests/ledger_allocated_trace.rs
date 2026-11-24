@@ -141,14 +141,106 @@ where
         Ok(Observed(self.0.begin().await?, self.1.clone()))
     }
 }
-impl<E: Transaction + Send> Transaction for Observed<E> {
+impl<E: Transaction + Send + Sync> Transaction for Observed<E> {
     type Error = E::Error;
+    async fn append_committed_set(
+        &self,
+        append: &teaql_data_service::CommittedSetAppend,
+    ) -> Result<bool, Self::Error> {
+        self.0.append_committed_set(append).await
+    }
     async fn commit(self) -> Result<(), Self::Error> {
         self.0.commit().await
     }
     async fn rollback(self) -> Result<(), Self::Error> {
         self.0.rollback().await
     }
+}
+
+#[test]
+fn one_graph_save_captures_root_and_child_authoritative_rows_in_one_set() {
+    futures_executor::block_on(async {
+        let (mut context, _capture, transport) = setup_with_transport().await;
+        context.insert_resource(
+            teaql_runtime::CommittedEventSource::new(
+                "rust-graph-source",
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            )
+            .unwrap(),
+        );
+        context.ensure_schema().await.unwrap();
+        transport
+            .connection()
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER committed_child_default AFTER INSERT ON allocation_child_data \
+             BEGIN UPDATE allocation_child_data SET name = 'database child value' \
+             WHERE id = NEW.id; END",
+            )
+            .unwrap();
+
+        let mut root =
+            save_audited_ledger_entity(new_root(42, "draft").audit_as("create root"), &context)
+                .await
+                .unwrap();
+        root.name = "submitted".into();
+        root.entity_runtime_state().unwrap().set(
+            EntityKey::new("AllocationRoot", 42_u64),
+            "name",
+            "submitted",
+        );
+        let mut child = new_child(42, "before trigger");
+        child.set_comment("attach child");
+        root.include_pending_mutations_from(&child).unwrap();
+        save_audited_ledger_entity(root.audit_as("submit root and child"), &context)
+            .await
+            .unwrap();
+
+        let outbox = transport
+            .committed_outbox_after("rust-graph-source", 0, 10)
+            .unwrap();
+        assert_eq!(outbox.len(), 2);
+        let body: serde_json::Value = serde_json::from_str(&outbox[1].payload_json).unwrap();
+        assert_eq!(body["audit"]["comment"], "submit root and child");
+        assert_eq!(body["source_sequence"], "2");
+        let facts = body["mutations"].as_array().unwrap();
+        assert_eq!(facts.len(), 2);
+        let parent = facts
+            .iter()
+            .find(|fact| fact["entity_type"] == "AllocationRoot")
+            .unwrap();
+        let child = facts
+            .iter()
+            .find(|fact| fact["entity_type"] == "AllocationChild")
+            .unwrap();
+        assert_eq!(parent["operation"], "update");
+        assert_eq!(parent["base_version"], "1");
+        assert_eq!(parent["committed_version"], "2");
+        assert_eq!(parent["fields"]["name"], "submitted");
+        assert_eq!(child["operation"], "create");
+        assert_eq!(child["fields"]["name"], "database child value");
+        assert_eq!(child["fields"]["root_id"], "42");
+        for fact in [parent, child] {
+            let chain = fact["trace_chain"].as_array().unwrap();
+            assert!(!chain.is_empty());
+            for node in chain {
+                let fields = node.as_object().unwrap();
+                assert_eq!(fields.len(), 4);
+                assert!(fields.contains_key("kind"));
+                assert!(fields.contains_key("name"));
+                assert!(fields.contains_key("entity_id"));
+                assert!(fields.contains_key("comment"));
+                assert!(
+                    node["kind"]
+                        .as_str()
+                        .unwrap()
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_')
+                );
+            }
+        }
+    });
 }
 
 type Executor = Observed<SqlDataServiceExecutor<SqliteDialect, SqliteMutationExecutor, Schema>>;

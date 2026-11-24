@@ -349,19 +349,21 @@ async fn transaction_buffered_stream_counts_only_delivered_chunks() {
 #[tokio::test]
 async fn transaction_buffered_stream_failure_logs_once() {
     let context = context(false).await;
-    context
-        .execute_in_transaction::<Executor, _, _>(|scope| {
-            Box::pin(async move {
-                let service = scope.entity_data_service("Customer").unwrap();
-                let query = query(false);
-                let mut stream = service.fetch_stream(&query).await.unwrap();
-                assert!(stream.next().await.unwrap().is_err());
-                drop(stream);
-                Ok(())
+    assert!(
+        context
+            .execute_in_transaction::<Executor, _, _>(|scope| {
+                Box::pin(async move {
+                    let service = scope.entity_data_service("Customer").unwrap();
+                    let query = query(false);
+                    let mut stream = service.fetch_stream(&query).await.unwrap();
+                    assert!(stream.next().await.unwrap().is_err());
+                    drop(stream);
+                    Ok(())
+                })
             })
-        })
-        .await
-        .unwrap();
+            .await
+            .is_err()
+    );
     check(
         &context,
         0,

@@ -15,11 +15,14 @@ teaql-macros = { workspace = true }
 # teaql-provider-postgres = { workspace = true }
 teaql-provider-sqlite = { workspace = true }
 teaql-runtime = { workspace = true }
+tempfile = "3"
 teaql-http-reqwest = { path = "../teaql-http-reqwest" }
 teaql-sql = { workspace = true }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net", "process"] }
+tokio-rustls = "0.26.4"
 url = "2"
 
 [dev-dependencies]
