@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut school = Q::schools()
         .comment("Create the deterministic School query fixture")
         .purpose("Initialize the shared School Query conformance cases")
-        .new_entity(&context)?;
+        .new_entity(&context);
     school.update_platform_id(1_u64);
     school.update_school_type_to_primary();
     school.update_name("Riverside Primary School");
@@ -245,7 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut additional = Q::schools()
             .comment("Create an ID-set pagination fixture")
             .purpose("Verify generated Rust ID-set pagination on SQLite")
-            .new_entity(&context)?;
+            .new_entity(&context);
         additional.update_platform_id(1_u64);
         additional.update_school_type_to_primary();
         additional.update_name(name);
@@ -375,7 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut incomplete = Q::schools()
         .comment("Allocate an intentionally incomplete School")
         .purpose("Verify Checker rejects sparse CREATE payloads")
-        .new_entity(&context)?;
+        .new_entity(&context);
     incomplete.update_name("Incomplete School");
     let error = match incomplete
         .audit_as("Verify required address rejection")

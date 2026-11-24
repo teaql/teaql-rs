@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut school = Q::schools()
             .comment("Prepare grouped mapping example")
             .purpose("Verify generated Q mapping against SQLite")
-            .new_entity(&context)?;
+            .new_entity(&context);
         school.update_platform_id(1_u64);
         school.update_school_type_to_primary();
         school.update_name(name.clone());

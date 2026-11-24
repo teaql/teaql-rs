@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut school = Q::schools()
         .comment("what: allocate School for a soft-delete return probe")
         .purpose("why: verify authoritative tombstone result")
-        .new_entity(&context)?;
+        .new_entity(&context);
     fill_school(&mut school, "Soft Delete Return Probe School")?;
     let created = school
         .audit_as("create the School soft-delete return probe")
@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut transaction_school = Q::schools()
         .comment("what: allocate School for transaction tombstone probe")
         .purpose("why: verify explicit transaction authoritative readback")
-        .new_entity(&context)?;
+        .new_entity(&context);
     fill_school(&mut transaction_school, "Transaction Delete Probe School")?;
     let transaction_created = transaction_school
         .audit_as("create School for explicit transaction deletion")
@@ -97,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cancelled_school = Q::schools()
         .comment("what: allocate a School that will be cancelled")
         .purpose("why: reject a fictitious persisted Save return")
-        .new_entity(&context)?;
+        .new_entity(&context);
     fill_school(&mut cancelled_school, "Cancelled New School")?;
     let cancelled_id = cancelled_school.id();
     cancelled_school.mark_for_deletion();
@@ -118,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut transaction_cancelled_school = Q::schools()
         .comment("what: allocate a transaction-scoped School that will be cancelled")
         .purpose("why: reject a fictitious transaction Save return")
-        .new_entity(&context)?;
+        .new_entity(&context);
     fill_school(&mut transaction_cancelled_school, "Transaction Cancelled New School")?;
     let transaction_cancelled_id = transaction_cancelled_school.id();
     transaction_cancelled_school.mark_for_deletion();

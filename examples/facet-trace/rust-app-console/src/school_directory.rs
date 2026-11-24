@@ -62,7 +62,7 @@ pub async fn run(database: PathBuf) -> Result<(), Box<dyn Error>> {
             let mut school = Q::schools()
                 .comment("prepare a school directory record")
                 .purpose("make the school search demonstration reproducible")
-                .new_entity(&context)?;
+                .new_entity(&context);
             school
                 .update_platform_id(1)
                 .update_name(name)
@@ -97,7 +97,7 @@ pub async fn run(database: PathBuf) -> Result<(), Box<dyn Error>> {
     let mut rejected = Q::schools()
         .comment("prepare an unaudited publication attempt")
         .purpose("show that directory changes require an audit reason")
-        .new_entity(&context)?;
+        .new_entity(&context);
     rejected
         .update_platform_id(1)
         .update_name("Facet Showcase Rejected")
