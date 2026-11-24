@@ -3624,6 +3624,7 @@ dependencies = [
  "futures-util",
  "rusqlite",
  "serde_json",
+ "sha2 0.10.9",
  "teaql-core",
  "teaql-data-service",
  "teaql-http-reqwest",
@@ -3631,7 +3632,9 @@ dependencies = [
  "teaql-provider-sqlite",
  "teaql-runtime",
  "teaql-sql",
+ "tempfile",
  "tokio",
+ "tokio-rustls",
  "url",
 ]
 
@@ -3774,6 +3777,7 @@ dependencies = [
  "futures-util",
  "hkdf",
  "hmac 0.12.1",
+ "libc",
  "num-bigint",
  "num-traits",
  "opentelemetry",
