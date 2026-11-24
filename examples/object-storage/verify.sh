@@ -24,11 +24,11 @@ if [[ "${1:-}" != --workspace-only ]]; then
   cargo test --locked -p teaql-core -p teaql-runtime -p teaql-object-storage-s3 object_storage 2>&1 | tee "$evidence/provider-tests.log"
   cargo run --locked -p teaql-object-storage-s3 --example object_storage | tee "$evidence/s3-calibration.log"
 fi
-cd "$app"
-cargo metadata --locked --format-version 1 |
+cd "$evidence"
+cargo metadata --locked --manifest-path "$app/Cargo.toml" --format-version 1 |
   python3 -B -c 'import json,sys; m=json.load(sys.stdin); print(json.dumps({p["name"]:p["manifest_path"] for p in m["packages"] if p["source"] is None},sort_keys=True,indent=2))'   > "$evidence/origins.log"
 for round in 1 2; do
-  cargo run --locked -- "$evidence/orders.sqlite" "$evidence/receipt-$round.txt" "$round" |
+  cargo run --locked --manifest-path "$app/Cargo.toml" -- "$evidence/orders.sqlite" "$evidence/receipt-$round.txt" "$round" |
     tee "$evidence/run-$round.log"
 done
 fingerprint > "$evidence/source-after.sha256"
