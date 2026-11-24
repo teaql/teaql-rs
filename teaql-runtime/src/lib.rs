@@ -71,12 +71,11 @@ pub use business_id::{
 pub use committed_events::CommittedEventSource;
 pub use context::{
     ContextEntityRef, ContextRootError, ContextTransactionExecutor, ContinuousPageCursor,
-    ContinuousPageCursorStore, DataStore,
-    FixEvidence, FixEvidenceSource, GeneratedSchemaBootstrap, GeneratedSchemaBootstrapFuture,
-    IdSetStore, InMemoryContinuousPageCursorStore, InMemoryDataStore, InMemoryIdSetStore,
-    InfoLogEntry, LogPayload, RemoteLockProvider, RetainedIdSet, SchemaInvocation, SchemaProvider,
-    SqlLogEntry, SqlLogOperation, SqlLogOptions, TransactionScope, UnifiedLogBuffer,
-    UnifiedLogEntry, UserContext,
+    ContinuousPageCursorStore, DataStore, FixEvidence, FixEvidenceSource, GeneratedSchemaBootstrap,
+    GeneratedSchemaBootstrapFuture, IdSetStore, InMemoryContinuousPageCursorStore,
+    InMemoryDataStore, InMemoryIdSetStore, InfoLogEntry, LogPayload, RemoteLockProvider,
+    RetainedIdSet, SchemaInvocation, SchemaProvider, SqlLogEntry, SqlLogOperation, SqlLogOptions,
+    TransactionScope, UnifiedLogBuffer, UnifiedLogEntry, UserContext,
 };
 pub use data_service::{
     AggregationCacheBackend, EntityDataService, GraphTransactionBoundary, InMemoryAggregationCache,

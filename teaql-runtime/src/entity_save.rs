@@ -3393,10 +3393,13 @@ where
                 preserve_relations,
                 &original_relation_fields,
             )?;
-            return Ok((entity, Some(SavedTransactionGraph {
-                ledger: root,
-                automatic: context_undo,
-            })));
+            return Ok((
+                entity,
+                Some(SavedTransactionGraph {
+                    ledger: root,
+                    automatic: context_undo,
+                }),
+            ));
         }
         if restoration::graph_is_unchanged(&node) {
             teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;

@@ -47,6 +47,8 @@ mod logging;
 mod numeric_validation;
 mod pagination;
 mod transaction;
+pub(crate) use bound_transaction::ContextExecutor;
+pub use bound_transaction::ContextTransactionExecutor;
 pub use locking::RemoteLockProvider;
 use locking::next_local_lock_owner;
 pub use logging::{
@@ -58,8 +60,6 @@ pub use pagination::{
     InMemoryIdSetStore, RetainedIdSet,
 };
 pub use transaction::TransactionScope;
-pub use bound_transaction::ContextTransactionExecutor;
-pub(crate) use bound_transaction::ContextExecutor;
 
 tokio::task_local! {
     static GENERATED_SCHEMA_BOOTSTRAP_MODE: ();
@@ -328,7 +328,9 @@ impl UserContext {
             metadata: self.metadata.clone(),
             entity_registry: self.entity_registry.clone(),
             entity_graph_decoders: self.entity_graph_decoders.clone(),
-            entity_data_service_behavior_registry: self.entity_data_service_behavior_registry.clone(),
+            entity_data_service_behavior_registry: self
+                .entity_data_service_behavior_registry
+                .clone(),
             request_policy: self.request_policy.clone(),
             mutation_policy_registry: self.mutation_policy_registry.clone(),
             mutation_policy_approval_provider: self.mutation_policy_approval_provider.clone(),

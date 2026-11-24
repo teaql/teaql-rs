@@ -10,8 +10,8 @@ use teaql_core::{
     UpdateCommand,
 };
 
-use crate::{ContextError, DataServiceError, UserContext};
 use crate::context::ContextExecutor;
+use crate::{ContextError, DataServiceError, UserContext};
 
 use super::{
     AggregationCacheBackend, ContextDataService, EntityDataService, InMemoryAggregationCache,
@@ -178,7 +178,9 @@ where
         })
     }
 
-    fn data_service(&self) -> RuntimeDataService<'_, UserContextMetadata<'_>, ContextExecutor<'_, E>> {
+    fn data_service(
+        &self,
+    ) -> RuntimeDataService<'_, UserContextMetadata<'_>, ContextExecutor<'_, E>> {
         let mut service = RuntimeDataService::new(&self.metadata, &self.executor);
         service.mutation_intent = self.mutation_intent.clone();
         service.mutation_privacy = self.mutation_privacy.clone();

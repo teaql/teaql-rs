@@ -1,7 +1,7 @@
 use teaql_core::{EntityDescriptor, SelectQuery};
 
-use crate::{MetadataStore, UserContext};
 use crate::context::ContextExecutor;
+use crate::{MetadataStore, UserContext};
 
 pub(crate) struct RuntimeDataService<'a, M, E> {
     pub(super) metadata: &'a M,
