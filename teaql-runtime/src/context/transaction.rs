@@ -485,6 +485,14 @@ mod transaction_outcome_tests {
         }
     }
 
+    fn attempted(ledgers: impl IntoIterator<Item = EntityRuntimeState>) -> TransactionSaveState {
+        let saves = TransactionSaveState::default();
+        for ledger in ledgers {
+            TransactionSaveState::remember(&saves.attempted, ledger);
+        }
+        saves
+    }
+
     #[tokio::test]
     async fn unknown_outer_transaction_poison_all_attempted_ledgers_without_leaking_errors() {
         let context = UserContext::default();
@@ -494,11 +502,7 @@ mod transaction_outcome_tests {
             let scope = TransactionScope::<FailingExecutor> {
                 context: &context,
                 transaction: Some(FailingTransaction(mode)),
-                attempted_ledgers: Mutex::new(vec![first.clone(), second.clone()]),
-                // The second graph wrote before its save returned an error, so
-                // it is attempted but not eligible for confirmed-commit cleanup.
-                flushed_ledgers: Mutex::new(vec![first.clone()]),
-                completion_confirmed: false,
+                saves: attempted([first.clone(), second.clone()]),
             };
             let result = match mode {
                 FailureMode::Commit => scope.complete(Ok(())).await,
@@ -535,9 +539,7 @@ mod transaction_outcome_tests {
             let scope = TransactionScope::<FailingExecutor> {
                 context: &context,
                 transaction: Some(FailingTransaction(mode)),
-                attempted_ledgers: Mutex::new(vec![ledger.clone()]),
-                flushed_ledgers: Mutex::new(vec![ledger.clone()]),
-                completion_confirmed: false,
+                saves: attempted([ledger.clone()]),
             };
             let result = match mode {
                 FailureMode::CommitSuccess => scope.complete(Ok(())).await,
@@ -571,9 +573,7 @@ mod transaction_outcome_tests {
             let scope = TransactionScope::<FailingExecutor> {
                 context: &context,
                 transaction: Some(FailingTransaction(mode)),
-                attempted_ledgers: Mutex::new(vec![first.clone(), second.clone()]),
-                flushed_ledgers: Mutex::new(vec![first.clone()]),
-                completion_confirmed: false,
+                saves: attempted([first.clone(), second.clone()]),
             };
             let result = match mode {
                 FailureMode::PendingCommit => {

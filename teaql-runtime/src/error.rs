@@ -32,7 +32,6 @@ pub enum RuntimeError {
     UnsupportedLocale(String),
     Schema(String),
     Transaction(String),
-    TransactionOutcomeUnknown,
     MissingRelation {
         entity: String,
         relation: String,
@@ -83,10 +82,6 @@ impl std::fmt::Display for RuntimeError {
             Self::UnsupportedLocale(code) => write!(f, "unsupported locale: {code}"),
             Self::Schema(message) => write!(f, "schema provider error: {message}"),
             Self::Transaction(message) => write!(f, "transaction error: {message}"),
-            Self::TransactionOutcomeUnknown => write!(
-                f,
-                "TRANSACTION_OUTCOME_UNKNOWN: reload authoritative state before attempting the operation again"
-            ),
             Self::MissingRelation { entity, relation } => {
                 write!(f, "missing relation {relation} on entity {entity}")
             }
@@ -127,7 +122,10 @@ impl std::fmt::Display for ContextError {
             Self::MissingEntityDataService(name) => {
                 write!(f, "missing entity data service for entity: {name}")
             }
-            Self::TransactionRouteMismatch => write!(f, "TRANSACTION_ROUTE_MISMATCH: the Context is bound to another data service"),
+            Self::TransactionRouteMismatch => write!(
+                f,
+                "TRANSACTION_ROUTE_MISMATCH: the Context is bound to another data service"
+            ),
         }
     }
 }
