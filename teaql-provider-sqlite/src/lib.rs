@@ -4182,7 +4182,10 @@ mod tests {
                 })
                 .await
                 .unwrap_err();
-            assert!(matches!(failure, RuntimeError::TransactionOutcomeUnknown));
+            assert!(
+                matches!(failure, RuntimeError::TransactionOutcomeUnknown),
+                "{failure:?}"
+            );
             assert!(!failure.to_string().contains("private acknowledgement"));
             for (id, ledger) in [(1, first_ledger), (2, second_ledger)] {
                 let (mut retry, _) = TransactionSchool::new(id, "unsafe retry");
@@ -4193,7 +4196,7 @@ mod tests {
                         &context
                     )
                     .await,
-                    Err(RuntimeError::TransactionOutcomeUnknown),
+                    Err(RuntimeError::TransactionOutcomeUnknownReloadRequired),
                 ));
             }
         });
