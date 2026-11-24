@@ -4139,7 +4139,7 @@ mod tests {
         let connection =
             SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
         connection.connection().lock().unwrap().execute_batch(
-            "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL)"
+            "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL, memo TEXT NOT NULL, stable TEXT NOT NULL, optional_note TEXT, occurred_at TIMESTAMP NOT NULL)"
         ).unwrap();
         let metadata = InMemoryMetadataStore::new()
             .with_entity(TransactionSchool::entity_descriptor().clone());
