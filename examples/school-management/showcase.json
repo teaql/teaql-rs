@@ -19,9 +19,10 @@
   },
   "model": {
     "path": "models/school-model.xml",
-    "sha256": "6ebf3cde81cd8b0b9ace41231a42d8ed28d384cc7cbc629a407ea0824f2b8a73"
+    "sha256": "975685da02ac2b9871add1ab26f5047998ba4e527bbc7c72f6e4befafb4a6840"
   },
   "producer": {
+    "modelSHA256": "6ebf3cde81cd8b0b9ace41231a42d8ed28d384cc7cbc629a407ea0824f2b8a73",
     "generator": {
       "artifactKind": "qualified source build; not a public release",
       "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
