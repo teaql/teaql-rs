@@ -56,7 +56,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_iter()
         .next()
         .ok_or("The submitted order could not be reloaded")?;
-    assert_eq!((submitted.name.as_str(), submitted.version), ("submitted", 2));
+    assert_eq!(
+        (submitted.name.as_str(), submitted.version),
+        ("submitted", 2)
+    );
     submitted.root.mark_as_delete(key);
     submitted
         .audit_as("Delete the example order")
@@ -65,7 +68,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let orders = data_service.fetch_entities::<Order>(&query).await?;
     assert_eq!(orders.len(), 1);
-    assert_eq!((orders[0].name.as_str(), orders[0].version), ("submitted", -3));
+    assert_eq!(
+        (orders[0].name.as_str(), orders[0].version),
+        ("submitted", -3)
+    );
     println!("PASS native schema and CRUD calibration: draft v1, submitted v2, deleted v-3");
     println!("schema+crud example rows: {orders:?}");
     Ok(())

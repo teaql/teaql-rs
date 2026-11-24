@@ -118,7 +118,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .projects(["id", "name"])
             .order_asc("id")
             .limit(1)
-            .relation_query("students", SelectQuery::new("Student").order_asc("id").limit(2))
+            .relation_query(
+                "students",
+                SelectQuery::new("Student").order_asc("id").limit(2),
+            )
             .comment("Read the school and its loaded roster"),
         "Verify the saved school graph",
     );
@@ -128,7 +131,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(schools.len(), 1);
     assert_eq!(schools[0].name, "My School");
     assert_eq!(
-        schools[0].students.iter().map(|pupil| pupil.name.as_str()).collect::<Vec<_>>(),
+        schools[0]
+            .students
+            .iter()
+            .map(|pupil| pupil.name.as_str())
+            .collect::<Vec<_>>(),
         ["Alice", "Bob"],
     );
 
