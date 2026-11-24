@@ -5,7 +5,7 @@
 //! Similar to Spring Boot Starter, this crate packages all cloud capabilities
 //! into a single `CloudApp` builder:
 //!
-//! - Nacos v2 gRPC connection
+//! - Nacos v2 gRPC or Consul HTTP connection
 //! - Service registration & discovery
 //! - Configuration center integration
 //! - Spring Boot Actuator-compatible health/info/metrics endpoints
@@ -57,7 +57,7 @@ pub enum RegistryType {
 /// Cloud application builder — one-line bootstrap for all cloud capabilities.
 ///
 /// `CloudApp::start()` internally executes:
-/// 1. Connect to Nacos (gRPC)
+/// 1. Connect to Nacos (gRPC) or Consul (HTTP)
 /// 2. Register service instance
 /// 3. Assemble Axum Router (business routes + actuator routes)
 /// 4. Bind port, start HTTP server
@@ -75,6 +75,7 @@ pub struct CloudApp {
     info: ServiceInfo,
     nacos_auth: Option<(String, String)>,
     nacos_group: String,
+    consul_token: Option<String>,
 }
 
 impl CloudApp {
@@ -93,6 +94,7 @@ impl CloudApp {
             info: ServiceInfo::default(),
             nacos_auth: None,
             nacos_group: "DEFAULT_GROUP".to_string(),
+            consul_token: None,
         }
     }
 
@@ -107,6 +109,12 @@ impl CloudApp {
     pub fn consul(mut self, addr: impl Into<String>) -> Self {
         self.registry_type = RegistryType::Consul;
         self.registry_addr = addr.into();
+        self
+    }
+
+    /// Set the Consul ACL token.
+    pub fn consul_token(mut self, token: impl Into<String>) -> Self {
+        self.consul_token = Some(token.into());
         self
     }
 
@@ -181,7 +189,7 @@ impl CloudApp {
     /// Start the cloud application.
     ///
     /// This method:
-    /// 1. Connects to Nacos via gRPC
+    /// 1. Connects to Nacos via gRPC or Consul via HTTP
     /// 2. Registers the service instance
     /// 3. Merges business routes with actuator routes
     /// 4. Starts the HTTP server
@@ -211,7 +219,7 @@ impl CloudApp {
             RegistryType::Consul => {
                 let mut consul_config = ConsulConfig::new(&self.registry_addr);
 
-                if let Some((token, _)) = &self.nacos_auth {
+                if let Some(token) = &self.consul_token {
                     consul_config = consul_config.with_token(token);
                 }
 
@@ -262,7 +270,7 @@ impl CloudApp {
                 source: Box::new(e),
             })?;
 
-        // 7. Graceful shutdown: deregister from Nacos
+        // 7. Graceful shutdown: deregister from the selected registry
         lifecycle.shutdown().await?;
 
         Ok(())
@@ -312,6 +320,7 @@ mod tests {
         assert!(app.indicators.is_empty());
         assert!(app.collectors.is_empty());
         assert!(app.routes.is_none());
+        assert!(app.consul_token.is_none());
     }
 
     #[test]
@@ -325,5 +334,16 @@ mod tests {
         let routes = Router::new();
         let app = CloudApp::new().routes(routes);
         assert!(app.routes.is_some());
+    }
+
+    #[test]
+    fn test_cloud_app_consul_builder() {
+        let app = CloudApp::new()
+            .consul("https://consul.example.test")
+            .consul_token("consul-token");
+        assert!(matches!(app.registry_type, RegistryType::Consul));
+        assert_eq!(app.registry_addr, "https://consul.example.test");
+        assert_eq!(app.consul_token.as_deref(), Some("consul-token"));
+        assert!(app.nacos_auth.is_none());
     }
 }

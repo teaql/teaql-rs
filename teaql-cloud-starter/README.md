@@ -22,6 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     CloudApp::new()
         // Use .nacos("127.0.0.1:8848") for Nacos or .consul("127.0.0.1:8500") for Consul
         .consul("127.0.0.1:8500")
+        .consul_token("consul-token")
         .namespace("production")
         .service_name("order-service-rust")
         .port(8080)
