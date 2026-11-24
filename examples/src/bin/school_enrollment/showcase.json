@@ -1,8 +1,37 @@
 {
   "generatedDomainLibraryHandEdited": false,
   "goalId": "rust:examples/src/bin/school_example.rs",
+  "initialInstallation": {
+    "library": {
+      "generatedFilesManifestSHA256": "559ccf3c1ffaa88dc7da9e6c1677a948a872a708ccdf861d76a5885e9ebccf21",
+      "root": "rust-lib-core",
+      "scope": "rust-lib-core"
+    },
+    "producer": {
+      "generator": {
+        "artifactKind": "qualified source build",
+        "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+        "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+        "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+        "tag": "unreleased-source-99d6bde2"
+      },
+      "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-school-enrollment-required-name-generation/receipt.json",
+      "receiptSHA256": "7b47ec6836de666a833a27cc1e4985873452bd530c147aa99971d06703f37b30"
+    },
+    "qualification": {
+      "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-school-enrollment-school-and-roster/runtime/school-enrollment/business-receipt.json",
+      "businessReceiptSHA256": "a2b9ab5f58a1e0086817872a20619c21f059de57c3fa8f6d2249adce49dcdee1",
+      "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-school-enrollment-school-and-roster/receipt.json",
+      "nativeReceiptSHA256": "95139c10f262690e5be958a8507d9f1d1c0e02ebd829399a943d5866d5c41c0b",
+      "remainingFullRuntimeInventory": true,
+      "sourceCommit": "c77bf8c518fba42219133ff9bdd1f73e58d05cb8"
+    }
+  },
   "library": {
-    "generatedFilesManifestSHA256": "559ccf3c1ffaa88dc7da9e6c1677a948a872a708ccdf861d76a5885e9ebccf21",
+    "generatedFiles": 34,
+    "generatedFilesManifestCommand": "LC_ALL=C find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum",
+    "generatedFilesManifestSHA256": "634b1f449d5bccfd0d1c7b6957951b6124464a67cf4b7eaa6a705b8a15b8da80",
+    "gitTree": "13c2cae353018763d5b294388864086dac04f818",
     "root": "rust-lib-core",
     "scope": "rust-lib-core"
   },
@@ -12,22 +41,18 @@
   },
   "producer": {
     "generator": {
-      "artifactKind": "qualified source build",
-      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
-      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
-      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
-      "tag": "unreleased-source-99d6bde2"
-    },
-    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-school-enrollment-required-name-generation/receipt.json",
-    "receiptSHA256": "7b47ec6836de666a833a27cc1e4985873452bd530c147aa99971d06703f37b30"
+      "artifactKind": "published release asset",
+      "jarSHA256": "a02f5ecd9e363e70eee38e4a9428d174193cdde531150934f0f43778bece9861",
+      "release": "https://github.com/teaql/teaql-code-gen/releases/tag/v4.3.0",
+      "sourceCommit": "2857e0b0bc6afbf88618a4b9e1ffa79c9d764bd7",
+      "tag": "v4.3.0"
+    }
   },
   "qualification": {
-    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-school-enrollment-school-and-roster/runtime/school-enrollment/business-receipt.json",
-    "businessReceiptSHA256": "a2b9ab5f58a1e0086817872a20619c21f059de57c3fa8f6d2249adce49dcdee1",
-    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-school-enrollment-school-and-roster/receipt.json",
-    "nativeReceiptSHA256": "95139c10f262690e5be958a8507d9f1d1c0e02ebd829399a943d5866d5c41c0b",
-    "remainingFullRuntimeInventory": true,
-    "sourceCommit": "c77bf8c518fba42219133ff9bdd1f73e58d05cb8"
+    "businessReceiptSHA256": "c2258318107d8a564a3bd657c32621dbc30c2a1ffb69ca8a8acceb23fac42849",
+    "nativeRuns": 2,
+    "sameDatabase": true,
+    "sourceCommit": "16b9e308bc80a895c524f4d72f72196e7fcde043"
   },
   "scene": "Audited district school enrollment and startup",
   "schema": "teaql.model-workspace-showcase/v1",

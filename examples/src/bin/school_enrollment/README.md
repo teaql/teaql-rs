@@ -5,7 +5,8 @@ The school system explicitly provisions the district platform and school types.
 It reopens the same database without duplicating seed or enrollment records.
 
 `model.xml` declares Platform, SchoolType, School and Student. The
-`rust-lib-core` crate contains unchanged generated domain code.
+`rust-lib-core` contains the output of Generator 4.3.0 for this model.
+`showcase.json` records the current library checksum and the initial installation receipts.
 `rust-app-console` configures a trusted audit sink on the generated Context,
 saves the school and both pupils as one graph, and reads the roster through
 generated Q. A missing required name fails without adding a pupil or emitting a
