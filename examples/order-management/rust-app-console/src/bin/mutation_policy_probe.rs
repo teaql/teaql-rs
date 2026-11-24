@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let request = Q::customers()
             .comment("Construct the policy-approved Customer")
             .purpose(PURPOSE);
-        let mut customer = request.new_entity(&context)?;
+        let mut customer = request.new_entity(&context);
         customer
             .update_name("Approved policy example")
             .update_email(ALLOWED_EMAIL)
@@ -115,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let request = Q::customers()
         .comment("Construct the policy-denied Customer")
         .purpose(PURPOSE);
-    let mut blocked = request.new_entity(&context)?;
+    let mut blocked = request.new_entity(&context);
     blocked
         .update_name("Blocked policy example")
         .update_email(BLOCKED_EMAIL)

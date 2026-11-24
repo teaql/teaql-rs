@@ -150,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut empty_order = Q::customer_orders()
         .comment("what: create a root without OrderLine children")
         .purpose("why: exercise loaded Empty rather than Loaded or NotLoaded")
-        .new_entity(&context)?;
+        .new_entity(&context);
     let empty_id = empty_order.id();
     empty_order
         .update_order_number(format!("EMPTY-REL-{empty_id}"))
@@ -186,7 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut product = Q::products()
         .comment("what: create a Product with an explicit null image URL")
         .purpose("why: verify typed Save preserves loaded null scalar state")
-        .new_entity(&context)?;
+        .new_entity(&context);
     let product_id = product.id();
     product
         .update_name("Scalar state probe Product")

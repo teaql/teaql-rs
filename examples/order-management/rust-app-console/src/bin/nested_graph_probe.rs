@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut platform = Q::commerce_platforms()
             .comment("what: create the probe platform")
             .purpose("why: attach the nested mutation graph")
-            .new_entity(&context)?;
+            .new_entity(&context);
         platform.update_name("Nested probe platform");
         let id = platform.id();
         platform
@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut customer = Q::customers()
         .comment("what: construct a probe customer")
         .purpose("why: satisfy the order relation")
-        .new_entity(&context)?;
+        .new_entity(&context);
     customer
         .update_name("Nested probe customer")
         .update_email("nested@example.test")
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut product = Q::products()
         .comment("what: construct a probe product")
         .purpose("why: satisfy the order line relation")
-        .new_entity(&context)?;
+        .new_entity(&context);
     product
         .update_name("Nested probe product")
         .update_sku("NESTED-001")
@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut order = Q::customer_orders()
         .comment("what: construct a probe order")
         .purpose("why: serve as the graph save boundary")
-        .new_entity(&context)?;
+        .new_entity(&context);
     order
         .update_order_number("NESTED-PROBE-001")
         .update_order_date(NaiveDate::from_ymd_opt(2026, 9, 15).unwrap())
@@ -114,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut line = Q::order_lines()
         .comment("what: construct a deliberately incomplete child")
         .purpose("why: validate nested checker path")
-        .new_entity(&context)?;
+        .new_entity(&context);
     line.update_customer_order_id(order_id)
         .update_product_id(product_id)
         .update_product_name("Nested probe product")
@@ -179,7 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut removable = Q::order_lines()
         .comment("what: construct a removable probe child")
         .purpose("why: exercise mixed graph save")
-        .new_entity(&context)?;
+        .new_entity(&context);
     removable
         .update_customer_order_id(order_id)
         .update_product_id(product_id)
@@ -231,7 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut added = Q::order_lines()
         .comment("what: construct a new child in the mixed graph")
         .purpose("why: validate create update and delete in one save")
-        .new_entity(&context)?;
+        .new_entity(&context);
     added
         .update_customer_order_id(order_id)
         .update_product_id(product_id)
@@ -416,7 +416,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut cancelled = Q::order_lines()
         .comment("what: construct a child that is cancelled before save")
         .purpose("why: validate ledger-only deletion intent")
-        .new_entity(&context)?;
+        .new_entity(&context);
     cancelled
         .update_customer_order_id(order_id)
         .update_product_id(product_id)
