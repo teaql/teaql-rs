@@ -219,6 +219,8 @@ impl Peer {
 }
 
 fn serve(socket: TcpStream, config: &Arc<rustls::ServerConfig>, count: &AtomicUsize) {
+    // Accepted sockets can inherit the nonblocking listener mode.
+    socket.set_nonblocking(false).unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
