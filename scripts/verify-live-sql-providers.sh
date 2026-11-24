@@ -71,7 +71,7 @@ run_expected_suite() {
 # Inventory includes the existing opt-in matched-driver test and the added
 # trace/privacy regressions. Execute the benchmark's correctness assertions too;
 # do not silently accept an ignored test or publish CI timings as benchmarks.
-run_expected_suite teaql-provider-sqlite '179,10,10,1,1,11,6,8,9,9,1,27,5,1,18,1,16,5,2,4,15,12,3,3' --lib --tests -- --include-ignored
+run_expected_suite teaql-provider-sqlite '181,10,10,1,1,11,6,8,9,9,1,27,5,1,18,1,16,5,2,4,15,12,3,3' --lib --tests -- --include-ignored
 # Ordinary provider tests use their dedicated provider database. The new
 # statistics/inheritance binaries require a separate, ownership-marked fixture;
 # execute every binary explicitly rather than silently skipping live coverage.
