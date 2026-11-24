@@ -37,7 +37,8 @@ try {
     .replaceAll(/"\.\.\/\.\.\/\.\.\/(teaql-[^"]+)"/g,(_,name)=>quote(path.join(repo,name)));
   fs.writeFileSync(path.join(consumer,'Cargo.toml'),manifest);
   fs.writeFileSync(path.join(evidence,'consumer-manifest.toml'),manifest);
-  report.libraryMetadata={sourceOnly:true,generatedManifestUnchanged:true};
+  report.libraryMetadata = require('../../scripts/pin-local-example-library.cjs')
+    .pin(path.join(generated, 'lib'), repo, scratch);
   const env = {...process.env, CARGO_TARGET_DIR: path.join(scratch, "target"), CARGO_INCREMENTAL: "0",
     CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0", CARGO_BUILD_JOBS: "2",
     TEAQL_FIX_E_DB: path.join(evidence, "fixture.sqlite")};
