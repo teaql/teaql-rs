@@ -2910,6 +2910,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -3553,10 +3554,12 @@ version = "5.0.7"
 dependencies = [
  "async-trait",
  "nacos-sdk",
+ "reqwest 0.13.4",
  "serde",
  "serde_json",
  "teaql-cloud-core",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
