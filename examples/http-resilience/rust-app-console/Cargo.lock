@@ -1281,7 +1281,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1899,7 +1899,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "teaql-core"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "base64",
  "bytes",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-data-service"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "futures-core",
  "teaql-core",
@@ -1921,7 +1921,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-http-reqwest"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -1932,7 +1932,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-macros"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1941,7 +1941,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-sqlite"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "async-stream",
  "chrono",
@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-runtime"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-sql"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "futures-core",
  "futures-util",

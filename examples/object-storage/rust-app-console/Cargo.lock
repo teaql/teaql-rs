@@ -774,7 +774,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1699,7 +1699,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1969,7 +1969,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-core"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "base64",
  "bytes",
@@ -1983,7 +1983,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-data-service"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "futures-core",
  "teaql-core",
@@ -1991,7 +1991,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-macros"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2000,7 +2000,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-object-storage-s3"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "async-trait",
  "aws-sdk-s3",
@@ -2013,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-sqlite"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "async-stream",
  "chrono",
@@ -2032,7 +2032,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-runtime"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2059,7 +2059,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-sql"
-version = "8.1.0"
+version = "8.2.0"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -2077,7 +2077,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
