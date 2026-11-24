@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut school = Q::schools()
             .comment("Create Riverside Primary")
             .purpose("Register a school and its first two pupils")
-            .new_entity(&context)?;
+            .new_entity(&context);
         school.update_platform_id(platform[0].id());
         school.update_school_type_to_primary();
         school.update_name("Riverside Primary");
@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut pupil = Q::students()
                 .comment("Prepare the pupil record")
                 .purpose("Join the enrollment graph")
-                .new_entity(&context)?;
+                .new_entity(&context);
             pupil.update_school_id(school.id());
             pupil.update_name(name);
             school.include_pending_mutations_from(&pupil)?;
@@ -149,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut pupil = Q::students()
             .comment("Prepare an invalid pupil")
             .purpose("Prevent invalid enrollments")
-            .new_entity(&context)?;
+            .new_entity(&context);
         pupil.update_school_id(school.id());
         let rejected = pupil
             .audit_as("Reject an enrollment without the required pupil name")
