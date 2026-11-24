@@ -1,0 +1,54 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/src/bin/http_resilience.rs",
+  "library": {
+    "generatedFilesManifestSHA256": "e1ef3ac597d222ebea6005d898b5b9d8b0fefe8f322d5b60af9c1d83347d2e25",
+    "root": "../rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "../model.xml",
+    "sha256": "5d76e300a887915d0233def56cf14b4c58cf67711e347a6f4acb61fb274518d5"
+  },
+  "originalCalibration": [
+    "bash",
+    "examples/http-resilience/verify.sh"
+  ],
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/supplier-order-sync-generation/receipt.json",
+    "receiptSHA256": "0910413b97e26c19505f98e64bb0adaecbd5cacb09936c7daeaf810757838747"
+  },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-supplier-order-sync-response-policy-native/business-receipt.json",
+    "businessReceiptSHA256": "6c067b331f38e15460c1cf6ef1bad9a8edb7583b289cfc80490dfae4fce267b3",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-supplier-order-sync-response-policy-native/receipt.json",
+    "nativeReceiptSHA256": "dc45c085bd107809870dc85de218de821e1ab408404774fc4f490cee0e11af69",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "daef1ed7085ce64e76f69f9bb8e69ffca8b3c937"
+  },
+  "scene": "Reconcile a supplier order by applying only a matching response for that order",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "focused-verified",
+  "verification": [
+    "bash",
+    "examples/http-resilience/verify-sync.sh"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "src/main.rs"
+    ],
+    "generatedFilesManifestSHA256": "26cc296c862ebef14772d87d7f2a8676c551a4440d8b22c415d97dffa2f74d68",
+    "root": "../rust-app-console",
+    "scope": "rust-app-console",
+    "useSiblingCargoLibrary": true
+  }
+}

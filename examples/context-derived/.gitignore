@@ -1,0 +1,2 @@
+# The current scope guard is source and must be present in clean consumers.
+!/current_library.py

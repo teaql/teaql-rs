@@ -73,7 +73,7 @@ own Rust APIs.
 These application-code excerpts assume the example's generated imports, trusted
 Context and an existing object identity. `Q` and `E` belong to the generated
 domain library, not a generic runtime object with arbitrary field strings.
-See the [application source](examples/school-management/src/main.rs) for complete setup.
+See the [application source](examples/school-management/rust-app-console/src/main.rs) for complete setup.
 
 ```rust
 let school_type_details = Q::school_types_minimal().select_name().select_code();

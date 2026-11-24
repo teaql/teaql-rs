@@ -1,0 +1,126 @@
+{
+    "schema": "teaql.i18n/v1",
+    "defaultLocale": "en",
+    "locales": {
+        "de": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ko": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "pt": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "zh-TW": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "fil": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "en": {
+            "vocabulary": {
+                "property.platform.name": "Name",
+                "property.shipment.version": "Version",
+                "property.customerOrder.orderNumber": "Order Number",
+                "property.orderItem.id": "Id",
+                "property.shipment.referenceCode": "Reference Code",
+                "property.customerOrder.description": "Description",
+                "entity.orderItem": "Order Item",
+                "property.orderItem.customerOrder": "Customer Order",
+                "property.orderItem.name": "Name",
+                "entity.customerOrder": "Customer Order",
+                "property.payment.customerOrder": "Customer Order",
+                "property.customerOrder.id": "Id",
+                "property.paymentAttempt.version": "Version",
+                "property.payment.version": "Version",
+                "property.shipment.customerOrder": "Customer Order",
+                "property.paymentAttempt.id": "Id",
+                "property.customerOrder.version": "Version",
+                "property.payment.id": "Id",
+                "entity.platform": "Platform",
+                "property.platform.id": "Id",
+                "property.customerOrder.platform": "Platform",
+                "entity.payment": "Payment",
+                "property.shipment.id": "Id",
+                "property.payment.referenceCode": "Reference Code",
+                "property.paymentAttempt.referenceCode": "Reference Code",
+                "entity.shipment": "Shipment",
+                "property.orderItem.version": "Version",
+                "property.platform.version": "Version",
+                "property.paymentAttempt.payment": "Payment",
+                "entity.paymentAttempt": "Payment Attempt"
+            },
+            "messages": {
+            }
+        },
+        "fr": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "zh-CN": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "es": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ar": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "vi": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "th": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "uk": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ja": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "id": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        }
+    }
+}

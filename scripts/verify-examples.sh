@@ -5,7 +5,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 verification_dir="${TEAQL_EXAMPLES_EVIDENCE_DIR:-$(mktemp -d -t teaql-rust-examples-evidence.XXXXXXXX)}/runtime"
 mkdir -p "$verification_dir"
 echo "Retained compact example logs and databases: $verification_dir"
-expected=(boolean-boundaries business-id-runtime committed-events conformance context-bound-order-document context-derived expression-profiles facet-trace fix-e-alignment http-resilience inheritance-save natural-messages object-storage order-management request-admission school-management secret-provider shared-load-state supplier-onboarding-i18n tests trace-chain)
+expected=(boolean-boundaries business-id-runtime committed-events conformance context-bound-order-document context-derived equipment-purchase-graph expression-profiles facet-trace fix-e-alignment http-resilience inheritance-save maintenance-work-items natural-messages object-storage order-management request-admission school-management secret-provider shared-load-state supplier-onboarding-i18n tests trace-chain)
 mapfile -t actual < <(find "$repo/examples" -mindepth 1 -maxdepth 1 -type d ! -name src -printf '%f\n' | sort)
 if [[ "${actual[*]}" != "${expected[*]}" ]]; then
   echo "example inventory changed; update scripts/verify-examples.sh: ${actual[*]}" >&2
@@ -22,21 +22,36 @@ python3 examples/context-derived/verify-local.py --output "${verification_dir%/r
 python3 scripts/verify-natural-messages.py --example --output "${verification_dir%/runtime}/natural-messages"
 TEAQL_REQUEST_ADMISSION_EVIDENCE_DIR="${verification_dir%/runtime}/request-admission" \
   node examples/request-admission/verify-local.cjs
-TEAQL_BOOLEAN_EVIDENCE_DIR="${verification_dir%/runtime}/boolean-boundaries" \
-  node examples/boolean-boundaries/verify-local.cjs
+TEAQL_PURCHASE_APPROVAL_EVIDENCE_DIR="${verification_dir%/runtime}/purchase-approval" \
+  bash examples/boolean-boundaries/verify-approval.sh
 # Isolated non-Git copies must name their hash-bound Git origin explicitly.
-TEAQL_GENERATED_E_PROFILE_EVIDENCE_DIR="${verification_dir%/runtime}/expression-profiles" \
-  node examples/expression-profiles/verify-local.cjs
+TEAQL_DISPATCH_PROFILE_EVIDENCE_DIR="${verification_dir%/runtime}/expression-profiles" bash "examples/expression-profiles/verify-dispatch.sh"
 node examples/tests/loaded-revert/verify-local.cjs
 node examples/tests/loaded-revert/verify-views.cjs
+TEAQL_ORDER_EDIT_EVIDENCE_DIR="${verification_dir%/runtime}/order-line-edit" bash examples/tests/loaded-revert/verify-order-edit.sh
 bash examples/http-resilience/verify.sh
+TEAQL_SUPPLIER_SYNC_EVIDENCE_DIR="${verification_dir%/runtime}/supplier-order-sync" bash examples/http-resilience/verify-sync.sh
 bash examples/committed-events/verify.sh
 bash examples/secret-provider/verify.sh
 bash examples/object-storage/verify.sh
 bash examples/trace-chain/verify-standard-telemetry.sh
+TEAQL_SQLITE_EXAMPLE_EVIDENCE_DIR="$verification_dir/equipment-purchase-graph" \
+  bash scripts/verify-sqlite-business-example.sh equipment-purchase-graph
+TEAQL_SQLITE_EXAMPLE_EVIDENCE_DIR="$verification_dir/maintenance-work-items" \
+  bash scripts/verify-sqlite-business-example.sh maintenance-work-items
 cargo test -p teaql-provider-sqlite --test relation_membership -- --nocapture
 cargo test -p teaql-examples --all-targets
-cargo run --quiet --manifest-path examples/conformance/Cargo.toml
+TEAQL_ORDER_PRIVACY_EVIDENCE_DIR="$verification_dir/order-privacy" bash examples/src/bin/merchant-order-privacy/verify-privacy.sh
+cargo run --offline --locked -p teaql-examples --bin security_foundations
+TEAQL_RUST_ENROLLMENT_EVIDENCE_DIR="$verification_dir/school-enrollment" \
+  bash examples/src/bin/school_enrollment/verify.sh
+TEAQL_SHIPPING_LOG_EVIDENCE_DIR="$verification_dir/order-logging" \
+  bash examples/src/bin/order_logging/verify.sh
+TEAQL_BUSINESS_ID_KEY_V1_HEX=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
+TEAQL_PURCHASE_NUMBERING_ROUND=inventory \
+PURCHASE_ORDER_NUMBERING_CORE_DATABASE_URL="sqlite:file:$verification_dir/business-id.sqlite" \
+cargo run --locked --manifest-path examples/business-id-runtime/Cargo.toml
+TEAQL_CONFORMANCE_EVIDENCE_DIR="$verification_dir/conformance" bash examples/conformance/verify.sh
 cargo run --quiet --manifest-path examples/school-management/Cargo.toml
 bash scripts/verify-school-bootstrap-example.sh
 SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL="$verification_dir/env-helper.db" \
@@ -90,21 +105,15 @@ done
 test ! -s "$verification_dir/privacy-debug.log"
 test ! -s "$verification_dir/privacy-audit.log"
 echo 'PASS: default SQL preserves ordinary fields; sensitive names, rejected payloads and unapproved debug sinks stay private'
-TEAQL_EXAMPLE_DATABASE="$verification_dir/order.db" \
-  cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml
-for graph_pass in 1 2; do
-  TEAQL_NESTED_PROBE_DATABASE="sqlite:file:$verification_dir/graph.db" \
-    cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml --bin nested_graph_probe
-done
-TEAQL_SAVE_LOAD_STATE_DATABASE="sqlite:file:$verification_dir/graph.db" \
-  cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml --bin save_loaded_relation_probe
-TEAQL_SAVE_LOAD_STATE_DATABASE="sqlite:file:$verification_dir/graph.db" \
-  cargo run --quiet --manifest-path examples/order-management/rust-app-console/Cargo.toml --bin save_forward_fk_probe
-cargo test -p teaql-tfp-endpoint --examples
+TEAQL_ORDER_EVIDENCE_DIR="${verification_dir%/runtime}/order-management" bash examples/order-management/verify.sh
+cargo test --offline --locked -p teaql-examples --test context_bound_order_document
+TEAQL_REFERENCE_EVIDENCE_DIR="${verification_dir%/runtime}/order-edit-reference" bash examples/src/bin/order-edit-reference/verify.sh
+cargo test --offline --locked -p teaql-tfp-endpoint --lib --examples
+python3 -B "teaql-tfp-endpoint/examples/order-federation/verify-federation.py" --runtime rust --output "${verification_dir%/runtime}/order-federation"
 bash examples/trace-chain/verify.sh
 bash examples/facet-trace/verify.sh
-bash examples/shared-load-state/verify.sh
+TEAQL_LOAD_STATE_EVIDENCE_DIR="${verification_dir%/runtime}/shared-load-state" bash examples/shared-load-state/verify.sh --workspace
 TEAQL_MAINSTREAM_EVIDENCE_DIR="${verification_dir%/runtime}/mainstream-reference" \
-  node examples/shared-load-state/verify-mainstream-reference.cjs
+  node examples/shared-load-state/verify-mainstream-reference.cjs --workspace
 bash examples/supplier-onboarding-i18n/run.sh --verify
 echo "PASS: all Rust examples"

@@ -2,6 +2,31 @@
 
 # TeaQL Rust Agent Instructions
 
+## TeaQL workspace rules
+
+- Work in application-owned files. Keep the generated domain library read-only.
+- Discover API names and signatures through model-aware Assist only.
+  Do not read or search generated library source for API discovery. Use the
+  original evaluated KSML file or directory and its exact entity and field names.
+- Ask for the current entity and action first. Request field-level query help
+  only for the fields you use. If Assist lacks the operation, report
+  `MISSING_ASSIST` with the entity, action, and relevant field or diagnostic.
+
+```text
+cargo teaql --input [model] rust-assist-[action]/[entity]
+cargo teaql --input [model] rust-assist-query/[entity].[field]
+```
+
+Replace the bracketed values with the actual model path, action, entity, and
+field. Actions include `query`, `list-page`, `create`, `update`, `delete`, and
+`expression`. Validate API usage by compiling and testing the application.
+
+- Use the trusted `UserContext` as the only runtime argument for generated query
+  execution and saves. Resolve tenant, actor, authorization, and provider
+  resources from trusted application setup.
+- Keep queries bounded and provide a non-empty purpose and comment. Supply a
+  non-empty audit reason for writes through the API shown by Assist.
+
 > [!WARNING]
 > **IGNORE GENERIC ORM EXPERIENCE**
 >
@@ -13,29 +38,7 @@
 >
 > Do **not** guess TeaQL method names.
 
-## How to Write Domain Code
-
-To get the exact API usage and query examples for the entity you are working on, execute the following command:
-
-```bash
-cargo teaql --input models/trace-chain-service.xml rust-assist-[action]/[entity-name]
-```
-
-> `models/trace-chain-service.xml` is the default model path. If the model file is located elsewhere, adjust the `--input` path to match the actual file location in this project.
-
-Replace `[action]` with one of the following:
-
-| action | when-to-use |
-|--------|-------------|
-| query | Read/find records from the database using Q:: |
-| create | Insert a new record into the database |
-| update | Modify and save an existing record |
-| delete | Remove or soft-delete a record |
-| expression | Safely extract nested relation values using E:: |
-| list-page | Implement a paginated query returning SmartList |
-| debug | View instructions for enabling SQL logging and debugging |
-
-Replace `[entity-name]` with the exact entity-name from the table below:
+## Model entities
 
 | entity-name | display-name |
 |-------------|--------------|
@@ -47,22 +50,18 @@ Replace `[entity-name]` with the exact entity-name from the table below:
 | shipment | Shipment |
 
 
-Once the command succeeds, read its output. Use the printed code as a template to write your logic.
-
-If the command cannot be executed, stop and report the missing context. Do not invent APIs.
-
-Do not inspect, grep, or search generated `lib/src` files to discover APIs. If
-the current entity/action Assist and required field-specific Assist do not
-provide the operation, stop and report `MISSING_ASSIST` with the missing
-operation and exact compiler diagnostic. Source fallback requires explicit
-user or orchestrator authorization for a named file and bounded line range.
-
 Create each application-owned source file once. After its first compile
 attempt, use the smallest localized patch for each exact diagnostic and
 preserve unrelated compiling code. Do not rewrite a complete file as a repair
 strategy. Before replacing more than 25% of an existing application file, stop
 and report `LARGE_REWRITE_REQUEST` with the file, diagnostic, reason, and
 estimated scope. Initial creation and model-driven regeneration are exempt.
+
+## Application entry and context
+
+Start in `src/main.rs`. With a configured provider, use the context from
+`service_runtime_from_env()`. For module-only setups, build the context from
+`module_with_behaviors_and_checkers().into_context()`.
 
 ## Additional References
 

@@ -36,7 +36,7 @@ fi
 cleanup() { status=$?; trap - EXIT; if [[ -n "$disposable_evidence" ]]; then rm -rf -- "$disposable_evidence"; fi; exit "$status"; }
 trap cleanup EXIT
 school_library_hash() {
-  (cd "$school_example/lib" && rg --files -g '*.rs' -g '*.toml' -g '!target/**' \
+  (cd "$school_example/rust-lib-core/lib" && rg --files -g '*.rs' -g '*.toml' -g '!target/**' \
     | LC_ALL=C sort | xargs -d '\n' sha256sum)
 }
 school_library_hash > "$school_evidence/generated-library-before.sha256"

@@ -23,10 +23,10 @@ def sha(path):
 
 
 def fixture_hashes():
-    root = EXAMPLE / "automatic-fixture"
+    root = EXAMPLE / "rust-lib-core"
     manifest = json.loads((root / "generated-files.json").read_text())
     assists = json.loads((root / "assist-files.json").read_text())
-    assert len(manifest) == 21 and len(assists) == 5
+    assert len(manifest) == 22 and len(assists) == 5
     expected = set(manifest) | set(assists) | {"model.xml", "evaluation.json", "generated-files.json", "assist-files.json", "generation.json"}
     actual = set()
     for file in root.rglob("*"):
@@ -47,35 +47,35 @@ def fixture_hashes():
 
 def stage(owned, output, env, run):
     owned.mkdir(parents=True, exist_ok=False)
-    fixture = EXAMPLE / "automatic-fixture"
+    fixture = EXAMPLE / "rust-lib-core"
     before = fixture_hashes()
-    library, consumer = owned / "generated-lib", owned / "consumer"
-    shutil.copytree(fixture / "lib", library)
-    consumer.mkdir()
-    shutil.copytree(EXAMPLE / "src", consumer / "src")
+    library, consumer = owned / "rust-lib-core/lib", owned / "rust-app-console"
+    shutil.copytree(fixture, owned / "rust-lib-core")
+    shutil.copytree(EXAMPLE / "rust-app-console", consumer)
     shutil.copyfile(EXAMPLE / "Cargo.lock", consumer / "Cargo.lock")
-    manifest = (EXAMPLE / "Cargo.toml").read_text()
-    assert manifest.count('path = "automatic-fixture/lib"') == 1
-    manifest = manifest.replace('path = "automatic-fixture/lib"', 'path = "../generated-lib"')
+    manifest = (EXAMPLE / "rust-app-console/Cargo.toml").read_text() + "\n[workspace]\n"
+    patches = "[patch.crates-io]" + (EXAMPLE / "Cargo.toml").read_text().split("[patch.crates-io]", 1)[1]
     for crate in CRATES:
         original = f'{crate} = {{ path = "../../{crate}" }}'
-        assert manifest.count(original) == 1, crate
-        manifest = manifest.replace(original, f'{crate} = {{ path = {json.dumps(str(REPO / crate))} }}')
-    (consumer / "Cargo.toml").write_text(manifest)
-    command = [shutil.which("node") or "/home/philip/.nvm/versions/node/v24.19.0/bin/node",
-               str(REPO / "scripts/pin-local-example-library.cjs"), str(library), str(REPO), str(owned)]
-    log = output / "pin-metadata.log"
-    assert run(command, env, log) == 0, "local metadata pin failed"
-    pin = json.loads(log.read_text())
-    assert pin["implementationFilesUnchanged"] and not pin["sourceFixtureEdited"]
-    # Fresh output must already target the correct SQLite ABI; no historical-driver escape.
-    assert not pin["sqliteDriverChanged"], "fix the upstream generator's fresh SQLite ABI instead"
+        assert patches.count(original) == 1, crate
+        patches = patches.replace(original, f'{crate} = {{ path = {json.dumps(str(REPO / crate))} }}')
+    (consumer / "Cargo.toml").write_text(manifest + patches)
+    assert sha(library / "Cargo.toml") == sha(fixture / "lib/Cargo.toml")
+    import re
+    driver_pattern = r'(?m)^rusqlite\s*=\s*\{\s*version\s*=\s*"([^"]+)"'
+    runtime_driver = re.search(driver_pattern, (REPO / "Cargo.toml").read_text())[1]
+    generated_driver = re.search(driver_pattern, (library / "Cargo.toml").read_text())[1]
+    assert generated_driver == runtime_driver, "Fresh generated SQLite ABI differs from the selected runtime"
+    pin = dict(implementationFilesUnchanged=True, sourceFixtureEdited=False, sqliteDriverChanged=False,
+        sqliteDriverVersion=runtime_driver, originalSqliteDriverVersion=generated_driver,
+        generatedManifestUnchanged=True, originalManifestSha256=sha(fixture / "lib/Cargo.toml"),
+        consumerManifestSha256=sha(library / "Cargo.toml"))
     assert before == fixture_hashes()
     return consumer, pin, before
 
 
 def verify_consumer(owned, output, env, run):
-    application = (EXAMPLE / "src/main.rs").read_text()
+    application = (EXAMPLE / "rust-app-console/src/main.rs").read_text()
     for forbidden in ["set_checker_presentation_model(", "CheckerPresentationModel::", "set_checker_registry(", "EntryCheckerLogic", "TypedEntityChecker"]:
         assert forbidden not in application, f"automatic composition cannot be replaced in the application: {forbidden}"
     consumer, pin, before = stage(owned, output, env, run)
@@ -90,7 +90,7 @@ def verify_consumer(owned, output, env, run):
         assert paths == [str(REPO / crate / "Cargo.toml")], f"not local source: {crate}"
         dependencies[crate] = paths[0]
     library = next(package for package in metadata["packages"] if package["name"] == "checker-natural-message-service-core")
-    assert Path(library["manifest_path"]) == owned / "generated-lib/Cargo.toml"
+    assert Path(library["manifest_path"]) == owned / "rust-lib-core/lib/Cargo.toml"
     assert (consumer / "Cargo.lock").read_bytes() == (EXAMPLE / "Cargo.lock").read_bytes(), "committed consumer lock drift"
     database = output / "example.sqlite"
     run_env = dict(env, TEAQL_NATURAL_MESSAGES_DB=str(database), TEAQL_TELEMETRY_ENABLED="false",
@@ -128,8 +128,8 @@ def verify_consumer(owned, output, env, run):
         assert rows == [("accepted", 2), ("second", 1)] * attempt, rows
         rounds.append(dict(round=attempt, exitCode=code, log=log.name, logSha256=sha(log), facts=fact, sqliteRows=rows))
         assert fixture_hashes() == before
-    return dict(generatedFixture=json.loads((EXAMPLE / "automatic-fixture/generated-files.json").read_text()),
-                fixtureInputHashes=before, generation=json.loads((EXAMPLE / "automatic-fixture/generation.json").read_text()),
+    return dict(generatedFixture=json.loads((EXAMPLE / "rust-lib-core/generated-files.json").read_text()),
+                fixtureInputHashes=before, generation=json.loads((EXAMPLE / "rust-lib-core/generation.json").read_text()),
                 metadataOverride=pin, exampleBuild=dict(command=command, exitCode=0), localDependencies=dependencies,
                 exampleRounds=rounds, databaseSha256=sha(database), sameDatabase=True, automaticComposition=True)
 

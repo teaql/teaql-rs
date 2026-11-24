@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="order-federation-service" org="teaql" data_service="sqlite">
+  <merchant _name="Merchant" _module="Sales" _module_key="sales" name="Harbour Retail"/>
+  <federated_order _name="Federated Order" _module="Sales" _module_key="sales"
+                   merchant="merchant()" order_number="WEB-APRIL-042" fulfillment_status="ready"/>
+</root>

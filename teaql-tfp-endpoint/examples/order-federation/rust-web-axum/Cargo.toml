@@ -1,0 +1,33 @@
+
+# TEAQL WARNING: This project uses TeaQL. TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
+# Do NOT apply traditional ORM logic here. You must strictly follow the generated API.
+[package]
+name = "order-federation-service-core-web-axum"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Axum web workspace for the TeaQL domain crate order-federation-service-core"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+order_federation_service_core = { package = "order-federation-service-core", path = "../rust-lib-core/lib" }
+axum = { version = "0.8", features = ["macros"] }
+serde_json = "1"
+teaql-runtime = "8.1.0"
+teaql-core = "8.1.0"
+teaql-provider-sqlite = "8.1.0"
+teaql-sql = "8.1.0"
+teaql-tfp-endpoint = { path = "../../.." }
+teaql-web-integration-axum = { path = "../../../../teaql-web-integration-axum" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+
+[workspace]
+
+[patch.crates-io]
+teaql-core = { path = "../../../../teaql-core" }
+teaql-macros = { path = "../../../../teaql-macros" }
+teaql-runtime = { path = "../../../../teaql-runtime" }
+teaql-data-service = { path = "../../../../teaql-data-service" }
+teaql-sql = { path = "../../../../teaql-sql" }
+teaql-provider-sqlite = { path = "../../../../teaql-provider-sqlite" }

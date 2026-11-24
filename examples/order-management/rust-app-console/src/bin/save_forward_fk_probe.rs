@@ -72,10 +72,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(String::as_str)
         .or_else(|| panic_payload.downcast_ref::<&str>().copied())
         .expect("NotLoaded must produce a textual diagnostic");
-    assert!(
-        diagnostic.contains("customer") && diagnostic.contains("select_customer"),
-        "expected a Customer NotLoaded diagnostic, got: {diagnostic}"
-    );
+    let expected_expression = format!("E::customer_order(id={order_id}).get_customer()<broken>");
+    for expected in [
+        format!("original_expr_with_broken_point: \"{expected_expression}\""),
+        format!("root: CustomerOrder(id={order_id})"),
+        "access_path: [\"customer\"]".to_owned(),
+        "break_point: \"customer\"".to_owned(),
+        "missing_preload: [\"customer\"]".to_owned(),
+        "suggested_fix: \"select_customer()\"".to_owned(),
+    ] {
+        assert!(
+            diagnostic.lines().any(|line| line == expected),
+            "expected {expected:?} in the Customer NotLoaded diagnostic, got: {diagnostic}"
+        );
+    }
     println!("SAVE_FORWARD_FK_NOT_LOADED_EXPECTED order_id={order_id}");
 
     let reloaded = Q::customer_orders()

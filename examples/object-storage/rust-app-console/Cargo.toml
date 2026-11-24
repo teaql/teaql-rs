@@ -1,0 +1,32 @@
+
+# TEAQL WARNING: This project uses TeaQL. TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
+# Do NOT apply traditional ORM logic here. You must strictly follow the generated API.
+[package]
+name = "order-attachment-service-core-workspace"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "Application workspace for the TeaQL domain crate order-attachment-service-core"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+order_attachment_service_core = { package = "order-attachment-service-core", path = "../rust-lib-core/lib" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+teaql-core = "8.1.0"
+chrono = "0.4"
+teaql-runtime = { path = "../../../teaql-runtime" }
+teaql-object-storage-s3 = { path = "../../../teaql-object-storage-s3" }
+aws-sdk-s3 = { version = "=1.152.0", default-features = false, features = ["rt-tokio", "default-https-client"] }
+bytes = "1"
+serde_json = "1"
+sha2 = "=0.10.9"
+
+[workspace]
+
+[patch.crates-io]
+teaql-core = { path = "../../../teaql-core" }
+teaql-macros = { path = "../../../teaql-macros" }
+teaql-runtime = { path = "../../../teaql-runtime" }
+teaql-sql = { path = "../../../teaql-sql" }
+teaql-data-service = { path = "../../../teaql-data-service" }
+teaql-provider-sqlite = { path = "../../../teaql-provider-sqlite" }

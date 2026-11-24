@@ -1,0 +1,41 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/expression-profiles",
+  "library": {
+    "generatedFilesManifestSHA256": "325e1e9bc87a065ad83aa0ee4a2cdf543ad7e52692218393525936ff7f260875",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "0b74f30c25123ae9e3a65799cfb5a67f46b96f985b4a0dad1a1daa9ed52d80be"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/dispatch-document-profiles-generation/receipt.json",
+    "receiptSHA256": "11b1084da4040d1a68378b9ee879d98dd18d61b7eace2700c2e3dc207276c1b3"
+  },
+  "scene": "Read a dispatch order in PascalCase",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "covered-by-parent-qualification",
+  "verification": [
+    "bash",
+    "examples/expression-profiles/verify-dispatch.sh"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "src/main.rs",
+      "Cargo.toml"
+    ],
+    "generatedFilesManifestSHA256": "874b725713b5aefec981046d3c4999b4bcc958c35d89a440a2565be22c6479df",
+    "root": "rust-app-console",
+    "scope": "rust-app-console",
+    "useSiblingCargoLibrary": true
+  }
+}

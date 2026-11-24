@@ -1,5 +1,19 @@
 # Order Management — Rust + SQLite
 
+The retained model owns the exact `rust-lib-core` and `rust-app-console` scopes.
+All eight original workspace files were retained byte for byte at installation.
+The document consumer then received a localized owner-scoped query correction:
+repeated runs can use the same business number under different trusted Customers.
+Its actor, version, projection and token checks remain intact; other business
+sources, dependency declarations and the lock are unchanged. Current generated workspace scaffolding and immutable embedded
+domain files are installed alongside the original application. `showcase.json`
+records their model and producer identity. Run `bash verify.sh` from this scene
+for the focused terminal/graph/policy gate. The verifier also runs the six
+shared generator roll-up tests through the Order Edit Reference model and
+records their source checksum. It retains compact evidence and removes its
+owned compilation scratch. The historical `published-replay`
+consumer remains unchanged; this gate makes no new published-artifact claim.
+
 Run without a database server, fixture DB, model input, or generator installation:
 
 ```bash

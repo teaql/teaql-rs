@@ -1,4 +1,16 @@
-# Context-Bound Order Document POC
+# Context-bound editing of order lines
+
+The [order-management model](../order-management/order-management-model.xml)
+and its [Rust workspace](../order-management/rust-app-console) host the
+document service. The workspace opens a customer’s order, applies an
+authorized edit, rolls back a failed write and checks the remaining
+lines after an explicit removal. Run the SQLite flow with
+
+```bash
+bash examples/order-management/verify.sh
+```
+
+## Original provider-neutral calibration
 
 This executable test is the first backend proof of TeaQL's governed document
 round-trip design. It uses an in-memory Order store only to keep the proof

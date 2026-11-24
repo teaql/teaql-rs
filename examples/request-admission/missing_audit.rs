@@ -7,11 +7,11 @@ async fn main() {
     let mut owner = Q::purchase_orders()
         .comment("Create owner")
         .purpose("A child cannot authorize its owner")
-        .new_entity(&context);
+        .new_entity(&context).expect("reserve the negative-control owner identity");
     let child = Q::order_items()
         .comment("Create child")
         .purpose("Prove root ownership")
-        .new_entity(&context)
+        .new_entity(&context).expect("reserve the negative-control child identity")
         .audit_as("A valid local child reason")
         .into_entity();
     owner.include_pending_mutations_from(&child).unwrap();

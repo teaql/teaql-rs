@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="supplier-order-sync-service" org="teaql" data_service="sqlite">
+  <supplier _name="Supplier" _module="Procurement" _module_key="procurement" name="Regional Supply Co"/>
+  <supplier_order _name="Supplier Order" _module="Procurement" _module_key="procurement"
+                  supplier="supplier()" external_reference="SYNC-APRIL-042" sync_status="pending"/>
+</root>

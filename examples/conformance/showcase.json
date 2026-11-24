@@ -1,0 +1,50 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/conformance",
+  "library": {
+    "generatedFilesManifestSHA256": "c9844278a4da883ccf17dae948e9c0e81901089fff508f13d799e4916cc3aab2",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "0a59f66db2487fdd0430087dd5985ae780225c088ad800679cb57c593c6bcee7"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build; not a public release",
+      "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+      "qualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
+      "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+      "tag": "unreleased-source-021b1ed8"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/work-item-generation/receipt.json",
+    "receiptSHA256": "99afd2b0806d9aec86d271cd5154f9447b895e9f3a5e69f2e95468bcd8a1644a"
+  },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-work-item-native-scopes/runtime/conformance/business-receipt.json",
+    "businessReceiptSHA256": "4a24c19c18f7b2153b1109ba4ce61299cddbf6f4c3791d9ecacd1780735b26ee",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-work-item-native-scopes/receipt.json",
+    "nativeReceiptSHA256": "33592517a60e09fc4a12abe173c31830b34ce8eaa2f5447614622d1f386caa8d",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "d57a48e2aeb2f05f2d8551a71a7633be4b5572bb"
+  },
+  "scene": "Work item creation, governed validation, typed queries and lifecycle",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "focused-verified",
+  "verification": [
+    "bash",
+    "verify.sh"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "src/main.rs",
+      "src/lib.rs"
+    ],
+    "generatedFilesManifestSHA256": "1113113ba377bb2b6b39948ad987e393a1a8fdede86d7f1bc5ae1b75e90f2fb6",
+    "root": "rust-app-console",
+    "scope": "rust-app-console",
+    "useSiblingCargoLibrary": true
+  }
+}

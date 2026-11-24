@@ -4,8 +4,8 @@ Use `python3 scripts/verify-natural-messages.py --all-targets --example --output
 /new/evidence/path` from the runtime repository. The output path must not exist.
 
 The current model, unedited generated library, passive metadata and retained
-model-aware Assist belong to `automatic-fixture/`. Read the application source
-and only the required `automatic-fixture/assist/` object/action or field help;
+model-aware Assist belong to `rust-lib-core/`. Read the application source
+and only the required `rust-lib-core/assist/` object/action or field help;
 do not read generated implementation to discover APIs. Use `model.xml` there
 for a fresh Assist request if an operation is missing. Never install hand-built
 presentation metadata or a replacement Checker in this application.

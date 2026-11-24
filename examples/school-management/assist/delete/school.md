@@ -37,6 +37,45 @@ queries but remains visible through generated deleted-row queries, an
 independently loaded stale copy conflicts, missing rows return false, and
 missing audit or invented physical-delete APIs fail compilation.
 
+## Recover through the same audited save
+
+```rust
+pub async fn recover_example(
+    context: &impl TeaqlRuntime,
+    entity_id: u64,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some(mut entity) = Q::schools()
+        .with_id_is(entity_id)
+        .deleted_rows_only()
+        .limit(1)
+        .comment("Load the complete tombstone for recovery")
+        .purpose("Use the loaded negative version and the normal mutation ledger")
+        .execute_for_one(context)
+        .await?
+    else {
+        return Ok(false);
+    };
+    entity.mark_to_recover();
+    entity.audit_as("Recover the selected business object").save(context).await?;
+    Ok(true)
+}
+```
+
+Marking records intent only. No dummy scalar edit or separate database recovery
+call is required. Optional generated field updates after marking are committed
+with recovery and advance the root version exactly once. A live row, missing
+loaded version, incomplete mutation target or stale tombstone must not be
+silently recovered. Prove visibility, inherited field edits and committed audit
+lineage; preserve rollback across every participant in a mixed graph.
+
+A cloned entity obtained from a readonly relation can retain an independent
+mutation ledger. Explicitly include it in the intended root save boundary:
+`use teaql_runtime::LedgerEntity; root.include_pending_mutations_from(&child)?;`
+Set the modeled relationship first; this operation does not load or save data.
+It preserves the source ledger. If the child changes again, include its final
+intent again before saving or retrying the root. Never merge unrelated Context
+entities implicitly, and never bypass full-target checking or audit comments.
+
 
 ---
 

@@ -1,4 +1,6 @@
 
+
+`model.xml` owns `rust-lib-core` and `rust-app-console`. Application code lives in the native workspace. Run `bash examples/conformance/verify.sh` from the SDK root for the original lifecycle assertions twice on one retained SQLite file and independent persisted-result checks. The gate never resets that database and removes owned build scratch. Current source provenance and qualification are in `showcase.json`.
 # Rust minimum runtime conformance example
 
 This retained SQLite workspace is generated from `model.xml`. It verifies

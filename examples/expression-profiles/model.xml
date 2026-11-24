@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="dispatch-document" org="example" data_service="sqlite" json_field_naming="camelCase">
+  <distribution_center dock_name="North Receiving Terminal"/>
+  <dispatch_order distribution_center="distribution_center()" order_reference="string()" handling_note="string()"/>
+</root>

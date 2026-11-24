@@ -79,7 +79,7 @@ counters retain the exact cumulative totals.
 Run the generated graph example from the runtime repository root:
 
 ```bash
-cargo run --manifest-path examples/trace-chain/Cargo.toml \
+cargo run --manifest-path examples/trace-chain/rust-app-console/Cargo.toml \
   --features standard-telemetry --bin standard-telemetry-graph
 ```
 

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="equipment-procurement" org="teaql" data_service="sqlite">
+  <procurement_desk name="Operations Procurement"/>
+  <catalog_product procurement_desk="procurement_desk()" sku="string()" label="string()"/>
+  <purchase_order procurement_desk="procurement_desk()" reference="string()"/>
+  <purchase_line purchase_order="purchase_order()" catalog_product="catalog_product()"
+                 line_code="string()" quantity="integer()"/>
+</root>

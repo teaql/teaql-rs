@@ -68,6 +68,14 @@ loaded version, incomplete mutation target or stale tombstone must not be
 silently recovered. Prove visibility, inherited field edits and committed audit
 lineage; preserve rollback across every participant in a mixed graph.
 
+A cloned entity obtained from a readonly relation can retain an independent
+mutation ledger. Explicitly include it in the intended root save boundary:
+`use teaql_runtime::LedgerEntity; root.include_pending_mutations_from(&child)?;`
+Set the modeled relationship first; this operation does not load or save data.
+It preserves the source ledger. If the child changes again, include its final
+intent again before saving or retrying the root. Never merge unrelated Context
+entities implicitly, and never bypass full-target checking or audit comments.
+
 
 ---
 

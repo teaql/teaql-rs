@@ -1,5 +1,11 @@
 # Generated graph Trace Chain example
 
+The mixed order graph, failed saves and standard telemetry run in the
+generated `rust-app-console` workspace, using the sibling `rust-lib-core`
+library from `model.xml`. Run `bash examples/trace-chain/verify.sh` for the
+order graph and `bash examples/trace-chain/verify-standard-telemetry.sh` for
+the standard telemetry demonstrations.
+
 This small SQLite example exercises the generated Q, E and audited Mutation
 APIs against the local runtime checkout. One save mixes root and child updates,
 two inserts, and a child marked for deletion. Assertions observe the actual

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="purchase-approval-queue" org="example" data_service="sqlite">
+  <platform name="Purchasing Desk"/>
+  <purchase_order platform="platform()" reference="string()" approved="bool()?"/>
+</root>

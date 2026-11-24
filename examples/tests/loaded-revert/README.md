@@ -1,4 +1,15 @@
-# Known persisted value restoration
+# Undo an order line edit
+
+The dispatch desk model in [order-edit-model.xml](order-edit-model.xml) owns
+the shipping order and line. The generated Rust workspace restores both the
+quantity and a loaded null note, checks that an omitted note stays unloaded,
+and persists only the confirmed receiving instruction.
+
+```sh
+bash examples/tests/loaded-revert/verify-order-edit.sh
+```
+
+## Original scalar and transaction calibrations
 
 Run from the repository root (Linux, Rust, Node.js and a C compiler):
 

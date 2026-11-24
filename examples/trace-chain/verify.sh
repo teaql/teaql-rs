@@ -124,7 +124,7 @@ trace_library_before="$(generated_hash)"
 for trace_pass in 1 2; do
   trace_log="$trace_evidence_dir/run-$trace_pass.log"
   trace_status=0
-  timeout 180s cargo run --quiet --locked --manifest-path "$example_dir/Cargo.toml" >"$trace_log" 2>&1 || trace_status=$?
+  timeout 180s cargo run --quiet --locked --manifest-path "$example_dir/rust-app-console/Cargo.toml" >"$trace_log" 2>&1 || trace_status=$?
   if (( trace_status != 0 )); then
     sed -n '1,240p' "$trace_log" >&2
     printf 'FAIL generated Trace Chain replay %s: exit %s; evidence %s\n' "$trace_pass" "$trace_status" "$trace_log" >&2

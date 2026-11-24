@@ -23,6 +23,7 @@ async function main() {
   fs.mkdirSync(output, {recursive: true});
   const runner = createOwnedRunner();
   let scratch;
+  const app = path.join(__dirname,'rust-app-console'), libraryRoot = path.join(__dirname,'rust-lib-core');
   const receipt = {schema:'teaql.runtime-inheritance-example/v1',passed:false,publication:false,commands:[],rounds:[]};
   try {
     scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'teaql-inheritance-example-'));
@@ -42,15 +43,17 @@ async function main() {
         if(fs.existsSync(base)) for(const file of Object.keys(inventory(base))) sourceNames.push('teaql-'+name+'/'+area+'/'+file);
       }
     }
-    for (const file of ['Cargo.toml','Cargo.lock','model.xml','generated-files.json','generation-origin.json','verify.cjs']) sourceNames.push('examples/inheritance-save/'+file);
-    for (const area of ['src','tests','assist']) for(const file of Object.keys(inventory(path.join(__dirname,area)))) sourceNames.push('examples/inheritance-save/'+area+'/'+file);
+    for (const file of ['rust-app-console/Cargo.toml','rust-app-console/Cargo.lock','model.xml','generated-files.json','generation-origin.json','verify.cjs']) sourceNames.push('examples/inheritance-save/'+file);
+    for (const area of ['rust-app-console/src','rust-app-console/tests','assist']) {
+      for (const file of Object.keys(inventory(path.join(__dirname,area)))) sourceNames.push('examples/inheritance-save/'+area+'/'+file);
+    }
     const sources = () => Object.fromEntries(sourceNames.map(name=>[name,sha(fs.readFileSync(path.join(repo,name)))]));
     receipt.sourceHashes = sources();
     const expected = JSON.parse(fs.readFileSync(path.join(__dirname,'generated-files.json')));
-    const generated = () => ({...Object.fromEntries(Object.entries(inventory(path.join(__dirname,'lib'))).map(([name,hash])=>['lib/'+name,hash])),
-      ...Object.fromEntries(Object.entries(inventory(path.join(__dirname,'teaql'))).map(([name,hash])=>['teaql/'+name,hash]))});
+    const generated = () => ({...Object.fromEntries(Object.entries(inventory(path.join(libraryRoot,'lib'))).map(([name,hash])=>['lib/'+name,hash])),
+      ...Object.fromEntries(Object.entries(inventory(path.join(libraryRoot,'teaql'))).map(([name,hash])=>['teaql/'+name,hash]))});
     assert.deepEqual(generated(),expected); receipt.generatedFileHashes = expected;
-    const cargo = process.env.CARGO || 'cargo', manifest = path.join(__dirname,'Cargo.toml');
+    const cargo = process.env.CARGO || 'cargo', manifest = path.join(app,'Cargo.toml');
     async function run(command, log) {
       const fd = fs.openSync(path.join(output,log),'wx'), errorLog = log+'.stderr';
       const errorFd = fs.openSync(path.join(output,errorLog),'wx'); let result;
@@ -71,7 +74,7 @@ async function main() {
       receipt.origins[pkg.name]=pkg.manifest_path;
     }
     const library = metadata.packages.find(pkg=>pkg.name==='inheritance-matching-service-core');
-    assert(library && library.source===null);assert.equal(fs.realpathSync(library.manifest_path),path.join(__dirname,'lib/Cargo.toml'));
+    assert(library && library.source===null);assert.equal(fs.realpathSync(library.manifest_path),path.join(libraryRoot,'lib/Cargo.toml'));
     await run([cargo,'build','--offline','--locked','--manifest-path',manifest],'build.log');
     // The recovery command gained reviewed scalar values. Verify the existing
     // endpoint adapter still compiles; this gate adds no federation behavior.

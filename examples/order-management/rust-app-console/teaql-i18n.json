@@ -1,0 +1,158 @@
+{
+    "schema": "teaql.i18n/v1",
+    "defaultLocale": "en",
+    "locales": {
+        "de": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ko": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "pt": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "zh-TW": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "fil": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "en": {
+            "vocabulary": {
+                "property.orderLine.quantity": "Quantity",
+                "property.customerOrder.createTime": "Create Time",
+                "property.customerOrder.updateTime": "Update Time",
+                "property.product.id": "Id",
+                "property.orderLine.createTime": "Create Time",
+                "entity.commercePlatform": "Commerce Platform",
+                "property.orderSearchPreset.requestId": "Request Id",
+                "property.product.version": "Version",
+                "property.product.createTime": "Create Time",
+                "property.orderSearchPreset.ownerUserId": "Owner User Id",
+                "entity.customerOrder": "Customer Order",
+                "entity.orderLine": "Order Line",
+                "property.product.name": "Name",
+                "property.orderLine.commercePlatform": "Commerce Platform",
+                "property.product.updateTime": "Update Time",
+                "property.customerOrder.totalAmount": "Total Amount",
+                "property.customerOrder.version": "Version",
+                "property.orderLine.productName": "Product Name",
+                "property.customer.version": "Version",
+                "property.orderSearchPreset.filterJson": "Filter Json",
+                "property.customer.id": "Id",
+                "property.orderLine.id": "Id",
+                "property.orderSearchPreset.name": "Name",
+                "property.customerOrder.customer": "Customer",
+                "property.orderLine.product": "Product",
+                "property.orderStatus.name": "Name",
+                "property.orderLine.sku": "Sku",
+                "property.customer.createTime": "Create Time",
+                "property.customerOrder.orderNumber": "Order Number",
+                "property.commercePlatform.name": "Name",
+                "property.orderStatus.commercePlatform": "Commerce Platform",
+                "property.product.commercePlatform": "Commerce Platform",
+                "property.commercePlatform.id": "Id",
+                "property.orderStatus.version": "Version",
+                "property.customer.updateTime": "Update Time",
+                "property.customer.commercePlatform": "Commerce Platform",
+                "property.orderStatus.code": "Code",
+                "property.orderSearchPreset.id": "Id",
+                "property.customerOrder.orderDate": "Order Date",
+                "property.commercePlatform.updateTime": "Update Time",
+                "property.customer.email": "Email",
+                "property.orderSearchPreset.createTime": "Create Time",
+                "property.orderStatus.displayOrder": "Display Order",
+                "property.orderSearchPreset.version": "Version",
+                "entity.customer": "Customer",
+                "property.customerOrder.id": "Id",
+                "entity.product": "Product",
+                "property.orderLine.customerOrder": "Customer Order",
+                "property.orderStatus.color": "Color",
+                "property.commercePlatform.createTime": "Create Time",
+                "property.customerOrder.commercePlatform": "Commerce Platform",
+                "property.orderSearchPreset.updateTime": "Update Time",
+                "property.product.sku": "Sku",
+                "property.orderSearchPreset.commercePlatform": "Commerce Platform",
+                "property.orderStatus.id": "Id",
+                "property.product.imageUrl": "Image Url",
+                "property.orderLine.version": "Version",
+                "entity.orderStatus": "Order Status",
+                "entity.orderSearchPreset": "Order Search Preset",
+                "property.customer.name": "Name",
+                "property.customerOrder.status": "Status",
+                "property.commercePlatform.version": "Version"
+            },
+            "messages": {
+            }
+        },
+        "fr": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "zh-CN": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "es": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ar": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "vi": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "th": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "uk": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ja": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "id": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        }
+    }
+}

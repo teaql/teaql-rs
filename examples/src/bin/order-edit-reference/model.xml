@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<root name="order-edit-reference" org="teaql" data_service="sqlite">
+  <merchant name="Northwind Retail"/>
+  <sales_order merchant="merchant()" order_number="string()"/>
+  <order_item sales_order="sales_order()" sku="string()" quantity="integer()"/>
+</root>

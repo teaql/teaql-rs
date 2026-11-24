@@ -1,0 +1,50 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/src/bin/test_default_log.rs",
+  "library": {
+    "generatedFilesManifestSHA256": "9b541a555ba09c1de057bbc118ce8c577e2e41d5f86c261186b9913f78d57352",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "c1674bffb58f7cce2fa9f15eabf8e32e75ec73e00ab1bcfa1248bf4d9327c12e"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/shipping-order-logging-generation/receipt.json",
+    "receiptSHA256": "6cff8ca2271c5bcae314b0b4f79b4862b4ca3f7692af51cccff1da2c5a135883"
+  },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-shipping-order-logging-native/runtime/shipping-order-logging/receipt.json",
+    "businessReceiptSHA256": "6439deb50354bd7731ac04883903ff0995eb094e1b0b56be592a0ee311957df4",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-shipping-order-logging-native/receipt.json",
+    "nativeReceiptSHA256": "6cd12845e60d7d3ca472feefa80b01850bffcf1d6ba43d1e58d459ae62ac174f",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "85d659c4135b2cd560c5fd3da2051af142396e89"
+  },
+  "scene": "Shipping order amendment, denied override and safe human/JSON diagnostics",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "focused-verified",
+  "verification": [
+    "bash",
+    "examples/src/bin/order_logging/verify.sh"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "src/main.rs",
+      "calibration/test_default_log.rs"
+    ],
+    "generatedFilesManifestSHA256": "2f696ca62285d42085d57b8ff40a72222bdebcbfb25a5696fa19c43ad62aa276",
+    "root": "rust-app-console",
+    "scope": "rust-app-console",
+    "useSiblingCargoLibrary": true
+  }
+}

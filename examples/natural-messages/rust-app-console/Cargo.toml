@@ -1,0 +1,15 @@
+[package]
+name = "natural-messages-example"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+
+[dependencies]
+checker-natural-message-service-core = { path = "../rust-lib-core/lib" }
+teaql-core = "8.1.0"
+teaql-runtime = "8.1.0"
+serde_json = "1"
+rusqlite = { version = "0.41.1", features = ["bundled", "chrono", "column_decltype", "trace"] }
+chrono = "0.4"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

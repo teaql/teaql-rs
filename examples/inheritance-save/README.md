@@ -1,5 +1,9 @@
 # Inherited save example
 
+The scene starts from `model.xml`. The generated domain lives in
+`rust-lib-core`. The `rust-app-console` workspace runs the lifecycle
+against that library with the runtime from this checkout.
+
 Save an Academy once, then load and edit the same object through Academy and
 School Q APIs. Generated E expressions verify the inherited values. No
 application code inserts a parent row or writes SQL. Tests alone may create
@@ -41,9 +45,9 @@ From the runtime repository root:
 
 ```bash
 INHERITANCE_MATCHING_SERVICE_CORE_DATABASE_URL=/tmp/my-new-inheritance-demo.sqlite \
-  cargo run --manifest-path examples/inheritance-save/Cargo.toml
+  cargo run --manifest-path examples/inheritance-save/rust-app-console/Cargo.toml
 
-cargo test --manifest-path examples/inheritance-save/Cargo.toml
+cargo test --manifest-path examples/inheritance-save/rust-app-console/Cargo.toml
 
 node examples/inheritance-save/verify.cjs --output /absolute/new/evidence-directory
 ```

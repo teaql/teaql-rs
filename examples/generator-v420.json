@@ -1,0 +1,1903 @@
+{
+  "generator": {
+    "artifactKind": "new source build; not the historical v4.2.0 release artifact",
+    "baseRelease": "v4.2.0",
+    "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+    "qualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
+    "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+    "tag": "unreleased-source-021b1ed8"
+  },
+  "installationReceiptSHA256": "f21153cb45c3168cdfd90e593790ffcae537458bc871b78cd3fdc6bc6fbc6d00",
+  "libraries": [
+    {
+      "archiveSHA256": "7f2ce8a1c2083711854514de46e0805ace3c60294149cc0f5267dc215a2e24c1",
+      "destination": "examples/conformance",
+      "generatedFiles": {
+        "examples/conformance/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "93331e097af28d119c82743a73062901f6d27a81d37ce57261cd649386760e98"
+        },
+        "examples/conformance/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "5efe2383ddb6087dd03a32cf06e68deaf2cd877cefef48380a0fb9c10bec8f31"
+        },
+        "examples/conformance/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "02d034c12455504c1df4989e5471d553d3c0a44278d92d9596b0e4ed1c918f89"
+        },
+        "examples/conformance/lib/src/platform/behavior.rs": {
+          "emittedPath": "lib/src/platform/behavior.rs",
+          "sha256": "33504f41ce179be8dcb01a52ef885e2894ee18a1f060a659c215ee41fbe43df4"
+        },
+        "examples/conformance/lib/src/platform/checker.rs": {
+          "emittedPath": "lib/src/platform/checker.rs",
+          "sha256": "e3ccdc9b12f210e6e76eecdb08373f391a7560fa6b1c2cfd4fefed736cef0116"
+        },
+        "examples/conformance/lib/src/platform/entity.rs": {
+          "emittedPath": "lib/src/platform/entity.rs",
+          "sha256": "7bf19f279bf517320420417884a81bf74f60875bca21cdca30d312cf3360f895"
+        },
+        "examples/conformance/lib/src/platform/expression.rs": {
+          "emittedPath": "lib/src/platform/expression.rs",
+          "sha256": "625a618ae377a26da6e58b95e1ecf08d4e0bd349c731c0f95263c8dee0fd3ce2"
+        },
+        "examples/conformance/lib/src/platform/mod.rs": {
+          "emittedPath": "lib/src/platform/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/conformance/lib/src/platform/request.rs": {
+          "emittedPath": "lib/src/platform/request.rs",
+          "sha256": "256a866052d014bcfe976a7ca43c872d67124028e8e068169273eca3a31a39ef"
+        },
+        "examples/conformance/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "069675bf8d36da4fadb121cbc7989cbe7cc0e56895c9c823fe63e5fa32c241a7"
+        },
+        "examples/conformance/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "e814155c0dc4ecb2620581c5b190252dec928524f00aa77fdd8c86fbf3da1f19"
+        },
+        "examples/conformance/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/conformance/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "002c6d784131d0f55ae69085865ff851413f263f0b75b5f1982c3c4a4b4562f1"
+        },
+        "examples/conformance/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "bb85f9e3f3679c76abfec2e196ed0057a76b2fdf055cde89151c858f2bb1cc64"
+        },
+        "examples/conformance/lib/src/work_item/behavior.rs": {
+          "emittedPath": "lib/src/work_item/behavior.rs",
+          "sha256": "6a8fe8c1b5ebc9eeffc246bd3816407c1c2837381bb551959fa73f2d7689d6f2"
+        },
+        "examples/conformance/lib/src/work_item/checker.rs": {
+          "emittedPath": "lib/src/work_item/checker.rs",
+          "sha256": "b540f7bb8c3cb09a1da478d3dfcc08e7737854a341926faac0583cf51ed9f22c"
+        },
+        "examples/conformance/lib/src/work_item/entity.rs": {
+          "emittedPath": "lib/src/work_item/entity.rs",
+          "sha256": "d95ff1f924b101d9ebe4d826d90fd1d6b48a161a09a875d62c3d2dc25706057e"
+        },
+        "examples/conformance/lib/src/work_item/expression.rs": {
+          "emittedPath": "lib/src/work_item/expression.rs",
+          "sha256": "66806534c4bc57992f4ab942c733028e258a6ef09c56cccf6903681beddd669d"
+        },
+        "examples/conformance/lib/src/work_item/mod.rs": {
+          "emittedPath": "lib/src/work_item/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/conformance/lib/src/work_item/request.rs": {
+          "emittedPath": "lib/src/work_item/request.rs",
+          "sha256": "78d341115b64b7586140bb1e90b7698f8818d4fcc09e5c20f176128d02df01b2"
+        },
+        "examples/conformance/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "4824e2986933569c4d827ca44cae7e3a028012aec1e7dbacd245fff5fd5ffe1b"
+        },
+        "examples/conformance/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "25c3c0f1f8b30ca2e94d36c7abdb4aa911bd735e0012ccfe1bb987a0882b9107"
+        }
+      },
+      "model": "examples/conformance/model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 0,
+        "generatedManifestSha256": "c9844278a4da883ccf17dae948e9c0e81901089fff508f13d799e4916cc3aab2",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/conformance/model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "0a59f66db2487fdd0430087dd5985ae780225c088ad800679cb57c593c6bcee7",
+        "producerReceiptSha256": "ae65b1e896424f5f1efb7df2eb813cbbc465afefeb041a2dd76adc365face5af",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "8bb006ae942ee41d92892b48758826adf58a116ada9cb7347afce56ccaac9042",
+      "destination": "examples/expression-profiles/generated/PascalCase",
+      "generatedFiles": {
+        "examples/expression-profiles/generated/PascalCase/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "343e4467806b7457e19df7086da2642b5939ea3d44423de0655b775a4912f96b"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "d5c1daef0ba3314752aa7b333fd5e5b47c8d3f1f1c447fba8769666115907490"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "ae43d99eb959179d6a2aeb207f1017b1126718edb0b559a3fb070ea74386262b"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "2eb68513895fbf8e04cbf8051cf59f2d769a56d20135bd69e689a3ec8a6917c3"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "0b632c7d68e9c20770a8150507eeeeadc897b16d045d9b0da68fe4c86714d997"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "dc9683b06b40dcddf7ec40d09b53c87becb1d02c8a4df072d7a4ec546ac3c890"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "00c4e5b695b09513bd222a12fc94e1973fa9f9fcba0d2c419d2b82b673d5fee9"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/scalar_type_probe/behavior.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/behavior.rs",
+          "sha256": "0389db9470ba30682e43ecf6fa8dcbbc04eae56589817cd6429eec3daad56d13"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/scalar_type_probe/checker.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/checker.rs",
+          "sha256": "3863984d76ed64e6cbcdfcdfc28cd2da6b32a0d1dcacb9a0fae573f3855f739e"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/scalar_type_probe/entity.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/entity.rs",
+          "sha256": "3a4e32a15404b17074ece335bc9e054469302418eb4e215e020549895315700b"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/scalar_type_probe/expression.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/expression.rs",
+          "sha256": "e2dac76eec12c3e764d84a58123d6eabfc406273ffd409da6736e568f03cdd8f"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/scalar_type_probe/mod.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/scalar_type_probe/request.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/request.rs",
+          "sha256": "926327600732ea1a6d9e4aac587735b948592313da905615f3e931b069cebd42"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/type_platform/behavior.rs": {
+          "emittedPath": "lib/src/type_platform/behavior.rs",
+          "sha256": "22ad713abf56be7113ab02350d95a56178f2efe0c29628119586df90ff3d45e6"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/type_platform/checker.rs": {
+          "emittedPath": "lib/src/type_platform/checker.rs",
+          "sha256": "da0f5a27cbcdf6901f0f461174d0f25105cd8c778d75e460c78554e578505b1d"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/type_platform/entity.rs": {
+          "emittedPath": "lib/src/type_platform/entity.rs",
+          "sha256": "a1f00e8fee2a4df2c0c3716039b1f8228ab5fcd1bb2c74f2380c26cea82e6768"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/type_platform/expression.rs": {
+          "emittedPath": "lib/src/type_platform/expression.rs",
+          "sha256": "dcf8dc6048c30213aceb9555a6aa81d559ee78c772ec8c555ec832a776f6607c"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/type_platform/mod.rs": {
+          "emittedPath": "lib/src/type_platform/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/expression-profiles/generated/PascalCase/lib/src/type_platform/request.rs": {
+          "emittedPath": "lib/src/type_platform/request.rs",
+          "sha256": "bc3caa29c5b1dc5f2ffde1bdc8d8c11f279d99352f3516098c91c2ebaadfc519"
+        },
+        "examples/expression-profiles/generated/PascalCase/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "ce4ae61861d89991e89b2762d48bb448ad04ad18853c9c5d5ea4e0c7ac093bab"
+        },
+        "examples/expression-profiles/generated/PascalCase/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "f7f81c86cc8303bdb2fed7c7bfd33b3ab44b7242bd49311c4525dfa1dcdaad17"
+        }
+      },
+      "model": "examples/expression-profiles/generated/PascalCase/model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 0,
+        "generatedManifestSha256": "33aa2fac663ddb5ebd94f46ccb1bfefedaad8169cfb8433d92bfc903c247ee46",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/expression-profiles/generated/PascalCase/model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "f836540a765f8c372bd7103a25a83ca316797253079ac63f8a1ef5ee4ded027d",
+        "producerReceiptSha256": "ef569266fbbaa0f9f2122e299f9579e907e0120e1ad461ef03a301dd460a1a85",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "ebc424a9323838b86ec235ddad3891bbde3c583e747162f589ab03f9302b0ce7",
+      "destination": "examples/expression-profiles/generated/camelCase",
+      "generatedFiles": {
+        "examples/expression-profiles/generated/camelCase/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "343e4467806b7457e19df7086da2642b5939ea3d44423de0655b775a4912f96b"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "28abaa538915fe0f9b1f36e118dea0552306fdedddb2d87212442e3a0a2cdc72"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "ae43d99eb959179d6a2aeb207f1017b1126718edb0b559a3fb070ea74386262b"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "2eb68513895fbf8e04cbf8051cf59f2d769a56d20135bd69e689a3ec8a6917c3"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "0b632c7d68e9c20770a8150507eeeeadc897b16d045d9b0da68fe4c86714d997"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "68ce45add4b8a6e5f3afeb319d15d81d17c43ab2a9fe5014ba3e4b5f4df6dd14"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "00c4e5b695b09513bd222a12fc94e1973fa9f9fcba0d2c419d2b82b673d5fee9"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/scalar_type_probe/behavior.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/behavior.rs",
+          "sha256": "0389db9470ba30682e43ecf6fa8dcbbc04eae56589817cd6429eec3daad56d13"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/scalar_type_probe/checker.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/checker.rs",
+          "sha256": "3863984d76ed64e6cbcdfcdfc28cd2da6b32a0d1dcacb9a0fae573f3855f739e"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/scalar_type_probe/entity.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/entity.rs",
+          "sha256": "3a4e32a15404b17074ece335bc9e054469302418eb4e215e020549895315700b"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/scalar_type_probe/expression.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/expression.rs",
+          "sha256": "84a8dc13729376cd484a0d704b418814644d995ffba6b6b56b9a145467fca94e"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/scalar_type_probe/mod.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/scalar_type_probe/request.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/request.rs",
+          "sha256": "926327600732ea1a6d9e4aac587735b948592313da905615f3e931b069cebd42"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/type_platform/behavior.rs": {
+          "emittedPath": "lib/src/type_platform/behavior.rs",
+          "sha256": "22ad713abf56be7113ab02350d95a56178f2efe0c29628119586df90ff3d45e6"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/type_platform/checker.rs": {
+          "emittedPath": "lib/src/type_platform/checker.rs",
+          "sha256": "da0f5a27cbcdf6901f0f461174d0f25105cd8c778d75e460c78554e578505b1d"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/type_platform/entity.rs": {
+          "emittedPath": "lib/src/type_platform/entity.rs",
+          "sha256": "a1f00e8fee2a4df2c0c3716039b1f8228ab5fcd1bb2c74f2380c26cea82e6768"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/type_platform/expression.rs": {
+          "emittedPath": "lib/src/type_platform/expression.rs",
+          "sha256": "b98d10e024cd70e39e8470b686a4797806be2aff0e18dae4ec952fb04f79e3f3"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/type_platform/mod.rs": {
+          "emittedPath": "lib/src/type_platform/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/expression-profiles/generated/camelCase/lib/src/type_platform/request.rs": {
+          "emittedPath": "lib/src/type_platform/request.rs",
+          "sha256": "bc3caa29c5b1dc5f2ffde1bdc8d8c11f279d99352f3516098c91c2ebaadfc519"
+        },
+        "examples/expression-profiles/generated/camelCase/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "ce4ae61861d89991e89b2762d48bb448ad04ad18853c9c5d5ea4e0c7ac093bab"
+        },
+        "examples/expression-profiles/generated/camelCase/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "53333a1d944bcd8a9478bf7428598a1f4020a497bdf1d0a264dc58076c635002"
+        }
+      },
+      "model": "examples/expression-profiles/generated/camelCase/model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 0,
+        "generatedManifestSha256": "bf5c510e7e3e777ccdcec5fffa8505ae7e1f87812b9b6cdafcb078d7db51987d",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/expression-profiles/generated/camelCase/model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "8d3017392ffd00abbc06be2555ced27ac6360e2d05fabc4299e27a5ef8f1c762",
+        "producerReceiptSha256": "02d4d4c910a18eaca4dd4f3bfd255ecd3d6f7358bf267e78119f93fea723ae2c",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "f7dc18bc05181954d3394f626ae2d5be0a35ad89af9c27f75b4492001ded1bf3",
+      "destination": "examples/expression-profiles/generated/snake_case",
+      "generatedFiles": {
+        "examples/expression-profiles/generated/snake_case/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "343e4467806b7457e19df7086da2642b5939ea3d44423de0655b775a4912f96b"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "430c74a47f0811892c7c62568d7d34f14eb7c461d2501dbc4c874988b1bf09e8"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "ae43d99eb959179d6a2aeb207f1017b1126718edb0b559a3fb070ea74386262b"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "2eb68513895fbf8e04cbf8051cf59f2d769a56d20135bd69e689a3ec8a6917c3"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "0b632c7d68e9c20770a8150507eeeeadc897b16d045d9b0da68fe4c86714d997"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "90a7dd976c0330869fa1773b51ade5dcdf9ac98db88129257cedddeb8d26b660"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "00c4e5b695b09513bd222a12fc94e1973fa9f9fcba0d2c419d2b82b673d5fee9"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/scalar_type_probe/behavior.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/behavior.rs",
+          "sha256": "0389db9470ba30682e43ecf6fa8dcbbc04eae56589817cd6429eec3daad56d13"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/scalar_type_probe/checker.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/checker.rs",
+          "sha256": "3863984d76ed64e6cbcdfcdfc28cd2da6b32a0d1dcacb9a0fae573f3855f739e"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/scalar_type_probe/entity.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/entity.rs",
+          "sha256": "3a4e32a15404b17074ece335bc9e054469302418eb4e215e020549895315700b"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/scalar_type_probe/expression.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/expression.rs",
+          "sha256": "3379c74bcf99152d9ee1dd79703bf4e8329c60793f3490dad3561303b7cdd715"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/scalar_type_probe/mod.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/scalar_type_probe/request.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/request.rs",
+          "sha256": "926327600732ea1a6d9e4aac587735b948592313da905615f3e931b069cebd42"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/type_platform/behavior.rs": {
+          "emittedPath": "lib/src/type_platform/behavior.rs",
+          "sha256": "22ad713abf56be7113ab02350d95a56178f2efe0c29628119586df90ff3d45e6"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/type_platform/checker.rs": {
+          "emittedPath": "lib/src/type_platform/checker.rs",
+          "sha256": "da0f5a27cbcdf6901f0f461174d0f25105cd8c778d75e460c78554e578505b1d"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/type_platform/entity.rs": {
+          "emittedPath": "lib/src/type_platform/entity.rs",
+          "sha256": "a1f00e8fee2a4df2c0c3716039b1f8228ab5fcd1bb2c74f2380c26cea82e6768"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/type_platform/expression.rs": {
+          "emittedPath": "lib/src/type_platform/expression.rs",
+          "sha256": "3db9c4e311df8a82671fefcedc6c489891113ee4ce387c8ebb95f140e6d1cea2"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/type_platform/mod.rs": {
+          "emittedPath": "lib/src/type_platform/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/expression-profiles/generated/snake_case/lib/src/type_platform/request.rs": {
+          "emittedPath": "lib/src/type_platform/request.rs",
+          "sha256": "bc3caa29c5b1dc5f2ffde1bdc8d8c11f279d99352f3516098c91c2ebaadfc519"
+        },
+        "examples/expression-profiles/generated/snake_case/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "ce4ae61861d89991e89b2762d48bb448ad04ad18853c9c5d5ea4e0c7ac093bab"
+        },
+        "examples/expression-profiles/generated/snake_case/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "1a37f3d936bc281cd9bb78425c3ef25e88776fe545ab420c9a3d588b0b16c0c2"
+        }
+      },
+      "model": "examples/expression-profiles/generated/snake_case/model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 0,
+        "generatedManifestSha256": "8bf51249bc640b5a7430b6fc71c3f716b68461d4eae98b357c47fbd458740ae6",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/expression-profiles/generated/snake_case/model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "2dbbcfea6057a5dc7c7c356ea4d0dacec5d5165538f6a9c5903d4d3b64ee13c6",
+        "producerReceiptSha256": "280a27797a82c9dfc1f0f5d33e1f4dd979eecdc35112a79667a32712f13152c3",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "952c0934643c9e5c01ef80ce6758441f008468b9bc5b2318ae55f67da978fd47",
+      "destination": "examples/facet-trace/rust-lib-core",
+      "generatedFiles": {
+        "examples/facet-trace/rust-lib-core/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "bc2a23434c86180ee490b905cb3248b4fd6ab1ba87ffb6860dbeba865d176446"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "00a126c3ea9b689b9a7dd375dbfe2605afc009a53ff03b02b70334b602799b89"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "a0f592d86e09574d3194279c97a264a2a04ff84fa302a3e16cab73f49c62f893"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/platform/behavior.rs": {
+          "emittedPath": "lib/src/platform/behavior.rs",
+          "sha256": "33504f41ce179be8dcb01a52ef885e2894ee18a1f060a659c215ee41fbe43df4"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/platform/checker.rs": {
+          "emittedPath": "lib/src/platform/checker.rs",
+          "sha256": "8d7412d6e063496ddd7902e511b2051b47475fb9b8ba15268b2e8612e44df82c"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/platform/entity.rs": {
+          "emittedPath": "lib/src/platform/entity.rs",
+          "sha256": "81713a567ceef26c821f5726ea57ed112c1f1066d7120a658a0bfd79ae08981b"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/platform/expression.rs": {
+          "emittedPath": "lib/src/platform/expression.rs",
+          "sha256": "9ed8481d47e432c0811f83c2c49ece085adbce3d3cb359de0cefefe1f97161c8"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/platform/mod.rs": {
+          "emittedPath": "lib/src/platform/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/platform/request.rs": {
+          "emittedPath": "lib/src/platform/request.rs",
+          "sha256": "fb8f91e5a97d350604d42a60788ce49f6d8e2157c0be5f19c9c284e8d0427ff4"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "1fe610ef84363444de4c2c15cc0a68ec1c1c24154da1b3c52e83e92351056719"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "23baac13cf4dd2667945c06d5e786a1c4cf386b0023a4f687ff6cb4670d46a37"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "255b24b3abd5e511b693b8efd0901344fc3c1e8393d5349f2cd50361b13293fc"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "aa88bdc79f8694ad81f66adb5edc44770a48c260d2dffad7f5e1b588db58ac78"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school/behavior.rs": {
+          "emittedPath": "lib/src/school/behavior.rs",
+          "sha256": "41c4faa5d2fc86da9b3d080a4a07b17cd5e74ac453ec1e7ca914b8c68c30db05"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school/checker.rs": {
+          "emittedPath": "lib/src/school/checker.rs",
+          "sha256": "6fa6e96f450692595d46358f6cb3af980be58a243800ce9c4051bb021310296c"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school/entity.rs": {
+          "emittedPath": "lib/src/school/entity.rs",
+          "sha256": "edc5bf05edfbd407f6b7b05aef24d06b400f44fec04dbb400c5fe42c1e886fd9"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school/expression.rs": {
+          "emittedPath": "lib/src/school/expression.rs",
+          "sha256": "69e51fbf2a71e975ba094c7c81d2fedc5d65979f5958fd9786fa0bd7df83f7e0"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school/mod.rs": {
+          "emittedPath": "lib/src/school/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school/request.rs": {
+          "emittedPath": "lib/src/school/request.rs",
+          "sha256": "889cdeb0368f943ab2504f29ed1f9c11e89f524be051e52e49cae70a78f262f0"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/behavior.rs": {
+          "emittedPath": "lib/src/school_type/behavior.rs",
+          "sha256": "48d0c35546b4955fc90d927bbb6ee2dcad4eec42ba3c8609adf17e103c54d680"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/checker.rs": {
+          "emittedPath": "lib/src/school_type/checker.rs",
+          "sha256": "f648439e3836b84418ca3ab98d2818a67d00804c3209460c04aea1d66bb9e06f"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/entity.rs": {
+          "emittedPath": "lib/src/school_type/entity.rs",
+          "sha256": "d2c090546096ab79230c79d4172fb30db7305a3fd226ee0a15ab47cfa63a3417"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/expression.rs": {
+          "emittedPath": "lib/src/school_type/expression.rs",
+          "sha256": "11581fb4098c9eae8c4a733cffe4e6a80c6c932588abfaca8b28f1a08932b41e"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/mod.rs": {
+          "emittedPath": "lib/src/school_type/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/facet-trace/rust-lib-core/lib/src/school_type/request.rs": {
+          "emittedPath": "lib/src/school_type/request.rs",
+          "sha256": "23462171b9523c4f7bcd5654ae1b9122a8411086550347ecfd00c54af451b93c"
+        },
+        "examples/facet-trace/rust-lib-core/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "8e28ee16cddc21191816ed05999142fccb870bf42795f5a1f21268ebd4469e71"
+        },
+        "examples/facet-trace/rust-lib-core/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "56be5429cafdde8592b184750ab17e87b0cf53165456deb2c0c531444424c0ab"
+        }
+      },
+      "model": "examples/facet-trace/model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 0,
+        "generatedManifestSha256": "67bd04a163c89f1c87c328e9bf1e9566cf31812de7a1d516c01e7f2c2b667651",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/facet-trace/model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "5bc5dd647f2d6317235e4a3eb4399e30d896a71159c57b7af0a7d065a732ed65",
+        "producerReceiptSha256": "b7af55e672ef526a9188f707aeda86a3043fcfea920bd204ce1e060080b2a6f6",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "cc1f7dfcefd1919662a5ff8d0bdb7b43bcffbefcc1eb8d2c9b9bf395da48910d",
+      "destination": "examples/fix-e-alignment/generated",
+      "generatedFiles": {
+        "examples/fix-e-alignment/generated/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "6899c1668ec9f9e7bf9607a598ebe8893458e7f67c9e855f5cb69eae42e7e041"
+        },
+        "examples/fix-e-alignment/generated/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "f5c150d8e4304461fdf8bfb826d4d4687b34ab8cb51a5a6b4606ac2128d206f9"
+        },
+        "examples/fix-e-alignment/generated/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "1e8f830978db5193fb9234e99392caf4d7f5866fe3bff644fd5486a0b20e7ece"
+        },
+        "examples/fix-e-alignment/generated/lib/src/order_item/behavior.rs": {
+          "emittedPath": "lib/src/order_item/behavior.rs",
+          "sha256": "e750698e7c96fa25a927a7f9245ee0a9cd870be35194bed86c82c05d7257460f"
+        },
+        "examples/fix-e-alignment/generated/lib/src/order_item/checker.rs": {
+          "emittedPath": "lib/src/order_item/checker.rs",
+          "sha256": "c0afd512c51bad93c080a9a621e8543e608f3cf6e435973e8c4416a19aeae8fc"
+        },
+        "examples/fix-e-alignment/generated/lib/src/order_item/entity.rs": {
+          "emittedPath": "lib/src/order_item/entity.rs",
+          "sha256": "d657695c75849156023016b7889d143b35fd4f3acdf36171e166c1955765a7d7"
+        },
+        "examples/fix-e-alignment/generated/lib/src/order_item/expression.rs": {
+          "emittedPath": "lib/src/order_item/expression.rs",
+          "sha256": "6b48a41fc4827231a43e9efee00c69e5aac2cd9691824f54c34f64e442f2a482"
+        },
+        "examples/fix-e-alignment/generated/lib/src/order_item/mod.rs": {
+          "emittedPath": "lib/src/order_item/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/fix-e-alignment/generated/lib/src/order_item/request.rs": {
+          "emittedPath": "lib/src/order_item/request.rs",
+          "sha256": "e35f1a3d367cb11348e10151fdb60b7aa9011af17b71152fe49cc105bb370824"
+        },
+        "examples/fix-e-alignment/generated/lib/src/purchase_order/behavior.rs": {
+          "emittedPath": "lib/src/purchase_order/behavior.rs",
+          "sha256": "588fae66f9613f98240c9dfffa3008c219e3060c596da16c752081cc838deebe"
+        },
+        "examples/fix-e-alignment/generated/lib/src/purchase_order/checker.rs": {
+          "emittedPath": "lib/src/purchase_order/checker.rs",
+          "sha256": "d7aa3d23c9b2568909881f8b35a261bbc0c90513681f1ac497a6f9ca566492cc"
+        },
+        "examples/fix-e-alignment/generated/lib/src/purchase_order/entity.rs": {
+          "emittedPath": "lib/src/purchase_order/entity.rs",
+          "sha256": "603144e4dd3f9128fc61fc6ac12652a0a726776a37afa061abb9af94791027d7"
+        },
+        "examples/fix-e-alignment/generated/lib/src/purchase_order/expression.rs": {
+          "emittedPath": "lib/src/purchase_order/expression.rs",
+          "sha256": "2576bfa8765556bd3add3f708eb699c0a7698c6e395500430d66cf40e2b2d3f1"
+        },
+        "examples/fix-e-alignment/generated/lib/src/purchase_order/mod.rs": {
+          "emittedPath": "lib/src/purchase_order/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/fix-e-alignment/generated/lib/src/purchase_order/request.rs": {
+          "emittedPath": "lib/src/purchase_order/request.rs",
+          "sha256": "f51707b8dfd2010c4419ff54bb1e063d3880b7f25a7170fc0ba717061184668c"
+        },
+        "examples/fix-e-alignment/generated/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "e96c997709aedc072a23afe1786bf3dac1a56ab19096a1e38dac4252d1f69f52"
+        },
+        "examples/fix-e-alignment/generated/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "37c8b046273be61de5c93d87cb5745b4b905eff6365a9c449043ff2872fa8678"
+        },
+        "examples/fix-e-alignment/generated/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/fix-e-alignment/generated/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "9b8519d3b691397358b6556942c3fe17be7b10af1ecbc982c19260c8081a37eb"
+        },
+        "examples/fix-e-alignment/generated/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "e74b8813a083ccc68683970759ca5cd1f4abff971a676e5fa9bb43a08b5b59b0"
+        },
+        "examples/fix-e-alignment/generated/lib/src/tenant/behavior.rs": {
+          "emittedPath": "lib/src/tenant/behavior.rs",
+          "sha256": "adce6aacbb905b10543b94863a14be531feb88b7e78109d5d7b73e5f87932229"
+        },
+        "examples/fix-e-alignment/generated/lib/src/tenant/checker.rs": {
+          "emittedPath": "lib/src/tenant/checker.rs",
+          "sha256": "882cbfe6ce698415c4481c4e9a297fb7aabcb24c0c5dbc8c9265b057b147e0d5"
+        },
+        "examples/fix-e-alignment/generated/lib/src/tenant/entity.rs": {
+          "emittedPath": "lib/src/tenant/entity.rs",
+          "sha256": "a8a63e07f18eea0074e0914b36361138205eadd139bde076d7ae2646841d94fc"
+        },
+        "examples/fix-e-alignment/generated/lib/src/tenant/expression.rs": {
+          "emittedPath": "lib/src/tenant/expression.rs",
+          "sha256": "b37e9f24486fb501ae5de1c1505616db18cc55ac560633512d1a3c9b13830785"
+        },
+        "examples/fix-e-alignment/generated/lib/src/tenant/mod.rs": {
+          "emittedPath": "lib/src/tenant/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/fix-e-alignment/generated/lib/src/tenant/request.rs": {
+          "emittedPath": "lib/src/tenant/request.rs",
+          "sha256": "c65c0a4ea5308669088ec995ec1c1166ef930e45a304f53d50ac201bfef31032"
+        },
+        "examples/fix-e-alignment/generated/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "92144f0d6092e143784685a82a9dd67c1672665bbe50fa6ca57b9ad441325b45"
+        },
+        "examples/fix-e-alignment/generated/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "80eb2676b8ca3b65b6eb913b1eaf159e848cd1234f5158af95ef388d89ec0d40"
+        }
+      },
+      "model": "examples/fix-e-alignment/model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 4,
+        "generatedManifestSha256": "d53e9b26a3b4d00b06100d6a6ec4afdabebaf404c42456ba01bc88e70b6bc246",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/fix-e-alignment/model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "a2cf4c907cb084cb0946e993eeba586c8c0701a89fdc4a849808aa743be033b7",
+        "producerReceiptSha256": "9d4941295f524d5a500564fa21c217e3be472ebc28d6fcd4dca20a261530a316",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "7b0eb5b8e9f02e3bf28af9fea48cc4bd4effba7b8c9edadc7b43914b197cb2e5",
+      "destination": "examples/inheritance-save",
+      "generatedFiles": {
+        "examples/inheritance-save/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "88204b841ed37438775759a2ff072eb22cd8f5da8fd8eb1653a83ab76be5610a"
+        },
+        "examples/inheritance-save/lib/src/academy/behavior.rs": {
+          "emittedPath": "lib/src/academy/behavior.rs",
+          "sha256": "d043bb63246b472626e962c9ce9c09a29f2b6629a188ebdce7f654498f1ef8f3"
+        },
+        "examples/inheritance-save/lib/src/academy/checker.rs": {
+          "emittedPath": "lib/src/academy/checker.rs",
+          "sha256": "1b54c421bd29548426a746991c1de2a449ed2ad067b234361b642938d19f8e53"
+        },
+        "examples/inheritance-save/lib/src/academy/entity.rs": {
+          "emittedPath": "lib/src/academy/entity.rs",
+          "sha256": "13a4e6cca3f566a7370532a094868ee52fd35639bf381a243b001ed255cec145"
+        },
+        "examples/inheritance-save/lib/src/academy/expression.rs": {
+          "emittedPath": "lib/src/academy/expression.rs",
+          "sha256": "e23acda3e2d42113f57dd6c5229fc04e58e1055d81c9aa1ffa1fb4490fbfa0da"
+        },
+        "examples/inheritance-save/lib/src/academy/mod.rs": {
+          "emittedPath": "lib/src/academy/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/inheritance-save/lib/src/academy/request.rs": {
+          "emittedPath": "lib/src/academy/request.rs",
+          "sha256": "a5ad65a983639fbfcd5c48533e0c20e69b24430f9b6a471ad3236b0cb44b670f"
+        },
+        "examples/inheritance-save/lib/src/college/behavior.rs": {
+          "emittedPath": "lib/src/college/behavior.rs",
+          "sha256": "100ca1db5ab96ee11fa8ee54d968b5388f4339471735d8fcea4e2d364550255b"
+        },
+        "examples/inheritance-save/lib/src/college/checker.rs": {
+          "emittedPath": "lib/src/college/checker.rs",
+          "sha256": "c16eb5e0cbaaeec9b618b923f049f4eb5bbc5914633ba48883b160e9c55c5adf"
+        },
+        "examples/inheritance-save/lib/src/college/entity.rs": {
+          "emittedPath": "lib/src/college/entity.rs",
+          "sha256": "a65bafe47fe978acacff1172d0df917d4a9e5f8d663dc29308a6a00fd884f3a5"
+        },
+        "examples/inheritance-save/lib/src/college/expression.rs": {
+          "emittedPath": "lib/src/college/expression.rs",
+          "sha256": "58011d2cbad332127afe5767b0fa969e72c4e5b84f2eba4695ebe90889175525"
+        },
+        "examples/inheritance-save/lib/src/college/mod.rs": {
+          "emittedPath": "lib/src/college/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/inheritance-save/lib/src/college/request.rs": {
+          "emittedPath": "lib/src/college/request.rs",
+          "sha256": "3e8fdbae7274910068b5d162df082eb2a7da4d917603f4cc2a5d39d47ab86c50"
+        },
+        "examples/inheritance-save/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "3402d5493933fb8bbc04d32dc740eb6248c97e5b9b5715ff1de3c7fee5773669"
+        },
+        "examples/inheritance-save/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "331d1e7d5e6f6720c1dc30b2efbfcc2315408a45aad41dcb946cde854956cf8a"
+        },
+        "examples/inheritance-save/lib/src/platform/behavior.rs": {
+          "emittedPath": "lib/src/platform/behavior.rs",
+          "sha256": "33504f41ce179be8dcb01a52ef885e2894ee18a1f060a659c215ee41fbe43df4"
+        },
+        "examples/inheritance-save/lib/src/platform/checker.rs": {
+          "emittedPath": "lib/src/platform/checker.rs",
+          "sha256": "0255ae73b7cc95a4e92adddf15b58b0bc35d11fc7d5e67ca0a5be41f41103c95"
+        },
+        "examples/inheritance-save/lib/src/platform/entity.rs": {
+          "emittedPath": "lib/src/platform/entity.rs",
+          "sha256": "7d55acbe2570641a757ae5427a84ae912d85b345843ff407ebfcf94aa105aefa"
+        },
+        "examples/inheritance-save/lib/src/platform/expression.rs": {
+          "emittedPath": "lib/src/platform/expression.rs",
+          "sha256": "403ecd03341273ea6cbc999e27e04fe1809e91eda39f1871b715ed7426bb1360"
+        },
+        "examples/inheritance-save/lib/src/platform/mod.rs": {
+          "emittedPath": "lib/src/platform/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/inheritance-save/lib/src/platform/request.rs": {
+          "emittedPath": "lib/src/platform/request.rs",
+          "sha256": "aa1c93639e67835e9762e96b2d0abccff0b15334086e04ed1d42e7fa3578d258"
+        },
+        "examples/inheritance-save/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "be2918686b9b8ffc1eeb695b05499f5858069d08746ca380d564ba2beaadfcef"
+        },
+        "examples/inheritance-save/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "cbe09394beb5a819ee043815f3a056ee5ca6b9b995de5739c31310dbe5094f81"
+        },
+        "examples/inheritance-save/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/inheritance-save/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "916dcedc5c52e1ac651590fc40c7923f7823c0ee7829e57fd597dae924b3e03f"
+        },
+        "examples/inheritance-save/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "c5bcbc460366977a4c0b4e009fdc38911af20b045a7c3bbaa1dfb82e05d59fa8"
+        },
+        "examples/inheritance-save/lib/src/school/behavior.rs": {
+          "emittedPath": "lib/src/school/behavior.rs",
+          "sha256": "41c4faa5d2fc86da9b3d080a4a07b17cd5e74ac453ec1e7ca914b8c68c30db05"
+        },
+        "examples/inheritance-save/lib/src/school/checker.rs": {
+          "emittedPath": "lib/src/school/checker.rs",
+          "sha256": "16e9387853aa14d2be36fd4442496c888db63997fbfdd00c21bc312c142b5a13"
+        },
+        "examples/inheritance-save/lib/src/school/entity.rs": {
+          "emittedPath": "lib/src/school/entity.rs",
+          "sha256": "238116d4907617a7f386a3edecc8cc5c6eaffbe2d6bb2fdc62dc79fcd69dea94"
+        },
+        "examples/inheritance-save/lib/src/school/expression.rs": {
+          "emittedPath": "lib/src/school/expression.rs",
+          "sha256": "768c6c0a0769a5bb948037ee511eec709442b2c98c3c4659a3d40f6c552c690a"
+        },
+        "examples/inheritance-save/lib/src/school/mod.rs": {
+          "emittedPath": "lib/src/school/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/inheritance-save/lib/src/school/request.rs": {
+          "emittedPath": "lib/src/school/request.rs",
+          "sha256": "1df32d44229d8afc4813cd95eb41c04d39c2322d9a3b0c7c406f51b814dbcf27"
+        },
+        "examples/inheritance-save/lib/src/school_type/behavior.rs": {
+          "emittedPath": "lib/src/school_type/behavior.rs",
+          "sha256": "48d0c35546b4955fc90d927bbb6ee2dcad4eec42ba3c8609adf17e103c54d680"
+        },
+        "examples/inheritance-save/lib/src/school_type/checker.rs": {
+          "emittedPath": "lib/src/school_type/checker.rs",
+          "sha256": "22d9d3ff7b32ce8d569f004dd6edcbc7c0c648ee62aa9527088356e7d37413c8"
+        },
+        "examples/inheritance-save/lib/src/school_type/entity.rs": {
+          "emittedPath": "lib/src/school_type/entity.rs",
+          "sha256": "4b25bec9261f9240ca9b98d77f6e2e3bc8db243ec95474a5b12249a9e53f5104"
+        },
+        "examples/inheritance-save/lib/src/school_type/expression.rs": {
+          "emittedPath": "lib/src/school_type/expression.rs",
+          "sha256": "ae96fe37a63fe46f3ac6f92f1e6b70e20bffe3c1e705559244d9c909eca35847"
+        },
+        "examples/inheritance-save/lib/src/school_type/mod.rs": {
+          "emittedPath": "lib/src/school_type/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/inheritance-save/lib/src/school_type/request.rs": {
+          "emittedPath": "lib/src/school_type/request.rs",
+          "sha256": "5dac029bad07c43cc04da7e618ed0fa1b8234c5e4b967229e2356244bfda58ac"
+        },
+        "examples/inheritance-save/lib/src/training_academy/behavior.rs": {
+          "emittedPath": "lib/src/training_academy/behavior.rs",
+          "sha256": "ab915ac091cf9230426c54717c843b32d7fd4e0440b9cfc5088cc170ae7bb98a"
+        },
+        "examples/inheritance-save/lib/src/training_academy/checker.rs": {
+          "emittedPath": "lib/src/training_academy/checker.rs",
+          "sha256": "876937fa360c1430bd5ca8e26cc70273f85bbdc20463f2bd5e843f17f4a100d3"
+        },
+        "examples/inheritance-save/lib/src/training_academy/entity.rs": {
+          "emittedPath": "lib/src/training_academy/entity.rs",
+          "sha256": "a61af67541eb265a46e870ecfd5041058c1415553efa202b25a187197b472a4d"
+        },
+        "examples/inheritance-save/lib/src/training_academy/expression.rs": {
+          "emittedPath": "lib/src/training_academy/expression.rs",
+          "sha256": "b29fb7e0eba3397ff95bcb79bbe3f981421999a7f6ecdac2ba215fcf2f815ca6"
+        },
+        "examples/inheritance-save/lib/src/training_academy/mod.rs": {
+          "emittedPath": "lib/src/training_academy/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/inheritance-save/lib/src/training_academy/request.rs": {
+          "emittedPath": "lib/src/training_academy/request.rs",
+          "sha256": "9453290d86b705f6db003d6c0ae923e695544ed4ce46afd5a82ddf00ccd13e61"
+        },
+        "examples/inheritance-save/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "369def38a021b04fca5a8c8d7f68b7f495a0781b816e28b917729217bd6dc242"
+        },
+        "examples/inheritance-save/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "e80a63896ab699689d7724b71b285ee37a3f784e6fa0c930b54ec2050f94a9a3"
+        }
+      },
+      "model": "examples/inheritance-save/model.xml",
+      "origin": {
+        "descriptorMetadataOverrides": [
+          {
+            "attribute": "column",
+            "entity": "academy",
+            "field": "campus_code",
+            "value": "Legacy Campus Code"
+          }
+        ],
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 1,
+        "generatedManifestSha256": "a96971e1fdb45f532be37035b46f10a7a24f9dfb81117cf7b22dc1d63402b214",
+        "generationKind": "retained named source fixture with explicit descriptor metadata",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-rust-inheritance-intent-source/rust/inheritance-save/model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "f1558b9801700b6f63ed5293538f7095b94412e3b7cad4f7481818cfe004895e",
+        "producerReceiptSha256": "0e6118abd77d61612e2a8fd1f11f4e81572e3c1fec56ea66b905ef0f74712e25",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        },
+        "qualifiedJarExecuted": false
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "fc83ec8abd2e8ba55b58ddd4934e2ffae82509648ce10c7d2d03b048db9a5acb",
+      "destination": "examples/natural-messages/automatic-fixture",
+      "generatedFiles": {
+        "examples/natural-messages/automatic-fixture/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "bb4c7672be4e222a356fc8e45db09365ffc2da3bf95b022199a6d4292cbf4aac"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/catalog/behavior.rs": {
+          "emittedPath": "lib/src/catalog/behavior.rs",
+          "sha256": "6dd684b30692325f844b3c4ebf85534fb2a967b3ef7b09397ae4f8ab98c7ebe3"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/catalog/checker.rs": {
+          "emittedPath": "lib/src/catalog/checker.rs",
+          "sha256": "431d984b26e788378807adf5fe39baa484dd7561c6357a82f61f11ccd74c9b22"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/catalog/entity.rs": {
+          "emittedPath": "lib/src/catalog/entity.rs",
+          "sha256": "a4aaa47e616fdb3a96cc522fbe602ea2bec3f80a1e9271183075437134692e35"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/catalog/expression.rs": {
+          "emittedPath": "lib/src/catalog/expression.rs",
+          "sha256": "706a1c36e45408b3737dacb7a40ba9d2f7ea4a17aa0e4beb58747433c1a3c361"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/catalog/mod.rs": {
+          "emittedPath": "lib/src/catalog/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/catalog/request.rs": {
+          "emittedPath": "lib/src/catalog/request.rs",
+          "sha256": "017dea7a440e3db63251c38e76902b282291edc04b5cf1674456bd36bc0f844d"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "5129a49b7bd88a84f81b5e024fed4e4cc79f268107f46da1eeb9cd3e5ad61f07"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/entry/behavior.rs": {
+          "emittedPath": "lib/src/entry/behavior.rs",
+          "sha256": "d60bb35651f575101355dd7ba9ea45965ea37c6343d0798c46efbc0f96692751"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/entry/checker.rs": {
+          "emittedPath": "lib/src/entry/checker.rs",
+          "sha256": "ae1c40477cc2437722b23421b8cd3917e49c0a12e60688cd24e82a13784776ce"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/entry/entity.rs": {
+          "emittedPath": "lib/src/entry/entity.rs",
+          "sha256": "77b670e0656ca324879137239480db1def6e1050104c3f3a4bdf5d48081ddf12"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/entry/expression.rs": {
+          "emittedPath": "lib/src/entry/expression.rs",
+          "sha256": "b04b7341047fac12a118440535ef71448944a7c9799201fcb9c026eb89d962e9"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/entry/mod.rs": {
+          "emittedPath": "lib/src/entry/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/entry/request.rs": {
+          "emittedPath": "lib/src/entry/request.rs",
+          "sha256": "f4d955e0868e54c6cdce7fa169f90162289e9b6e9489928392708805169581cc"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "5e41b18ec51a8eb30e87d46e415c438c8bcf6d2cf2dbe75807f82811c131d43f"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "f691efef624c2a279d28f9dd213c47a92fd905e65fc142ab05a0d64adb49734a"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "7b9251fb3de1ec03c871ed6e3e745e8ea4ba4615251eb9cbbf4ebcf48cb66488"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "3806df59c4f243614dd96de892de7850ec977036ef3f09ef861fbc9a32fc65f8"
+        },
+        "examples/natural-messages/automatic-fixture/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "81d5a42a2f26629f0888eb79fd9af92a6396e326084f0cdfc0b75df949d0c9a8"
+        },
+        "examples/natural-messages/automatic-fixture/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "dbac03cd54b294e3e60a62752aeb170ad1ad722a7dfb8feb639c569ff3e73b1a"
+        },
+        "examples/natural-messages/automatic-fixture/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "7a1c08d3bcc033947aa11600d1a18ea30f8fa7d31951680e81ed39eed4f9cece"
+        }
+      },
+      "model": "examples/natural-messages/automatic-fixture/model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 2,
+        "generatedManifestSha256": "3a914b854018562741a03961bdaa3a955e98aee0eb61dbfe7dfb1dcdc09d6df8",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/natural-messages/automatic-fixture/model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "4c69fcaa275d1f7d255f325305cc0c6c5071154d278f9f4af7775ae0758144a6",
+        "producerReceiptSha256": "f18ad3bcc78d96075ed5320125a5ee72e941decad9414aff537b43a0607f58ea",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "bbf9b9ce9dda114070614485080ea256ef7fdb483f39d42bfbd1b9afd5950b16",
+      "destination": "examples/order-management/rust-lib-core",
+      "generatedFiles": {
+        "examples/order-management/rust-lib-core/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "d7d89d2acd486ffedb03aa7ea1ac22996d7492f8f74240dda715dbeec25e2e50"
+        },
+        "examples/order-management/rust-lib-core/lib/src/commerce_platform/behavior.rs": {
+          "emittedPath": "lib/src/commerce_platform/behavior.rs",
+          "sha256": "afb53440865bcd128af96f86eead169b61f8b84a82f78657771cb5ae7ff8ef9a"
+        },
+        "examples/order-management/rust-lib-core/lib/src/commerce_platform/checker.rs": {
+          "emittedPath": "lib/src/commerce_platform/checker.rs",
+          "sha256": "0a693ac19d94d889499cc798f71aae04ce8f86a77c2088dddcf6015ea0eecb46"
+        },
+        "examples/order-management/rust-lib-core/lib/src/commerce_platform/entity.rs": {
+          "emittedPath": "lib/src/commerce_platform/entity.rs",
+          "sha256": "2bee70671ffc783ca44e00a509dcfdce963bd227da16176909814ed7c7b42af2"
+        },
+        "examples/order-management/rust-lib-core/lib/src/commerce_platform/expression.rs": {
+          "emittedPath": "lib/src/commerce_platform/expression.rs",
+          "sha256": "8aebff97b853ff2c1625dcc31d421be815efc01f8b20911b24130cc3a794dfa9"
+        },
+        "examples/order-management/rust-lib-core/lib/src/commerce_platform/mod.rs": {
+          "emittedPath": "lib/src/commerce_platform/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/order-management/rust-lib-core/lib/src/commerce_platform/request.rs": {
+          "emittedPath": "lib/src/commerce_platform/request.rs",
+          "sha256": "1ef226b8078b96f32a2a4f6b788f51638694fbae9126a917569be541e1814d7c"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer/behavior.rs": {
+          "emittedPath": "lib/src/customer/behavior.rs",
+          "sha256": "9a484ceaa1e5999877e3fc91e25c8adfe226f6b7a7f41f8dee74edeaee79cc02"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer/checker.rs": {
+          "emittedPath": "lib/src/customer/checker.rs",
+          "sha256": "b7983b2f3090f3034a6021680a22cefeab5f467b2bf300bb5037c974f168388a"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer/entity.rs": {
+          "emittedPath": "lib/src/customer/entity.rs",
+          "sha256": "71d654be63c925473a3e54e3413c310af7197cc8cd045f67b5beb0fd9534b7a5"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer/expression.rs": {
+          "emittedPath": "lib/src/customer/expression.rs",
+          "sha256": "fbb036ccd08f4522999934e12516a40ce5e49c3b55ef26724c497412aabb2fb1"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer/mod.rs": {
+          "emittedPath": "lib/src/customer/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer/request.rs": {
+          "emittedPath": "lib/src/customer/request.rs",
+          "sha256": "35f40f4d61722d8b612ddb41d975c000b1d33a2ddcc8621f9d087f05de52ad6d"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer_order/behavior.rs": {
+          "emittedPath": "lib/src/customer_order/behavior.rs",
+          "sha256": "a377b4e7b9896eb7d19813afa7eea409c58a2249ef0f5c4c3ffea6a67a0049fa"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer_order/checker.rs": {
+          "emittedPath": "lib/src/customer_order/checker.rs",
+          "sha256": "98c8d458b9364a353c78863ddc1c288be835938bf1d4800ed8d9110400dbf105"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer_order/entity.rs": {
+          "emittedPath": "lib/src/customer_order/entity.rs",
+          "sha256": "cd5294dbe52bd5688d2346df4e406d94c4a472db4d6e76bb1daebf70a88f6413"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer_order/expression.rs": {
+          "emittedPath": "lib/src/customer_order/expression.rs",
+          "sha256": "530618de2b626c7300cbe28a40f1eb3ed935d58402472541a9f04c6eb0455239"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer_order/mod.rs": {
+          "emittedPath": "lib/src/customer_order/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/order-management/rust-lib-core/lib/src/customer_order/request.rs": {
+          "emittedPath": "lib/src/customer_order/request.rs",
+          "sha256": "34bb763731a30262ec4de7fdcc32b84acf111307258b6c0fb2f841947d7f2b61"
+        },
+        "examples/order-management/rust-lib-core/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "1e51c81bfaa13a4c4bcf0ac39af5a5fa23cc734188257e323397a5c186a5c776"
+        },
+        "examples/order-management/rust-lib-core/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "64c4fea7533ebe396b3c636b3817749380028613e4d497e7f95b98380f489edf"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_line/behavior.rs": {
+          "emittedPath": "lib/src/order_line/behavior.rs",
+          "sha256": "12cf21b6881b766b1419389339386cfd83cd2d7cca836ea0f4a757a94e8c7ec9"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_line/checker.rs": {
+          "emittedPath": "lib/src/order_line/checker.rs",
+          "sha256": "9164027aac9258bf981d5def0a2d860918709bc5ea70daea4da03c404acc8f26"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_line/entity.rs": {
+          "emittedPath": "lib/src/order_line/entity.rs",
+          "sha256": "662b2f4c2c4cafecfb2c8225ae1615942f11e3b4e5b9c6a6e61e29b932432a43"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_line/expression.rs": {
+          "emittedPath": "lib/src/order_line/expression.rs",
+          "sha256": "940cca70aeb208d41d5fe194b7d1f70cfc928bcb778d92cfe1a513a99439c07a"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_line/mod.rs": {
+          "emittedPath": "lib/src/order_line/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_line/request.rs": {
+          "emittedPath": "lib/src/order_line/request.rs",
+          "sha256": "5b312f54a3668b0015133fb957c1e8aab7d7de63bfc67568edfe4b3787fa4eb5"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_search_preset/behavior.rs": {
+          "emittedPath": "lib/src/order_search_preset/behavior.rs",
+          "sha256": "e7be01a73ae09bbfa895f67f551cb2e362b35822c193db9c80492fcbeafacbca"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_search_preset/checker.rs": {
+          "emittedPath": "lib/src/order_search_preset/checker.rs",
+          "sha256": "d955fa41e75bd5f2629744e4ac9334e9bc14938bee59c81a33949623ef24f982"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_search_preset/entity.rs": {
+          "emittedPath": "lib/src/order_search_preset/entity.rs",
+          "sha256": "bf6757ea60fe55d9626e782c5e633956759ccb41f208e55272a3d27412fcf8b4"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_search_preset/expression.rs": {
+          "emittedPath": "lib/src/order_search_preset/expression.rs",
+          "sha256": "d60ca1e96475aece0e587a600c93bf18dbf2f9c8f508b12ee5df32b2c50e17c0"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_search_preset/mod.rs": {
+          "emittedPath": "lib/src/order_search_preset/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_search_preset/request.rs": {
+          "emittedPath": "lib/src/order_search_preset/request.rs",
+          "sha256": "62da0a717859e171f5e3666378da14eedd31e876f00ad9fe094b942b4e0be60a"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_status/behavior.rs": {
+          "emittedPath": "lib/src/order_status/behavior.rs",
+          "sha256": "c4f599269f23538fd6018d0ba0ed3956f2a365c94cb5dd9644c9a352a9e29241"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_status/checker.rs": {
+          "emittedPath": "lib/src/order_status/checker.rs",
+          "sha256": "dc07bea24fb6f412f896cf5f2b7365e5c4b3488d4a01ab569dbde75f9beb5fcf"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_status/entity.rs": {
+          "emittedPath": "lib/src/order_status/entity.rs",
+          "sha256": "a74a730f65e383d3fc411d11b5a7d291dea514dd6b77f061a11d79837db997f8"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_status/expression.rs": {
+          "emittedPath": "lib/src/order_status/expression.rs",
+          "sha256": "fb5c2ef34368f4e387bf573c8ade75dad8cdb5fdd650b76fc4e2eef934b0e315"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_status/mod.rs": {
+          "emittedPath": "lib/src/order_status/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/order-management/rust-lib-core/lib/src/order_status/request.rs": {
+          "emittedPath": "lib/src/order_status/request.rs",
+          "sha256": "eacc3a8b833b2c6767d5752b1809a17122481d0aa74383c2cabce16d552cf6c2"
+        },
+        "examples/order-management/rust-lib-core/lib/src/product/behavior.rs": {
+          "emittedPath": "lib/src/product/behavior.rs",
+          "sha256": "e467ba14762f3dce7287ceefccff7ee0239ad5d9fef3ccb45894a9e59f525fef"
+        },
+        "examples/order-management/rust-lib-core/lib/src/product/checker.rs": {
+          "emittedPath": "lib/src/product/checker.rs",
+          "sha256": "7bc14fe80fad1c67e35490dc362430dba6786d1c12d3a3e71f881059843f9892"
+        },
+        "examples/order-management/rust-lib-core/lib/src/product/entity.rs": {
+          "emittedPath": "lib/src/product/entity.rs",
+          "sha256": "0a805295bc75f950e5c8ece611880b51648631520655046dfc8a227308e442a9"
+        },
+        "examples/order-management/rust-lib-core/lib/src/product/expression.rs": {
+          "emittedPath": "lib/src/product/expression.rs",
+          "sha256": "f15dcff135418e844189d744a80d3041e271e9aaec8259df17be1f88be81a346"
+        },
+        "examples/order-management/rust-lib-core/lib/src/product/mod.rs": {
+          "emittedPath": "lib/src/product/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/order-management/rust-lib-core/lib/src/product/request.rs": {
+          "emittedPath": "lib/src/product/request.rs",
+          "sha256": "588b5543c4342fe5dce120da464acf8ba59dfcd7ce086250a63e6b9090e7a120"
+        },
+        "examples/order-management/rust-lib-core/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "50ca79c0e73c0fd302e773ac78a55dd4b3f66ec0a83efd3260e5d956b4aef7b4"
+        },
+        "examples/order-management/rust-lib-core/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "fcb6757560e01cf77f752129ac4ba5fb6e0ec988ab022d73694e9fdebc4959a9"
+        },
+        "examples/order-management/rust-lib-core/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/order-management/rust-lib-core/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "eed567dfed136808495256a9f0a517cf0c105edb1b18c2c02e71c7fc753b6ed3"
+        },
+        "examples/order-management/rust-lib-core/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "a6438398d4cc6d074542148dc1deed37584cd81179b0b58d51d4893b46a7e620"
+        },
+        "examples/order-management/rust-lib-core/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "82f1556c56fd3ed10f2e947da68d0defb73215bf2192ccd213cc9c7e8eae9b95"
+        },
+        "examples/order-management/rust-lib-core/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "56b87cd8a43b77ba68fd06720677e1cb3f29dea23b7e129b496c1eb27d4622f6"
+        }
+      },
+      "model": "examples/order-management/order-management-model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 8,
+        "generatedManifestSha256": "3eddcd6649440f3c47c02909ecba69d76c4dcfcdd34173c465ef64e960a8a820",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/order-management/order-management-model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "8b11ee844c2be184e194d8116994fb5fe95299dd593bfed83ec06d71ada0411d",
+        "producerReceiptSha256": "f084b275903f34e2a4335560792a9d4127746b4fbee135b51be072098c67d833",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "cc1f7dfcefd1919662a5ff8d0bdb7b43bcffbefcc1eb8d2c9b9bf395da48910d",
+      "destination": "examples/request-admission/generated",
+      "generatedFiles": {
+        "examples/request-admission/generated/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "6899c1668ec9f9e7bf9607a598ebe8893458e7f67c9e855f5cb69eae42e7e041"
+        },
+        "examples/request-admission/generated/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "f5c150d8e4304461fdf8bfb826d4d4687b34ab8cb51a5a6b4606ac2128d206f9"
+        },
+        "examples/request-admission/generated/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "1e8f830978db5193fb9234e99392caf4d7f5866fe3bff644fd5486a0b20e7ece"
+        },
+        "examples/request-admission/generated/lib/src/order_item/behavior.rs": {
+          "emittedPath": "lib/src/order_item/behavior.rs",
+          "sha256": "e750698e7c96fa25a927a7f9245ee0a9cd870be35194bed86c82c05d7257460f"
+        },
+        "examples/request-admission/generated/lib/src/order_item/checker.rs": {
+          "emittedPath": "lib/src/order_item/checker.rs",
+          "sha256": "c0afd512c51bad93c080a9a621e8543e608f3cf6e435973e8c4416a19aeae8fc"
+        },
+        "examples/request-admission/generated/lib/src/order_item/entity.rs": {
+          "emittedPath": "lib/src/order_item/entity.rs",
+          "sha256": "d657695c75849156023016b7889d143b35fd4f3acdf36171e166c1955765a7d7"
+        },
+        "examples/request-admission/generated/lib/src/order_item/expression.rs": {
+          "emittedPath": "lib/src/order_item/expression.rs",
+          "sha256": "6b48a41fc4827231a43e9efee00c69e5aac2cd9691824f54c34f64e442f2a482"
+        },
+        "examples/request-admission/generated/lib/src/order_item/mod.rs": {
+          "emittedPath": "lib/src/order_item/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/request-admission/generated/lib/src/order_item/request.rs": {
+          "emittedPath": "lib/src/order_item/request.rs",
+          "sha256": "e35f1a3d367cb11348e10151fdb60b7aa9011af17b71152fe49cc105bb370824"
+        },
+        "examples/request-admission/generated/lib/src/purchase_order/behavior.rs": {
+          "emittedPath": "lib/src/purchase_order/behavior.rs",
+          "sha256": "588fae66f9613f98240c9dfffa3008c219e3060c596da16c752081cc838deebe"
+        },
+        "examples/request-admission/generated/lib/src/purchase_order/checker.rs": {
+          "emittedPath": "lib/src/purchase_order/checker.rs",
+          "sha256": "d7aa3d23c9b2568909881f8b35a261bbc0c90513681f1ac497a6f9ca566492cc"
+        },
+        "examples/request-admission/generated/lib/src/purchase_order/entity.rs": {
+          "emittedPath": "lib/src/purchase_order/entity.rs",
+          "sha256": "603144e4dd3f9128fc61fc6ac12652a0a726776a37afa061abb9af94791027d7"
+        },
+        "examples/request-admission/generated/lib/src/purchase_order/expression.rs": {
+          "emittedPath": "lib/src/purchase_order/expression.rs",
+          "sha256": "2576bfa8765556bd3add3f708eb699c0a7698c6e395500430d66cf40e2b2d3f1"
+        },
+        "examples/request-admission/generated/lib/src/purchase_order/mod.rs": {
+          "emittedPath": "lib/src/purchase_order/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/request-admission/generated/lib/src/purchase_order/request.rs": {
+          "emittedPath": "lib/src/purchase_order/request.rs",
+          "sha256": "f51707b8dfd2010c4419ff54bb1e063d3880b7f25a7170fc0ba717061184668c"
+        },
+        "examples/request-admission/generated/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "e96c997709aedc072a23afe1786bf3dac1a56ab19096a1e38dac4252d1f69f52"
+        },
+        "examples/request-admission/generated/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "37c8b046273be61de5c93d87cb5745b4b905eff6365a9c449043ff2872fa8678"
+        },
+        "examples/request-admission/generated/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/request-admission/generated/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "9b8519d3b691397358b6556942c3fe17be7b10af1ecbc982c19260c8081a37eb"
+        },
+        "examples/request-admission/generated/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "e74b8813a083ccc68683970759ca5cd1f4abff971a676e5fa9bb43a08b5b59b0"
+        },
+        "examples/request-admission/generated/lib/src/tenant/behavior.rs": {
+          "emittedPath": "lib/src/tenant/behavior.rs",
+          "sha256": "adce6aacbb905b10543b94863a14be531feb88b7e78109d5d7b73e5f87932229"
+        },
+        "examples/request-admission/generated/lib/src/tenant/checker.rs": {
+          "emittedPath": "lib/src/tenant/checker.rs",
+          "sha256": "882cbfe6ce698415c4481c4e9a297fb7aabcb24c0c5dbc8c9265b057b147e0d5"
+        },
+        "examples/request-admission/generated/lib/src/tenant/entity.rs": {
+          "emittedPath": "lib/src/tenant/entity.rs",
+          "sha256": "a8a63e07f18eea0074e0914b36361138205eadd139bde076d7ae2646841d94fc"
+        },
+        "examples/request-admission/generated/lib/src/tenant/expression.rs": {
+          "emittedPath": "lib/src/tenant/expression.rs",
+          "sha256": "b37e9f24486fb501ae5de1c1505616db18cc55ac560633512d1a3c9b13830785"
+        },
+        "examples/request-admission/generated/lib/src/tenant/mod.rs": {
+          "emittedPath": "lib/src/tenant/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/request-admission/generated/lib/src/tenant/request.rs": {
+          "emittedPath": "lib/src/tenant/request.rs",
+          "sha256": "c65c0a4ea5308669088ec995ec1c1166ef930e45a304f53d50ac201bfef31032"
+        },
+        "examples/request-admission/generated/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "92144f0d6092e143784685a82a9dd67c1672665bbe50fa6ca57b9ad441325b45"
+        },
+        "examples/request-admission/generated/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "80eb2676b8ca3b65b6eb913b1eaf159e848cd1234f5158af95ef388d89ec0d40"
+        }
+      },
+      "model": "examples/request-admission/model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 4,
+        "generatedManifestSha256": "d53e9b26a3b4d00b06100d6a6ec4afdabebaf404c42456ba01bc88e70b6bc246",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/request-admission/model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "a2cf4c907cb084cb0946e993eeba586c8c0701a89fdc4a849808aa743be033b7",
+        "producerReceiptSha256": "09e92e6d46e12969c984dd74cd63d406dc27b3e5161b66dc2587fd45efed7024",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "bd5abb104ebebead58c97217c18acc44bef5c0e44a63cfba629665633261793e",
+      "destination": "examples/school-management/rust-lib-core",
+      "generatedFiles": {
+        "examples/school-management/rust-lib-core/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "bc2a23434c86180ee490b905cb3248b4fd6ab1ba87ffb6860dbeba865d176446"
+        },
+        "examples/school-management/rust-lib-core/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "00a126c3ea9b689b9a7dd375dbfe2605afc009a53ff03b02b70334b602799b89"
+        },
+        "examples/school-management/rust-lib-core/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "a0f592d86e09574d3194279c97a264a2a04ff84fa302a3e16cab73f49c62f893"
+        },
+        "examples/school-management/rust-lib-core/lib/src/platform/behavior.rs": {
+          "emittedPath": "lib/src/platform/behavior.rs",
+          "sha256": "33504f41ce179be8dcb01a52ef885e2894ee18a1f060a659c215ee41fbe43df4"
+        },
+        "examples/school-management/rust-lib-core/lib/src/platform/checker.rs": {
+          "emittedPath": "lib/src/platform/checker.rs",
+          "sha256": "8d7412d6e063496ddd7902e511b2051b47475fb9b8ba15268b2e8612e44df82c"
+        },
+        "examples/school-management/rust-lib-core/lib/src/platform/entity.rs": {
+          "emittedPath": "lib/src/platform/entity.rs",
+          "sha256": "e799241b4b8c1c94e72f513eef8301caff85bdda2600ca57860e7cdf800b3a7e"
+        },
+        "examples/school-management/rust-lib-core/lib/src/platform/expression.rs": {
+          "emittedPath": "lib/src/platform/expression.rs",
+          "sha256": "9ed8481d47e432c0811f83c2c49ece085adbce3d3cb359de0cefefe1f97161c8"
+        },
+        "examples/school-management/rust-lib-core/lib/src/platform/mod.rs": {
+          "emittedPath": "lib/src/platform/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/school-management/rust-lib-core/lib/src/platform/request.rs": {
+          "emittedPath": "lib/src/platform/request.rs",
+          "sha256": "fb8f91e5a97d350604d42a60788ce49f6d8e2157c0be5f19c9c284e8d0427ff4"
+        },
+        "examples/school-management/rust-lib-core/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "1fe610ef84363444de4c2c15cc0a68ec1c1c24154da1b3c52e83e92351056719"
+        },
+        "examples/school-management/rust-lib-core/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "23baac13cf4dd2667945c06d5e786a1c4cf386b0023a4f687ff6cb4670d46a37"
+        },
+        "examples/school-management/rust-lib-core/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/school-management/rust-lib-core/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "255b24b3abd5e511b693b8efd0901344fc3c1e8393d5349f2cd50361b13293fc"
+        },
+        "examples/school-management/rust-lib-core/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "aa88bdc79f8694ad81f66adb5edc44770a48c260d2dffad7f5e1b588db58ac78"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school/behavior.rs": {
+          "emittedPath": "lib/src/school/behavior.rs",
+          "sha256": "41c4faa5d2fc86da9b3d080a4a07b17cd5e74ac453ec1e7ca914b8c68c30db05"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school/checker.rs": {
+          "emittedPath": "lib/src/school/checker.rs",
+          "sha256": "6fa6e96f450692595d46358f6cb3af980be58a243800ce9c4051bb021310296c"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school/entity.rs": {
+          "emittedPath": "lib/src/school/entity.rs",
+          "sha256": "0d8d92c798c2666417c540f7f430ee6ffde6e803d4989bf636947a175519ada2"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school/expression.rs": {
+          "emittedPath": "lib/src/school/expression.rs",
+          "sha256": "69e51fbf2a71e975ba094c7c81d2fedc5d65979f5958fd9786fa0bd7df83f7e0"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school/mod.rs": {
+          "emittedPath": "lib/src/school/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school/request.rs": {
+          "emittedPath": "lib/src/school/request.rs",
+          "sha256": "889cdeb0368f943ab2504f29ed1f9c11e89f524be051e52e49cae70a78f262f0"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school_type/behavior.rs": {
+          "emittedPath": "lib/src/school_type/behavior.rs",
+          "sha256": "48d0c35546b4955fc90d927bbb6ee2dcad4eec42ba3c8609adf17e103c54d680"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school_type/checker.rs": {
+          "emittedPath": "lib/src/school_type/checker.rs",
+          "sha256": "f648439e3836b84418ca3ab98d2818a67d00804c3209460c04aea1d66bb9e06f"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school_type/entity.rs": {
+          "emittedPath": "lib/src/school_type/entity.rs",
+          "sha256": "20e54d53a02e0d4b8f7afcfaa71c388c1569811a2287ffc3ef9e505ab0fa155a"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school_type/expression.rs": {
+          "emittedPath": "lib/src/school_type/expression.rs",
+          "sha256": "11581fb4098c9eae8c4a733cffe4e6a80c6c932588abfaca8b28f1a08932b41e"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school_type/mod.rs": {
+          "emittedPath": "lib/src/school_type/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/school-management/rust-lib-core/lib/src/school_type/request.rs": {
+          "emittedPath": "lib/src/school_type/request.rs",
+          "sha256": "23462171b9523c4f7bcd5654ae1b9122a8411086550347ecfd00c54af451b93c"
+        },
+        "examples/school-management/rust-lib-core/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "8e28ee16cddc21191816ed05999142fccb870bf42795f5a1f21268ebd4469e71"
+        },
+        "examples/school-management/rust-lib-core/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "1a5b23f2be715745dde87c8a4679fa060aba0898ea6d7387ac8336df55025303"
+        }
+      },
+      "model": "examples/school-management/models/school-model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 0,
+        "generatedManifestSha256": "96833e38af98b8eea95334fe713e05a62cb0ea483903dffa2859af9094cd4043",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/school-management/models/school-model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "6ebf3cde81cd8b0b9ace41231a42d8ed28d384cc7cbc629a407ea0824f2b8a73",
+        "producerReceiptSha256": "38998fbc1b225c558e7dde627ffd32150fb8bf4c980b33345f73a80d9c2b6a53",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "ebc424a9323838b86ec235ddad3891bbde3c583e747162f589ab03f9302b0ce7",
+      "destination": "examples/tests/loaded-revert/generated",
+      "generatedFiles": {
+        "examples/tests/loaded-revert/generated/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "343e4467806b7457e19df7086da2642b5939ea3d44423de0655b775a4912f96b"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "28abaa538915fe0f9b1f36e118dea0552306fdedddb2d87212442e3a0a2cdc72"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "ae43d99eb959179d6a2aeb207f1017b1126718edb0b559a3fb070ea74386262b"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "2eb68513895fbf8e04cbf8051cf59f2d769a56d20135bd69e689a3ec8a6917c3"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "0b632c7d68e9c20770a8150507eeeeadc897b16d045d9b0da68fe4c86714d997"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "68ce45add4b8a6e5f3afeb319d15d81d17c43ab2a9fe5014ba3e4b5f4df6dd14"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "00c4e5b695b09513bd222a12fc94e1973fa9f9fcba0d2c419d2b82b673d5fee9"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/scalar_type_probe/behavior.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/behavior.rs",
+          "sha256": "0389db9470ba30682e43ecf6fa8dcbbc04eae56589817cd6429eec3daad56d13"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/scalar_type_probe/checker.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/checker.rs",
+          "sha256": "3863984d76ed64e6cbcdfcdfc28cd2da6b32a0d1dcacb9a0fae573f3855f739e"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/scalar_type_probe/entity.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/entity.rs",
+          "sha256": "3a4e32a15404b17074ece335bc9e054469302418eb4e215e020549895315700b"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/scalar_type_probe/expression.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/expression.rs",
+          "sha256": "84a8dc13729376cd484a0d704b418814644d995ffba6b6b56b9a145467fca94e"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/scalar_type_probe/mod.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/scalar_type_probe/request.rs": {
+          "emittedPath": "lib/src/scalar_type_probe/request.rs",
+          "sha256": "926327600732ea1a6d9e4aac587735b948592313da905615f3e931b069cebd42"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/type_platform/behavior.rs": {
+          "emittedPath": "lib/src/type_platform/behavior.rs",
+          "sha256": "22ad713abf56be7113ab02350d95a56178f2efe0c29628119586df90ff3d45e6"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/type_platform/checker.rs": {
+          "emittedPath": "lib/src/type_platform/checker.rs",
+          "sha256": "da0f5a27cbcdf6901f0f461174d0f25105cd8c778d75e460c78554e578505b1d"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/type_platform/entity.rs": {
+          "emittedPath": "lib/src/type_platform/entity.rs",
+          "sha256": "a1f00e8fee2a4df2c0c3716039b1f8228ab5fcd1bb2c74f2380c26cea82e6768"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/type_platform/expression.rs": {
+          "emittedPath": "lib/src/type_platform/expression.rs",
+          "sha256": "b98d10e024cd70e39e8470b686a4797806be2aff0e18dae4ec952fb04f79e3f3"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/type_platform/mod.rs": {
+          "emittedPath": "lib/src/type_platform/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/tests/loaded-revert/generated/lib/src/type_platform/request.rs": {
+          "emittedPath": "lib/src/type_platform/request.rs",
+          "sha256": "bc3caa29c5b1dc5f2ffde1bdc8d8c11f279d99352f3516098c91c2ebaadfc519"
+        },
+        "examples/tests/loaded-revert/generated/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "ce4ae61861d89991e89b2762d48bb448ad04ad18853c9c5d5ea4e0c7ac093bab"
+        },
+        "examples/tests/loaded-revert/generated/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "53333a1d944bcd8a9478bf7428598a1f4020a497bdf1d0a264dc58076c635002"
+        }
+      },
+      "model": "examples/tests/loaded-revert/model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 0,
+        "generatedManifestSha256": "bf5c510e7e3e777ccdcec5fffa8505ae7e1f87812b9b6cdafcb078d7db51987d",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/tests/loaded-revert/model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "8d3017392ffd00abbc06be2555ced27ac6360e2d05fabc4299e27a5ef8f1c762",
+        "producerReceiptSha256": "4bf07c193057490c8f4ce48c613cb5308f075099247cc07c7fa0583afee52eef",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    },
+    {
+      "archiveSHA256": "a28461955e31b0aa1cc4d6b44e9c5c442e6d6898c15682477f4cbd553247f8e4",
+      "destination": "examples/trace-chain/rust-lib-core",
+      "generatedFiles": {
+        "examples/trace-chain/rust-lib-core/lib/Cargo.toml": {
+          "emittedPath": "lib/Cargo.toml",
+          "sha256": "fa5e0b0cde4ac159d56fa0f67ab99b9b518f7f4dc7c68f162c7aa5890cd5664a"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/customer_order/behavior.rs": {
+          "emittedPath": "lib/src/customer_order/behavior.rs",
+          "sha256": "a377b4e7b9896eb7d19813afa7eea409c58a2249ef0f5c4c3ffea6a67a0049fa"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/customer_order/checker.rs": {
+          "emittedPath": "lib/src/customer_order/checker.rs",
+          "sha256": "3edbba6e9e039b9c111f0d0049ae3d73999f67581ddb171a2c63fd0a09a4b7a4"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/customer_order/entity.rs": {
+          "emittedPath": "lib/src/customer_order/entity.rs",
+          "sha256": "524a924a5a0c8a11a2b4937907bf1f5c08818cdb09ed9876b87b7fddf1dc6c74"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/customer_order/expression.rs": {
+          "emittedPath": "lib/src/customer_order/expression.rs",
+          "sha256": "f71c37187bc434f0e7c0fa711555c7c4225a345a08d0d4ef576342df7c51992a"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/customer_order/mod.rs": {
+          "emittedPath": "lib/src/customer_order/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/customer_order/request.rs": {
+          "emittedPath": "lib/src/customer_order/request.rs",
+          "sha256": "a690c8092f204e550de5498a47bc71fcc14b13198192327f70831882b9caad62"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/e.rs": {
+          "emittedPath": "lib/src/e.rs",
+          "sha256": "5a3b14334763c90704f5081b057dfbb2fa383640979fb5c128dd4ce09587c660"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/lib.rs": {
+          "emittedPath": "lib/src/lib.rs",
+          "sha256": "258695549122712e5fbbc26259d5ad83609cf28641e8780342751ebbedda652c"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/order_item/behavior.rs": {
+          "emittedPath": "lib/src/order_item/behavior.rs",
+          "sha256": "e750698e7c96fa25a927a7f9245ee0a9cd870be35194bed86c82c05d7257460f"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/order_item/checker.rs": {
+          "emittedPath": "lib/src/order_item/checker.rs",
+          "sha256": "b16ff3089fca21a38c748b1ade531b2099e0fc628e8bce61d463def67d6518a8"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/order_item/entity.rs": {
+          "emittedPath": "lib/src/order_item/entity.rs",
+          "sha256": "f0c55175455540211fff65fd60b61f349c08720a5cdef3d6c6400628a415823c"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/order_item/expression.rs": {
+          "emittedPath": "lib/src/order_item/expression.rs",
+          "sha256": "9ae6f4ee1fd8d86bb4abeb1364194a673b47b459314d22fbc08823a34ab2b48f"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/order_item/mod.rs": {
+          "emittedPath": "lib/src/order_item/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/order_item/request.rs": {
+          "emittedPath": "lib/src/order_item/request.rs",
+          "sha256": "c782aaefaa9cd94aca335c8ab6b66c938298a3cf1c457780daeeb405e6cd35df"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment/behavior.rs": {
+          "emittedPath": "lib/src/payment/behavior.rs",
+          "sha256": "6fb873ee419ab81e1c3776721d45779edd4ef3c291c02b53989683707d015229"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment/checker.rs": {
+          "emittedPath": "lib/src/payment/checker.rs",
+          "sha256": "d07853f86fa21be2c37cf8c36d501017372d8f9a6a61afc73c22814362c56e8e"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment/entity.rs": {
+          "emittedPath": "lib/src/payment/entity.rs",
+          "sha256": "3b1b08d3d25eae73306d5298fe94fcf7ba0d54be2f500b72cc08d58a30518ec7"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment/expression.rs": {
+          "emittedPath": "lib/src/payment/expression.rs",
+          "sha256": "57641a42db027639d30c0a0de007e1453404c050c288e242b34fd35c3ca16fcb"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment/mod.rs": {
+          "emittedPath": "lib/src/payment/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment/request.rs": {
+          "emittedPath": "lib/src/payment/request.rs",
+          "sha256": "f80f8668a0576f4d03dd2111a3c7c4db2a2c8352eefee795acfe5e86bbc90d0d"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment_attempt/behavior.rs": {
+          "emittedPath": "lib/src/payment_attempt/behavior.rs",
+          "sha256": "bda06a43e5b78eac1c3f845d216323e93ad667feac9547a0472effdbb1d5ceb6"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment_attempt/checker.rs": {
+          "emittedPath": "lib/src/payment_attempt/checker.rs",
+          "sha256": "3205b74ae4229cf659231947a9ca18ce6902f8816eb012111dfc82f91af405e3"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment_attempt/entity.rs": {
+          "emittedPath": "lib/src/payment_attempt/entity.rs",
+          "sha256": "72496f108e011576fd274cf792038286a3562a37940cc9339064c70018dd82fa"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment_attempt/expression.rs": {
+          "emittedPath": "lib/src/payment_attempt/expression.rs",
+          "sha256": "397337594ba8457cf7bf9e6920fd9a3504d8d1b2c8c0b16bf60197c16e2ffc6c"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment_attempt/mod.rs": {
+          "emittedPath": "lib/src/payment_attempt/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/payment_attempt/request.rs": {
+          "emittedPath": "lib/src/payment_attempt/request.rs",
+          "sha256": "595d18dfad11ba265bda0717653648213ae789e833db4830523218e35bca8966"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/platform/behavior.rs": {
+          "emittedPath": "lib/src/platform/behavior.rs",
+          "sha256": "33504f41ce179be8dcb01a52ef885e2894ee18a1f060a659c215ee41fbe43df4"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/platform/checker.rs": {
+          "emittedPath": "lib/src/platform/checker.rs",
+          "sha256": "e3ccdc9b12f210e6e76eecdb08373f391a7560fa6b1c2cfd4fefed736cef0116"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/platform/entity.rs": {
+          "emittedPath": "lib/src/platform/entity.rs",
+          "sha256": "0b543e82c2646f6b434a42f2d2d94cd6cfc6ec2d11038cec520a036cb85bb1ab"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/platform/expression.rs": {
+          "emittedPath": "lib/src/platform/expression.rs",
+          "sha256": "74036e0ad30467f241c308c272b66d68873754dee33b441eeb9eabd9e248623b"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/platform/mod.rs": {
+          "emittedPath": "lib/src/platform/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/platform/request.rs": {
+          "emittedPath": "lib/src/platform/request.rs",
+          "sha256": "8ecd35f61119a73b6f1b1bd398c2f814fd16a78188e35a6a8b373f83ebba768f"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/q.rs": {
+          "emittedPath": "lib/src/q.rs",
+          "sha256": "dc3971ead339071453e6ca0b3c648a83d416f72debd03b91702c0476fceee170"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/request_support.rs": {
+          "emittedPath": "lib/src/request_support.rs",
+          "sha256": "4dd837c7fd66ff1c406dcd9509b65a8f6142e1d278ce48748a5d9ef46d1e5f41"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/rollup_support.rs": {
+          "emittedPath": "lib/src/rollup_support.rs",
+          "sha256": "7f6f00f7b3ee182a5114d6a9b58d000da7e6d041b3933d9cd73636d93bd6619c"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/runtime.rs": {
+          "emittedPath": "lib/src/runtime.rs",
+          "sha256": "1ca57cca093b2d3daaf281b99ceddf235b803112916bf578659a168fdabb5706"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/sample_data.rs": {
+          "emittedPath": "lib/src/sample_data.rs",
+          "sha256": "6fc2426547d37320acd5ec850d49cb184549c77a7d6aee296888b9d325186566"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/shipment/behavior.rs": {
+          "emittedPath": "lib/src/shipment/behavior.rs",
+          "sha256": "6322acf4236576e33fcc82e792faff09bef3eaee0060b542a8619bbbc0b2b0e8"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/shipment/checker.rs": {
+          "emittedPath": "lib/src/shipment/checker.rs",
+          "sha256": "e554672c4b502ffcb10311d75faad95007d39e64c3765cf35cf7b58254bd58b2"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/shipment/entity.rs": {
+          "emittedPath": "lib/src/shipment/entity.rs",
+          "sha256": "e1c7389f9fc6ec25a1f85c43add9d0ccc8ca08625a97dbf1e139a01ffd6b04cc"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/shipment/expression.rs": {
+          "emittedPath": "lib/src/shipment/expression.rs",
+          "sha256": "99c4b7bad7ec64c1d8fe074eaaf58a03bf002ca6124fd86ad61edb9aa471af7b"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/shipment/mod.rs": {
+          "emittedPath": "lib/src/shipment/mod.rs",
+          "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+        },
+        "examples/trace-chain/rust-lib-core/lib/src/shipment/request.rs": {
+          "emittedPath": "lib/src/shipment/request.rs",
+          "sha256": "1716d4804e208456b7e3d221df38b161cc97b5261ad5b108e851494dce95b8a2"
+        },
+        "examples/trace-chain/rust-lib-core/teaql/checker-model.json": {
+          "emittedPath": "teaql/checker-model.json",
+          "sha256": "4e3a105f6a25a68a4565f8bb5addf7bb560cc2d53f113c300689986959ad8ec0"
+        },
+        "examples/trace-chain/rust-lib-core/teaql/model-provenance.json": {
+          "emittedPath": "teaql/model-provenance.json",
+          "sha256": "ce4a3244d04bfdb550b1636bdecfa3bc7ee442ef31d69ef6505f2b72696433f7"
+        }
+      },
+      "model": "examples/trace-chain/model.xml",
+      "origin": {
+        "evaluatedScope": "rust-lib-core",
+        "evaluationErrors": 0,
+        "evaluationWarnings": 0,
+        "generatedManifestSha256": "f9a5db236b4eace1795ac9169839ec791560ac0025ba2957e2ddac3c93e8546f",
+        "generationReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-unified-intent-current-source/rust/trace-chain/model/receipt.json",
+        "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+        "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+        "generatorRelease": "unreleased-source-021b1ed8",
+        "modelSha256": "8074789ddeecbdcf11d6647108d275a45e8b7736ae95980ec594a40af7956db3",
+        "producerReceiptSha256": "bc28912177cff4ba02f3894e72f6e1e4e2793eaae888ca1fcb3ef9953848a2e9",
+        "producerSource": {
+          "commit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+          "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+          "release": "unreleased-source-021b1ed8"
+        }
+      },
+      "preservedApplicationFiles": {}
+    }
+  ],
+  "runtimeBaseCommit": "858da6c8233eb96289014002efe60a16e5698020",
+  "schema": "teaql.runtime-current-generated-examples/v1",
+  "sourceCodeHandEdited": false
+}

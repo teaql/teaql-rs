@@ -1,0 +1,51 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/src/bin/sqlite_relations_graph.rs",
+  "library": {
+    "generatedFilesManifestSHA256": "5ebeaf6ded737d01ea3949d1a1c35b353842dab50c91e384e598b025f8560271",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "23014647bde2e26441809ec11ed0036461c929671aa2c0ec31d7cfcee541a765"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-sqlite-business-generation/receipt.json",
+    "receiptSHA256": "2fdda83fd38eba3f66c06031d502e133994446bf607d1e7dfd566039201ef585"
+  },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-equipment-purchase-graph-calibrated-intent/runtime/equipment-purchase-graph/receipt.json",
+    "businessReceiptSHA256": "7f1cd13c2902852602fb0eeb73b391c97addacea0a5f40c0300f74fb87f489ed",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-equipment-purchase-graph-calibrated-intent/receipt.json",
+    "nativeReceiptSHA256": "d0ce923fe845e58a24c224f95bc46b44b8e0ef3cd48aed1730b94ed103667d57",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "3d920b182a6d676aa8f8dac8b2208841ef2c4cc0"
+  },
+  "scene": "Purchase equipment with a shared catalog and roll back a blocked order graph",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "focused-verified",
+  "verification": [
+    "bash",
+    "scripts/verify-sqlite-business-example.sh",
+    "equipment-purchase-graph"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "src/main.rs",
+      "calibration/sqlite_relations_graph.rs"
+    ],
+    "generatedFilesManifestSHA256": "9aea6152f4ad7cf2461243df6824c7c85dc7bf71428ffd3a01d74edccd63601c",
+    "root": "rust-app-console",
+    "scope": "rust-app-console",
+    "useSiblingCargoLibrary": true
+  }
+}

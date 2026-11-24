@@ -1,0 +1,5 @@
+<root name="context-fix-service" org="example" data_service="sqlite">
+  <catalog name="Catalog"/>
+  <entry catalog="catalog()" name="Entry" _audit_mask_fields="guarded_token" born_at="createTime()" touched_at="updateTime()"
+         source_ip="string()" last_ip="string()" opened_by="string()" changed_by="string()" guarded_token="uniStr()"/>
+</root>

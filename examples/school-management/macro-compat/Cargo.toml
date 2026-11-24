@@ -12,4 +12,4 @@ macro-hygiene = []
 [dependencies]
 teaql-core = "=4.3.5"
 teaql-macros = "=4.3.5"
-school-management-service-core = { path = "../lib" }
+school-management-service-core = { path = "../rust-lib-core/lib" }

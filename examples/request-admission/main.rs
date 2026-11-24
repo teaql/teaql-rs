@@ -217,7 +217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut owner = Q::purchase_orders()
             .comment("Prepare request intent fixture")
             .purpose("Verify request admission before side effects")
-            .new_entity(&ctx);
+            .new_entity(&ctx)?;
         owner.update_contact_phone("5550801");
         owner.update_internal_note(Value::Null);
         let mut owner = owner
@@ -227,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut child = Q::order_items()
             .comment("Prepare an annotated child")
             .purpose("A child reason cannot authorize the root")
-            .new_entity(&ctx);
+            .new_entity(&ctx)?;
         child.update_purchase_order_id(owner.id());
         child.update_product_name(format!("admission child {round} {logging}"));
         child.update_unit_price(Value::Decimal("1.00".parse()?));

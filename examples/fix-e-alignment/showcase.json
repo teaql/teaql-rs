@@ -1,0 +1,68 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/fix-e-alignment",
+  "library": {
+    "generatedFilesManifestSHA256": "d53e9b26a3b4d00b06100d6a6ec4afdabebaf404c42456ba01bc88e70b6bc246",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "a2cf4c907cb084cb0946e993eeba586c8c0701a89fdc4a849808aa743be033b7"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build; not a public release",
+      "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
+      "qualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
+      "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
+      "tag": "unreleased-source-021b1ed8"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/purchase-order-fix-generation/receipt.json",
+    "receiptSHA256": "920c683d71de38e609d2be2c3d8b7f2fb6c014e3b123edd5c4ea694fc6e91a48"
+  },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-purchase-order-native-scopes/runtime/fix-e/receipt.json",
+    "businessReceiptSHA256": "0b89d83f0813ffac5ec90a26691c29d352562d4ab9ef2b23c82ffac38123e4e1",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-purchase-order-native-scopes/receipt.json",
+    "nativeReceiptSHA256": "edab67b0241096d79f7a35147b458a00fc2e5b5ebbd6318f7d6b53f56c217ed2",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "d8e762e9e327dab7b2fb4070193047ba7b235eb2"
+  },
+  "scene": "Purchase-order partial graph edits, root/clock Fix and precise loaded-state boundaries",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "focused-verified",
+  "verification": [
+    "node",
+    "verify-local.cjs"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "src/cancelled_root_probe.rs",
+      "src/loading_probe.rs",
+      "src/main.rs",
+      "src/context_root_probe.rs",
+      "src/clock_update_probe.rs",
+      "src/checker_wire_probe.rs",
+      "src/version_probe.rs",
+      "src/wrapper_regressions.rs",
+      "src/ownership_probe.rs",
+      "src/checker_range_probe.rs",
+      "src/concurrent_query_probe.rs",
+      "src/creation_identity.rs",
+      "src/nonroot_completeness_probe.rs",
+      "src/partial_ancestor_probe.rs",
+      "src/expression_boundary_probe.rs",
+      "src/checker_pipeline_probe.rs",
+      "src/paged_ownership.rs",
+      "src/tombstone_probe.rs",
+      "src/checker_type_probe.rs",
+      "src/mixed_graph_probe.rs"
+    ],
+    "generatedFilesManifestSHA256": "a7c5935a74f47a88e32cc05ad163aefba8ba2ea7bc7e7a1172151ad5b114faf5",
+    "root": "rust-app-console",
+    "scope": "rust-app-console",
+    "useSiblingCargoLibrary": true
+  }
+}

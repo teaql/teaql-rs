@@ -1,0 +1,51 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/src/bin/sqlite_schema_crud.rs",
+  "library": {
+    "generatedFilesManifestSHA256": "e6da99dd6fc8f898408e076e20a3dd483459318a00d3fee7c6cc671412b8b471",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "12aaf41f3e61e6678b0c90e1321e7286e88942bc401f46b08226d6b06b99131e"
+  },
+  "producer": {
+    "generator": {
+      "artifactKind": "qualified source build",
+      "jarSHA256": "029f602cf0e2de4ec0910495c340fbeb41f11772b6aca875569f498811158e7d",
+      "qualificationReceiptSHA256": "1012520de60d49cfc1e45c7e08fcf204dd2db36a163909e1e36752065a31047a",
+      "sourceCommit": "99d6bde2351d79b7d8b1b1c5cbc78c5dc777b6f2",
+      "tag": "unreleased-source-99d6bde2"
+    },
+    "receipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-sqlite-business-generation/receipt.json",
+    "receiptSHA256": "2fdda83fd38eba3f66c06031d502e133994446bf607d1e7dfd566039201ef585"
+  },
+  "qualification": {
+    "businessReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-maintenance-work-items-calibrated-tombstone/runtime/maintenance-work-items/receipt.json",
+    "businessReceiptSHA256": "212cadd6a75f25ae3b06f4b46657e633ee5fb698911d16bcce992a88169b6b1b",
+    "nativeReceipt": "teaql-conformance/evidence/2026-11-20-example-showcase-remediation/rust-maintenance-work-items-calibrated-tombstone/receipt.json",
+    "nativeReceiptSHA256": "9cabb267599f63fd86c00128bda0e492c1cfc2a3be7c00010c11f1aa042e0017",
+    "remainingFullRuntimeInventory": true,
+    "sourceCommit": "3d920b182a6d676aa8f8dac8b2208841ef2c4cc0"
+  },
+  "scene": "File, escalate and close a lift inspection with versioned SQLite work items",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "status": "focused-verified",
+  "verification": [
+    "bash",
+    "scripts/verify-sqlite-business-example.sh",
+    "maintenance-work-items"
+  ],
+  "workspace": {
+    "applicationOwnedFiles": [
+      "Cargo.toml",
+      "src/main.rs",
+      "calibration/sqlite_schema_crud.rs"
+    ],
+    "generatedFilesManifestSHA256": "eee0975bf9511b300bd9cb3feac8f956b5157e8db928e652c47c4ca8df48735e",
+    "root": "rust-app-console",
+    "scope": "rust-app-console",
+    "useSiblingCargoLibrary": true
+  }
+}

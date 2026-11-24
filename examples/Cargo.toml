@@ -27,3 +27,23 @@ url = "2"
 
 [dev-dependencies]
 futures-util = "0.3"
+
+[[test]]
+name = "business_id_runtime"
+path = "business-id-runtime/rust-app-console/calibration/business_id_runtime.rs"
+
+[[bin]]
+name = "school_example"
+path = "src/bin/school_enrollment/rust-app-console/calibration/school_example.rs"
+
+[[bin]]
+name = "test_default_log"
+path = "src/bin/order_logging/rust-app-console/calibration/test_default_log.rs"
+
+[[bin]]
+name = "sqlite_relations_graph"
+path = "equipment-purchase-graph/rust-app-console/calibration/sqlite_relations_graph.rs"
+
+[[bin]]
+name = "sqlite_schema_crud"
+path = "maintenance-work-items/rust-app-console/calibration/sqlite_schema_crud.rs"
