@@ -555,7 +555,7 @@ pub async fn verify_managed_root() -> Result<(), Box<dyn std::error::Error>> {
             assert_eq!(
                 violation.message.as_deref(),
                 Some(
-                    "The tenant is invalid.\nLocation: the 1st purchase order → the 1st order item"
+                    "The tenant is invalid.\nLocation: the 1st purchase order list → the 1st order item list"
                 )
             );
             assert_eq!(
