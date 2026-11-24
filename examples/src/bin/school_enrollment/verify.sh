@@ -26,6 +26,7 @@ cd "$repo"
 manifest="$case_dir/Cargo.toml"
 program=(cargo run --locked --manifest-path "$manifest" --)
 cargo metadata --format-version 1 --locked --manifest-path "$manifest" > "$evidence/dependencies.json"
+cargo metadata --no-deps --format-version 1 --locked --manifest-path "$repo/Cargo.toml" > "$evidence/runtime-dependencies.json"
 "${program[@]}" "$evidence/install.sqlite" install | tee "$evidence/install.log"
 for round in first restart; do
   "${program[@]}" "$evidence/enrollment.sqlite" "$round" | tee "$evidence/$round.log"

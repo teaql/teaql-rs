@@ -36,13 +36,17 @@ def qualify(directory, runtime):
             assert db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall() == []
     assert (directory / 'install.log').read_text().splitlines().count('ENROLLMENT_INSTALL_READY') == 1
     metadata = json.loads((directory / 'dependencies.json').read_text())
+    runtime_metadata = json.loads((directory / 'runtime-dependencies.json').read_text())
+    runtime_packages = {package['name']: package for package in runtime_metadata['packages']}
     local_modules = {}
     for package in metadata['packages']:
         name = package['name']
         if name.startswith('teaql-'):
             manifest = Path(package['manifest_path']).resolve()
-            assert package['source'] is None and package['version'] == '8.1.0'
-            assert manifest == runtime / name / 'Cargo.toml'
+            expected = runtime_packages[name]
+            assert package['source'] is None and expected['source'] is None
+            assert package['version'] == expected['version']
+            assert manifest == Path(expected['manifest_path']).resolve() == runtime / name / 'Cargo.toml'
             local_modules[name] = str(manifest.relative_to(runtime))
         elif name == 'school-enrollment-core':
             assert Path(package['manifest_path']).resolve() == (
@@ -60,7 +64,7 @@ def qualify(directory, runtime):
     calibration = (directory / 'calibration.log').read_text()
     assert all(text in calibration for text in ['save(&context) succeeded', 'My School', 'Alice', 'Bob'])
     names = ['install.log', 'first.log', 'restart.log', 'enrollment.sqlite',
-             'rows-first.json', 'rows-restart.json', 'calibration.log', 'dependencies.json']
+             'rows-first.json', 'rows-restart.json', 'calibration.log', 'dependencies.json', 'runtime-dependencies.json']
     result = dict(schema='teaql.rust-enrollment-business/v1', passed=True, sameDatabase=True, passiveInstall=True,
                   rounds=results, persisted=rows(directory), localRuntimeModules=local_modules,
                   evidenceSHA256={name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in names})
