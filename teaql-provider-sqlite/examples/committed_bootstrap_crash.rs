@@ -801,10 +801,10 @@ fn main() -> ProbeResult<()> {
             std::panic::resume_unwind(panic);
         }
     };
-    if result.is_err() {
-        if let Some(owned) = owned {
-            let _ = owned.keep();
-        }
+    if result.is_err()
+        && let Some(owned) = owned
+    {
+        let _ = owned.keep();
     }
     if std::env::var_os("TEAQL_CMR12_EVIDENCE_DIR").is_some() || result.is_err() {
         println!(
