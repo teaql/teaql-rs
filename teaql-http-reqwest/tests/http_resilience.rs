@@ -183,6 +183,8 @@ async fn dropped_tcp_syn_obeys_connection_budget() {
 }
 
 fn handle(mut stream: TcpStream, inner: &Inner) {
+    // The peer-closure check needs a bounded blocking read on every OS.
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
