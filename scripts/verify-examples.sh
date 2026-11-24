@@ -2,9 +2,10 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-verification_dir="$(mktemp -d)"
-trap 'status=$?; if (( status == 0 )); then rm -rf -- "$verification_dir"; else echo "FAILED: example evidence retained at $verification_dir" >&2; fi' EXIT
-expected=(business-id-runtime conformance context-bound-order-document facet-trace http-resilience object-storage order-management school-management secret-provider shared-load-state tests trace-chain)
+verification_dir="${TEAQL_EXAMPLES_EVIDENCE_DIR:-$(mktemp -d -t teaql-rust-examples-evidence.XXXXXXXX)}/runtime"
+mkdir -p "$verification_dir"
+echo "Retained compact example logs and databases: $verification_dir"
+expected=(boolean-boundaries business-id-runtime conformance context-bound-order-document context-derived expression-profiles facet-trace fix-e-alignment http-resilience inheritance-save natural-messages object-storage order-management request-admission school-management secret-provider shared-load-state supplier-onboarding-i18n tests trace-chain)
 mapfile -t actual < <(find "$repo/examples" -mindepth 1 -maxdepth 1 -type d ! -name src -printf '%f\n' | sort)
 if [[ "${actual[*]}" != "${expected[*]}" ]]; then
   echo "example inventory changed; update scripts/verify-examples.sh: ${actual[*]}" >&2
@@ -12,6 +13,22 @@ if [[ "${actual[*]}" != "${expected[*]}" ]]; then
 fi
 
 cd "$repo"
+node scripts/test-sqlite-probe-adapter.cjs
+TEAQL_FIX_E_EVIDENCE_DIR="${verification_dir%/runtime}/fix-e" \
+  node examples/fix-e-alignment/verify-local.cjs
+node examples/school-management/verify-grouped-mapping.cjs --output "${verification_dir%/runtime}/grouped-mapping"
+node examples/inheritance-save/verify.cjs --output "${verification_dir%/runtime}/inheritance-save"
+python3 examples/context-derived/verify-local.py --output "${verification_dir%/runtime}/context-derived"
+python3 scripts/verify-natural-messages.py --example --output "${verification_dir%/runtime}/natural-messages"
+TEAQL_REQUEST_ADMISSION_EVIDENCE_DIR="${verification_dir%/runtime}/request-admission" \
+  node examples/request-admission/verify-local.cjs
+TEAQL_BOOLEAN_EVIDENCE_DIR="${verification_dir%/runtime}/boolean-boundaries" \
+  node examples/boolean-boundaries/verify-local.cjs
+# Isolated non-Git copies must name their hash-bound Git origin explicitly.
+TEAQL_GENERATED_E_PROFILE_EVIDENCE_DIR="${verification_dir%/runtime}/expression-profiles" \
+  node examples/expression-profiles/verify-local.cjs
+node examples/tests/loaded-revert/verify-local.cjs
+node examples/tests/loaded-revert/verify-views.cjs
 bash examples/http-resilience/verify.sh
 bash examples/secret-provider/verify.sh
 bash examples/object-storage/verify.sh
@@ -28,7 +45,16 @@ SCHOOL_MANAGEMENT_SERVICE_CORE_DATABASE_URL="$verification_dir/env-helper.db" \
   TEAQL_AUDIT_DEBUG_ENDPOINT="$verification_dir/env-helper-audit-sensitive.log" \
   TEAQL_AUDIT_LOG=_full_with_payload \
   cargo run --quiet --manifest-path examples/school-management/Cargo.toml --bin env_runtime_save_probe
-grep -F -q 'SQL: -- TeaQL SAFE' "$verification_dir/env-helper-safe.log"
+python3 - "$verification_dir/env-helper-safe.log" <<'PY'
+import json, sys
+from pathlib import Path
+records = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
+sql = [row for row in records if row.get('category') == 'SQL']
+assert sql, 'ordinary runtime file must contain structured SQL events'
+assert any('-- TeaQL SAFE' in (row.get('sql') or '') for row in sql), 'ordinary SQL lost its safe rendering marker'
+assert all(all(key in row for key in ('timestamp', 'level', 'log_name', 'runtime', 'event', 'message')) for row in records)
+print('PASS: JSON runtime SQL retains safe rendering and typed event fields')
+PY
 grep -F -q "'En*************ol'" "$verification_dir/env-helper-safe.log"
 grep -F -q "'1 Runtime Road'" "$verification_dir/env-helper-safe.log"
 if grep -E -q 'Parameterized SQL:|SQL omitted:|Env Helper School|PRIVATE-FAILURE-CANARY' "$verification_dir/env-helper-safe.log"; then
@@ -76,4 +102,8 @@ TEAQL_SAVE_LOAD_STATE_DATABASE="sqlite:file:$verification_dir/graph.db" \
 cargo test -p teaql-tfp-endpoint --examples
 bash examples/trace-chain/verify.sh
 bash examples/facet-trace/verify.sh
-echo "PASS: standard Rust examples; shared-load-state has its own generator-backed verify.sh gate"
+bash examples/shared-load-state/verify.sh
+TEAQL_MAINSTREAM_EVIDENCE_DIR="${verification_dir%/runtime}/mainstream-reference" \
+  node examples/shared-load-state/verify-mainstream-reference.cjs
+bash examples/supplier-onboarding-i18n/run.sh --verify
+echo "PASS: all Rust examples"

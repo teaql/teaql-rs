@@ -499,7 +499,7 @@ where
             .filter_map(|row| row.get(&plan.local_key).cloned())
             .collect::<Vec<_>>();
         if ids.is_empty() {
-            attach_empty_relation_aggregate(parent_rows, &aggregate.alias, aggregate.single_result);
+            attach_empty_relation_aggregate(parent_rows, aggregate);
             return Ok(());
         }
 

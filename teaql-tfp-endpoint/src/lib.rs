@@ -45,6 +45,8 @@ pub enum TrustedEntityVisibility {
 pub struct WireEntityMetadata {
     pub canonical_to_wire: std::collections::BTreeMap<String, String>,
     accepted_to_canonical: std::collections::BTreeMap<String, String>,
+    canonical_types: std::collections::BTreeMap<String, teaql_core::DataType>,
+    canonical_logical_types: std::collections::BTreeMap<String, String>,
 }
 
 impl WireEntityMetadata {
@@ -66,6 +68,8 @@ impl WireEntityMetadata {
         Ok(Self {
             canonical_to_wire,
             accepted_to_canonical: accepted,
+            canonical_types: std::collections::BTreeMap::new(),
+            canonical_logical_types: std::collections::BTreeMap::new(),
         })
     }
 
@@ -102,6 +106,44 @@ impl WireEntityMetadata {
         }
         Ok(response)
     }
+
+    fn internal_field_types(
+        &self,
+        canonical_policy: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Option<std::collections::BTreeMap<String, teaql_core::DataType>>, String> {
+        if self.canonical_types.is_empty() {
+            return Ok(None);
+        }
+        canonical_policy
+            .iter()
+            .map(|(canonical, internal)| {
+                self.canonical_types
+                    .get(canonical)
+                    .map(|data_type| (internal.clone(), *data_type))
+                    .ok_or_else(|| format!("Missing trusted scalar type for {canonical}"))
+            })
+            .collect::<Result<_, _>>()
+            .map(Some)
+    }
+
+    fn internal_long_fields(
+        &self,
+        canonical_policy: &std::collections::BTreeMap<String, String>,
+    ) -> Result<std::collections::BTreeSet<String>, String> {
+        if self.canonical_logical_types.is_empty() {
+            return Ok(std::collections::BTreeSet::new());
+        }
+        canonical_policy
+            .iter()
+            .filter_map(
+                |(canonical, internal)| match self.canonical_logical_types.get(canonical) {
+                    Some(kind) if kind == "long" => Some(Ok(internal.clone())),
+                    Some(_) => None,
+                    None => Some(Err(format!("Missing trusted logical type for {canonical}"))),
+                },
+            )
+            .collect()
+    }
 }
 
 /// Converts dependency-free metadata emitted by a generated runtime module.
@@ -117,6 +159,80 @@ pub fn wire_metadata_from_generated(
             Ok((entity, metadata))
         })
         .collect()
+}
+
+/// Binds generated wire names to the generated runtime's trusted model types.
+/// A mapping that is neither a modeled scalar property nor a forward
+/// relation with a modeled local foreign key fails closed at startup.
+pub fn wire_metadata_from_generated_with_model(
+    mappings: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    aliases: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    model: &impl teaql_runtime::MetadataStore,
+) -> Result<std::collections::BTreeMap<String, WireEntityMetadata>, String> {
+    let mut metadata = wire_metadata_from_generated(mappings, aliases)?;
+    for (entity, wire) in &mut metadata {
+        let descriptor = model
+            .entity(entity)
+            .ok_or_else(|| format!("Missing generated model descriptor for {entity}"))?;
+        wire.canonical_types = wire
+            .canonical_to_wire
+            .keys()
+            .map(|canonical| {
+                descriptor
+                    .property_by_name(canonical)
+                    .or_else(|| {
+                        descriptor
+                            .relation_by_name(canonical)
+                            .filter(|relation| !relation.many)
+                            .and_then(|relation| descriptor.property_by_name(&relation.local_key))
+                    })
+                    .map(|property| (canonical.clone(), property.data_type))
+                    .ok_or_else(|| {
+                        format!("Missing generated scalar property {entity}.{canonical}")
+                    })
+            })
+            .collect::<Result<_, _>>()?;
+    }
+    Ok(metadata)
+}
+
+/// Adds the generator's logical KSML field types to model-validated wire
+/// metadata. The logical distinction is necessary because both integer() and
+/// long() may be represented as DataType::I64 by the runtime.
+pub fn wire_metadata_from_generated_with_model_and_logical_types(
+    mappings: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    aliases: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    mut logical_types: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, String>,
+    >,
+    model: &impl teaql_runtime::MetadataStore,
+) -> Result<std::collections::BTreeMap<String, WireEntityMetadata>, String> {
+    let mut metadata = wire_metadata_from_generated_with_model(mappings, aliases, model)?;
+    for (entity, wire) in &mut metadata {
+        let kinds = logical_types
+            .remove(entity)
+            .ok_or_else(|| format!("Missing generated logical types for {entity}"))?;
+        if !kinds.keys().eq(wire.canonical_to_wire.keys()) {
+            return Err(format!(
+                "Generated logical type fields differ from wire fields for {entity}"
+            ));
+        }
+        for (canonical, kind) in &kinds {
+            if kind == "long"
+                && wire.canonical_types.get(canonical) != Some(&teaql_core::DataType::I64)
+            {
+                return Err(format!(
+                    "Generated long field is not modeled as I64: {entity}.{canonical}"
+                ));
+            }
+        }
+        wire.canonical_logical_types = kinds;
+    }
+    if let Some(extra) = logical_types.keys().next() {
+        return Err(format!("Logical types contain unknown entity: {extra}"));
+    }
+    Ok(metadata)
 }
 
 fn register_wire_name(
@@ -184,6 +300,11 @@ pub fn retain_submitted_paths(
 ) {
     for result in results {
         let wire = result.to_wire(teaql_runtime::JsonFieldNamingProfile::SnakeCase);
+        // This normalization covers one object. Do not replace a descendant's
+        // complete pointer with the path of its parent collection/relation.
+        if wire.location.len() != 1 {
+            continue;
+        }
         let Some(teaql_runtime::WireLocationSegment::Property { name: canonical }) =
             wire.location.first()
         else {
@@ -245,40 +366,54 @@ fn compact_row_to_wire_json(
     row: &teaql_core::CompactRow,
     response_fields: &std::collections::BTreeMap<String, String>,
     aggregate_aliases: &std::collections::BTreeSet<String>,
+    long_fields: &std::collections::BTreeSet<String>,
 ) -> Result<JsonValue, String> {
-    let JsonValue::Object(raw) = teaql_core::compact_row_to_json_value(row) else {
-        return Err("TFP query result row must be an object".into());
-    };
     let mut output = serde_json::Map::new();
-    for (internal, value) in raw {
-        let public = if let Some(public) = response_fields.get(&internal) {
+    for (internal, value) in row.iter() {
+        let public = if let Some(public) = response_fields.get(internal) {
             public.clone()
-        } else if aggregate_aliases.contains(&internal) {
+        } else if aggregate_aliases.contains(internal) {
             internal.clone()
         } else {
             return Err(format!("Unexpected query result field: {internal}"));
         };
-        if output.insert(public.clone(), value).is_some() {
+        let wire_value = value_to_wire_json(value, long_fields.contains(internal))?;
+        if output.insert(public.clone(), wire_value).is_some() {
             return Err(format!("Duplicate TFP response field: {public}"));
         }
     }
     Ok(JsonValue::Object(output))
 }
 
+fn value_to_wire_json(value: &teaql_core::Value, modeled_long: bool) -> Result<JsonValue, String> {
+    if !modeled_long {
+        return Ok(value.to_json_value());
+    }
+    match value {
+        teaql_core::Value::I64(value) => Ok(JsonValue::String(value.to_string())),
+        teaql_core::Value::U64(value) if *value <= i64::MAX as u64 => {
+            Ok(JsonValue::String(value.to_string()))
+        }
+        teaql_core::Value::Null | teaql_core::Value::TypedNull(_) => Ok(JsonValue::Null),
+        _ => Err("Modeled long result is not a signed 64-bit integer".into()),
+    }
+}
+
 fn generated_values_to_wire_json(
     generated: &teaql_core::Record,
     response_fields: &std::collections::BTreeMap<String, String>,
-) -> JsonValue {
-    let JsonValue::Object(raw) = teaql_core::record_to_json_value(generated) else {
-        return JsonValue::Object(serde_json::Map::new());
-    };
+    long_fields: &std::collections::BTreeSet<String>,
+) -> Result<JsonValue, String> {
     let mut output = serde_json::Map::new();
-    for (internal, value) in raw {
-        if let Some(public) = response_fields.get(&internal) {
-            output.insert(public.clone(), value);
+    for (internal, value) in generated {
+        if let Some(public) = response_fields.get(internal) {
+            output.insert(
+                public.clone(),
+                value_to_wire_json(value, long_fields.contains(internal))?,
+            );
         }
     }
-    JsonValue::Object(output)
+    Ok(JsonValue::Object(output))
 }
 
 fn governed_query_result_limit(query: &teaql_core::SelectQuery) -> u64 {
@@ -360,6 +495,9 @@ impl TfpEndpointError {
                     || message.starts_with("Mutation payload must be an object")
                     || message.starts_with("Mutation field aliases collide")
                     || message.starts_with("Object values are forbidden")
+                    || message.starts_with("Invalid TFP operand")
+                    || message.starts_with("Invalid typed predicate")
+                    || message.starts_with("Invalid typed range bound")
                     || message.contains("does not accept null") =>
             {
                 "TFP_INVALID_REQUEST"
@@ -511,6 +649,8 @@ where
         let mappings = generated_mappings.as_ref().unwrap_or(configured_mappings);
         let response_fields = effective_response_field_mappings(trusted, &tfp_query.entity)
             .map_err(TfpEndpointError::TranslationError)?;
+        let long_fields = effective_long_fields(trusted, &tfp_query.entity)
+            .map_err(TfpEndpointError::TranslationError)?;
         prepare_facets(trusted, &mut tfp_query).map_err(TfpEndpointError::TranslationError)?;
         tfp_query
             .map_fields(mappings)
@@ -529,8 +669,10 @@ where
             .resolved_purpose()
             .map_err(TfpEndpointError::TranslationError)?
             .to_owned();
+        let field_types = effective_field_types(trusted, &tfp_query.entity)
+            .map_err(TfpEndpointError::TranslationError)?;
         let mut core_query = tfp_query
-            .to_core()
+            .to_core_with_field_types(field_types.as_ref())
             .map_err(TfpEndpointError::TranslationError)?;
         apply_allowlisted_default_projection(&mut core_query, mappings)
             .map_err(TfpEndpointError::TranslationError)?;
@@ -569,7 +711,9 @@ where
         let rows_json: Vec<JsonValue> = result
             .rows
             .iter()
-            .map(|row| compact_row_to_wire_json(row, &response_fields, &aggregate_aliases))
+            .map(|row| {
+                compact_row_to_wire_json(row, &response_fields, &aggregate_aliases, &long_fields)
+            })
             .collect::<Result<_, _>>()
             .map_err(TfpEndpointError::ExecutionError)?;
 
@@ -687,6 +831,8 @@ where
             let nested_response_fields =
                 effective_response_field_mappings(trusted, &facet.query.entity)
                     .map_err(TfpEndpointError::TranslationError)?;
+            let nested_long_fields = effective_long_fields(trusted, &facet.query.entity)
+                .map_err(TfpEndpointError::TranslationError)?;
             let mut nested = *facet.query;
             nested.aggregate_items.clear();
             nested.group_by_items.clear();
@@ -698,8 +844,10 @@ where
                 .resolved_purpose()
                 .map_err(TfpEndpointError::TranslationError)?
                 .to_owned();
+            let nested_types = effective_field_types(trusted, &nested.entity)
+                .map_err(TfpEndpointError::TranslationError)?;
             let mut nested_query = nested
-                .to_core()
+                .to_core_with_field_types(nested_types.as_ref())
                 .map_err(TfpEndpointError::TranslationError)?;
             let nested_mappings = effective_field_mappings(trusted, &nested.entity, false)
                 .map_err(TfpEndpointError::TranslationError)?;
@@ -732,9 +880,13 @@ where
             let mut values = Vec::new();
             let no_aggregate_aliases = std::collections::BTreeSet::new();
             for row in &nested_result.rows {
-                let mut value =
-                    compact_row_to_wire_json(row, &nested_response_fields, &no_aggregate_aliases)
-                        .map_err(TfpEndpointError::ExecutionError)?;
+                let mut value = compact_row_to_wire_json(
+                    row,
+                    &nested_response_fields,
+                    &no_aggregate_aliases,
+                    &nested_long_fields,
+                )
+                .map_err(TfpEndpointError::ExecutionError)?;
                 let id = value
                     .get("id")
                     .filter(|id| !id.is_null())
@@ -818,6 +970,11 @@ where
                 .map_err(TfpEndpointError::TranslationError)?,
             None => std::collections::BTreeMap::new(),
         };
+        let long_fields = match trusted.field_mappings.get(&tfp_mutation.entity) {
+            Some(_) => effective_long_fields(trusted, &tfp_mutation.entity)
+                .map_err(TfpEndpointError::TranslationError)?,
+            None => std::collections::BTreeSet::new(),
+        };
         let mappings = trusted
             .writable_field_mappings
             .get(&tfp_mutation.entity)
@@ -888,7 +1045,9 @@ where
         let mut data_arr = Vec::new();
         if !result.generated_values.is_empty() {
             let generated: teaql_core::Record = result.generated_values.clone().into();
-            let public_generated = generated_values_to_wire_json(&generated, &response_fields);
+            let public_generated =
+                generated_values_to_wire_json(&generated, &response_fields, &long_fields)
+                    .map_err(TfpEndpointError::ExecutionError)?;
             if public_generated
                 .as_object()
                 .is_some_and(|values| !values.is_empty())
@@ -1132,6 +1291,34 @@ fn effective_field_mappings(
         .get(entity)
         .map(|metadata| metadata.accepted_policy_map(configured))
         .unwrap_or_else(|| configured.clone()))
+}
+
+fn effective_field_types(
+    trusted: &TrustedQueryContext,
+    entity: &str,
+) -> Result<Option<std::collections::BTreeMap<String, teaql_core::DataType>>, String> {
+    let Some(metadata) = trusted.wire_metadata.get(entity) else {
+        return Ok(None);
+    };
+    let policy = trusted
+        .field_mappings
+        .get(entity)
+        .ok_or_else(|| format!("No field policy for entity: {entity}"))?;
+    metadata.internal_field_types(policy)
+}
+
+fn effective_long_fields(
+    trusted: &TrustedQueryContext,
+    entity: &str,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let Some(metadata) = trusted.wire_metadata.get(entity) else {
+        return Ok(std::collections::BTreeSet::new());
+    };
+    let policy = trusted
+        .field_mappings
+        .get(entity)
+        .ok_or_else(|| format!("No field policy for entity: {entity}"))?;
+    metadata.internal_long_fields(policy)
 }
 
 fn effective_response_field_mappings(
@@ -2467,6 +2654,244 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generated_scalar_predicates_retain_model_types() {
+        fn value_for_field<'a>(
+            expression: &'a teaql_core::Expr,
+            field: &str,
+        ) -> Option<&'a teaql_core::Value> {
+            match expression {
+                teaql_core::Expr::Binary { left, right, .. } if matches!(left.as_ref(), teaql_core::Expr::Column(name) if name == field) => {
+                    match right.as_ref() {
+                        teaql_core::Expr::Value(value) => Some(value),
+                        _ => None,
+                    }
+                }
+                teaql_core::Expr::And(items) | teaql_core::Expr::Or(items) => {
+                    items.iter().find_map(|item| value_for_field(item, field))
+                }
+                _ => None,
+            }
+        }
+
+        let queries = Arc::new(Mutex::new(Vec::new()));
+        let endpoint = TfpEndpoint::new(
+            Arc::new(RecordingQueryExecutor(queries.clone())),
+            Arc::new(StubExecutor),
+        );
+        let mut policy = trusted_with_generated_wire_metadata();
+        let fields = policy.field_mappings.get_mut("CustomerOrder").unwrap();
+        fields.insert("amount".into(), "amount".into());
+        fields.insert("required_long".into(), "required_long".into());
+        let descriptor = teaql_core::EntityDescriptor::new("CustomerOrder")
+            .property(teaql_core::PropertyDescriptor::new(
+                "id",
+                teaql_core::DataType::I64,
+            ))
+            .property(teaql_core::PropertyDescriptor::new(
+                "order_number",
+                teaql_core::DataType::Text,
+            ))
+            .property(teaql_core::PropertyDescriptor::new(
+                "status",
+                teaql_core::DataType::I64,
+            ))
+            .property(teaql_core::PropertyDescriptor::new(
+                "amount",
+                teaql_core::DataType::Decimal,
+            ))
+            .property(teaql_core::PropertyDescriptor::new(
+                "required_long",
+                teaql_core::DataType::I64,
+            ));
+        let model = teaql_runtime::InMemoryMetadataStore::new().with_entity(descriptor);
+        policy.wire_metadata = wire_metadata_from_generated_with_model(
+            BTreeMap::from([(
+                "CustomerOrder".into(),
+                BTreeMap::from([
+                    ("id".into(), "id".into()),
+                    ("order_number".into(), "orderNumber".into()),
+                    ("status".into(), "status".into()),
+                    ("amount".into(), "amount".into()),
+                    ("required_long".into(), "requiredLong".into()),
+                ]),
+            )]),
+            BTreeMap::new(),
+            &model,
+        )
+        .unwrap();
+        endpoint
+            .handle_query(
+                &policy,
+                json!({
+                    "entity": "CustomerOrder",
+                    "filterCondition": {"$and": [
+                        {"amount": {"$eq": "123456789012.3456789"}},
+                        {"requiredLong": {"$eq": "9007199254740993"}},
+                        {"orderNumber": {"$eq": "123.45"}}
+                    ]},
+                    "limitValue": 1,
+                    "commentText": "load typed scalar values",
+                    "purposeText": "verify model-derived TFP predicates"
+                }),
+            )
+            .await
+            .unwrap();
+        {
+            let recorded = queries.lock().unwrap();
+            let filter = recorded[0].query.filter.as_ref().unwrap();
+            assert!(matches!(
+                value_for_field(filter, "amount"),
+                Some(teaql_core::Value::Decimal(_))
+            ));
+            assert_eq!(
+                value_for_field(filter, "required_long"),
+                Some(&teaql_core::Value::I64(9007199254740993))
+            );
+            assert_eq!(
+                value_for_field(filter, "order_number"),
+                Some(&teaql_core::Value::Text("123.45".into()))
+            );
+        }
+
+        for filter in [
+            json!({"amount": {"$eq": 3.5}}),
+            json!({"amount": {"$eq": "invalid-decimal"}}),
+            json!({"requiredLong": {"$eq": "9223372036854775808"}}),
+        ] {
+            let error = endpoint
+                .handle_query(
+                    &policy,
+                    json!({
+                        "entity": "CustomerOrder",
+                        "filterCondition": filter,
+                        "limitValue": 1,
+                        "commentText": "reject malformed scalar input",
+                        "purposeText": "verify TFP rejects before provider access"
+                    }),
+                )
+                .await
+                .expect_err("invalid scalar operand");
+            assert_eq!(error.code(), "TFP_INVALID_REQUEST");
+            assert_eq!(queries.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn generated_scalar_metadata_rejects_unmodeled_fields_at_startup() {
+        let model = teaql_runtime::InMemoryMetadataStore::new().with_entity(
+            teaql_core::EntityDescriptor::new("ScalarOrder").property(
+                teaql_core::PropertyDescriptor::new("id", teaql_core::DataType::I64),
+            ),
+        );
+        let result = wire_metadata_from_generated_with_model(
+            BTreeMap::from([(
+                "ScalarOrder".into(),
+                BTreeMap::from([
+                    ("id".into(), "id".into()),
+                    ("invented_amount".into(), "inventedAmount".into()),
+                ]),
+            )]),
+            BTreeMap::new(),
+            &model,
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Missing generated scalar property")
+        );
+    }
+
+    #[test]
+    fn generated_logical_types_reject_missing_and_incompatible_fields() {
+        let model = teaql_runtime::InMemoryMetadataStore::new().with_entity(
+            teaql_core::EntityDescriptor::new("ScalarOrder")
+                .property(teaql_core::PropertyDescriptor::new(
+                    "id",
+                    teaql_core::DataType::I64,
+                ))
+                .property(teaql_core::PropertyDescriptor::new(
+                    "order_number",
+                    teaql_core::DataType::Text,
+                )),
+        );
+        let mappings = BTreeMap::from([(
+            "ScalarOrder".into(),
+            BTreeMap::from([
+                ("id".into(), "id".into()),
+                ("order_number".into(), "orderNumber".into()),
+            ]),
+        )]);
+        let missing = wire_metadata_from_generated_with_model_and_logical_types(
+            mappings.clone(),
+            BTreeMap::new(),
+            BTreeMap::from([(
+                "ScalarOrder".into(),
+                BTreeMap::from([("id".into(), "id".into())]),
+            )]),
+            &model,
+        )
+        .unwrap_err();
+        assert!(missing.contains("fields differ"));
+
+        let incompatible = wire_metadata_from_generated_with_model_and_logical_types(
+            mappings,
+            BTreeMap::new(),
+            BTreeMap::from([(
+                "ScalarOrder".into(),
+                BTreeMap::from([
+                    ("id".into(), "id".into()),
+                    ("order_number".into(), "long".into()),
+                ]),
+            )]),
+            &model,
+        )
+        .unwrap_err();
+        assert!(incompatible.contains("not modeled as I64"));
+    }
+
+    #[test]
+    fn generated_forward_relation_uses_modeled_local_foreign_key_type() {
+        let model = teaql_runtime::InMemoryMetadataStore::new().with_entity(
+            teaql_core::EntityDescriptor::new("ScalarOrder")
+                .property(teaql_core::PropertyDescriptor::new(
+                    "id",
+                    teaql_core::DataType::U64,
+                ))
+                .property(teaql_core::PropertyDescriptor::new(
+                    "type_platform_id",
+                    teaql_core::DataType::U64,
+                ))
+                .relation(
+                    teaql_core::RelationDescriptor::new("type_platform", "TypePlatform")
+                        .local_key("type_platform_id")
+                        .foreign_key("id"),
+                ),
+        );
+        let metadata = wire_metadata_from_generated_with_model(
+            BTreeMap::from([(
+                "ScalarOrder".into(),
+                BTreeMap::from([
+                    ("id".into(), "id".into()),
+                    ("type_platform".into(), "typePlatform".into()),
+                ]),
+            )]),
+            BTreeMap::new(),
+            &model,
+        )
+        .expect("generated forward relation resolves to its local FK");
+        let allowed_subset = BTreeMap::from([("type_platform".into(), "type_platform_id".into())]);
+        let types = metadata["ScalarOrder"]
+            .internal_field_types(&allowed_subset)
+            .expect("allowed fields have trusted types")
+            .expect("typed metadata");
+        assert_eq!(
+            types.get("type_platform_id"),
+            Some(&teaql_core::DataType::U64)
+        );
+        assert_eq!(types.len(), 1, "host policy may allow a strict subset");
+    }
+
+    #[tokio::test]
     async fn ambiguous_and_excessive_filters_fail_before_execution() {
         let queries = Arc::new(Mutex::new(Vec::new()));
         let query_executor = RecordingQueryExecutor(queries.clone());
@@ -2892,9 +3317,52 @@ mod tests {
                 &unexpected,
                 &BTreeMap::from([("id".into(), "id".into())]),
                 &BTreeSet::new(),
+                &BTreeSet::new(),
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn modeled_long_output_is_exact_and_does_not_change_integer_or_text() {
+        let long_fields = BTreeSet::from(["long_value".to_owned()]);
+        let fields = BTreeMap::from([
+            ("long_value".to_owned(), "longValue".to_owned()),
+            ("integer_value".to_owned(), "integerValue".to_owned()),
+            ("numeric_text".to_owned(), "numericText".to_owned()),
+        ]);
+        let row = teaql_core::CompactRow::from_map(Record::from([
+            ("long_value".into(), teaql_core::Value::I64(i64::MIN)),
+            ("integer_value".into(), teaql_core::Value::I64(7)),
+            (
+                "numeric_text".into(),
+                teaql_core::Value::Text("9007199254740993".into()),
+            ),
+        ]));
+        let wire = compact_row_to_wire_json(&row, &fields, &BTreeSet::new(), &long_fields)
+            .expect("exact Long row");
+        assert_eq!(wire["longValue"], i64::MIN.to_string());
+        assert_eq!(wire["integerValue"], 7);
+        assert_eq!(wire["numericText"], "9007199254740993");
+        assert_eq!(
+            value_to_wire_json(&teaql_core::Value::I64(i64::MAX), true).unwrap(),
+            JsonValue::String(i64::MAX.to_string())
+        );
+        assert_eq!(
+            value_to_wire_json(&teaql_core::Value::Null, true).unwrap(),
+            JsonValue::Null
+        );
+        assert!(value_to_wire_json(&teaql_core::Value::Text("5".into()), true).is_err());
+        assert!(value_to_wire_json(&teaql_core::Value::U64(u64::MAX), true).is_err());
+
+        let generated = Record::from([
+            ("long_value".into(), teaql_core::Value::I64(i64::MAX)),
+            ("integer_value".into(), teaql_core::Value::I64(7)),
+        ]);
+        let generated_wire = generated_values_to_wire_json(&generated, &fields, &long_fields)
+            .expect("exact mutation values");
+        assert_eq!(generated_wire["longValue"], i64::MAX.to_string());
+        assert_eq!(generated_wire["integerValue"], 7);
     }
 
     #[tokio::test]
@@ -3544,6 +4012,40 @@ mod tests {
                 .unwrap_err()
                 .code(),
             "WIRE_UNKNOWN_FIELD"
+        );
+    }
+
+    #[test]
+    fn wire_parent_alias_never_truncates_descendant_provenance() {
+        use teaql_runtime::{CheckResult, ObjectLocation};
+        let normalized = NormalizedWireObject {
+            values: serde_json::Map::new(),
+            source_instance_paths: BTreeMap::from([
+                ("order_item_list".into(), "/legacy~1items".into()),
+                ("product_name".into(), "/legacy~0name".into()),
+            ]),
+        };
+        let child = ObjectLocation::hash_root("order_item_list")
+            .element(2)
+            .member("product_name");
+        let exact = "/legacy~1items/2/legacy~0name";
+        let mut results = vec![
+            CheckResult::required(child.clone()).with_source_instance_path(exact),
+            CheckResult::required(child),
+            CheckResult::required(ObjectLocation::root().element(2).member("product_name")),
+            CheckResult::required(ObjectLocation::hash_root("order_item_list")),
+        ];
+        retain_submitted_paths(&mut results, &normalized);
+        assert_eq!(results[0].source_instance_path.as_deref(), Some(exact));
+        assert_eq!(
+            results[0].location.instance_path(),
+            "/orderItemList/2/productName"
+        );
+        assert_eq!(results[1].source_instance_path, None);
+        assert_eq!(results[2].source_instance_path, None);
+        assert_eq!(
+            results[3].source_instance_path.as_deref(),
+            Some("/legacy~1items")
         );
     }
 }

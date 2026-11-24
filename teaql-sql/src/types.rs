@@ -226,6 +226,17 @@ fn sql_literal(value: &Value, kind: DatabaseKind) -> String {
         Value::F64(value) => value.to_string(),
         Value::Decimal(value) => value.to_string(),
         Value::Text(value) => quoted_sql_string(value),
+        Value::Binary(value) => {
+            use std::fmt::Write;
+            let mut hex = String::with_capacity(value.len() * 2);
+            for byte in value {
+                write!(&mut hex, "{byte:02x}").expect("write into String");
+            }
+            match kind {
+                DatabaseKind::PostgreSql => format!("decode('{hex}', 'hex')"),
+                DatabaseKind::Sqlite | DatabaseKind::MySql => format!("X'{hex}'"),
+            }
+        }
         Value::Json(value) => quoted_sql_string(&value.to_string()),
         Value::Date(value) => match kind {
             DatabaseKind::PostgreSql => format!("DATE '{}'", value),
@@ -276,7 +287,13 @@ pub enum SqlCompileError {
     MissingIdProperty(String),
     MissingVersionProperty(String),
     EmptyMutation(String),
+    InvalidDeleteVersion(i64),
+    InvalidUpdateVersion(i64),
     InvalidRecoverVersion(i64),
+    VersionExhausted {
+        operation: teaql_core::MutationKind,
+        version: i64,
+    },
     UnsupportedSchemaType(DataType),
     InvalidSchemaShape {
         property: String,
@@ -303,9 +320,23 @@ impl std::fmt::Display for SqlCompileError {
                 write!(f, "entity {entity} has no version property")
             }
             Self::EmptyMutation(kind) => write!(f, "{kind} requires at least one writable field"),
+            Self::InvalidDeleteVersion(version) => {
+                write!(
+                    f,
+                    "soft deletion requires a positive original version, got {version}; use explicit recovery for a tombstone"
+                )
+            }
             Self::InvalidRecoverVersion(version) => {
                 write!(f, "recover requires a negative version, got {version}")
             }
+            Self::InvalidUpdateVersion(version) => write!(
+                f,
+                "update requires a positive original version, got {version}"
+            ),
+            Self::VersionExhausted { operation, version } => write!(
+                f,
+                "{operation:?} cannot advance exhausted version {version} within signed 64-bit range"
+            ),
             Self::UnsupportedSchemaType(data_type) => {
                 write!(f, "unsupported schema type: {data_type:?}")
             }
@@ -330,3 +361,17 @@ impl std::fmt::Display for SqlCompileError {
 }
 
 impl std::error::Error for SqlCompileError {}
+
+impl From<teaql_core::mutation_version::MutationVersionError> for SqlCompileError {
+    fn from(error: teaql_core::mutation_version::MutationVersionError) -> Self {
+        use teaql_core::mutation_version::MutationVersionError;
+        match error {
+            MutationVersionError::InvalidUpdate(version) => Self::InvalidUpdateVersion(version),
+            MutationVersionError::InvalidDelete(version) => Self::InvalidDeleteVersion(version),
+            MutationVersionError::InvalidRecovery(version) => Self::InvalidRecoverVersion(version),
+            MutationVersionError::Exhausted { operation, version } => {
+                Self::VersionExhausted { operation, version }
+            }
+        }
+    }
+}

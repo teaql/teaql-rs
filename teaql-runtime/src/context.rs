@@ -39,9 +39,11 @@ use crate::{
 use teaql_core::business_id::BusinessIdAllocator;
 use teaql_core::{EntityDescriptor, Value};
 
+mod boolean_validation;
 mod json;
 mod locking;
 mod logging;
+mod numeric_validation;
 mod pagination;
 mod transaction;
 pub use locking::RemoteLockProvider;
@@ -196,7 +198,10 @@ pub struct UserContext {
     schema_provider: Option<Box<dyn SchemaProvider>>,
     generated_schema_bootstraps: Vec<GeneratedSchemaBootstrap>,
     language: Language,
-    i18n_catalog: Arc<crate::I18nCatalog>,
+    pub(crate) i18n_catalog: Arc<crate::I18nCatalog>,
+    pub(crate) checker_message_catalog: Arc<crate::checker_messages::CheckerMessageCatalog>,
+    pub(crate) checker_presentation_model: Arc<crate::checker_messages::CheckerPresentationModel>,
+    pub(crate) checker_message_renderer: Arc<dyn crate::checker_messages::CheckerMessageRenderer>,
     typed_resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     named_resources: BTreeMap<String, Box<dyn Any + Send + Sync>>,
     locals: BTreeMap<String, Value>,
@@ -215,11 +220,20 @@ pub struct UserContext {
     local_lock_owner: u64,
     remote_lock_owner: String,
     runtime_telemetry: Arc<dyn crate::RuntimeTelemetry>,
+    pub(crate) runtime_logger: Arc<crate::RuntimeLogger>,
     last_fix_evidence: Mutex<Vec<FixEvidence>>,
 }
 
 impl Default for UserContext {
     fn default() -> Self {
+        Self::new_with_logger(crate::RuntimeLogger::default_logger())
+    }
+}
+
+impl UserContext {
+    /// Compose the application destination before creating request contexts.
+    pub fn new_with_logger(runtime_logger: Arc<crate::RuntimeLogger>) -> Self {
+        crate::checker_messages::prepare();
         let pid = std::process::id();
         let thread_id_str = format!("{:?}", std::thread::current().id());
         let numeric_thread_id = thread_id_str
@@ -250,6 +264,13 @@ impl Default for UserContext {
             schema_provider: None,
             language: Language::default(),
             i18n_catalog: crate::I18nCatalog::builtin().clone(),
+            checker_message_catalog: crate::checker_messages::CheckerMessageCatalog::builtin()
+                .clone(),
+            checker_presentation_model: crate::checker_messages::CheckerPresentationModel::empty()
+                .clone(),
+            checker_message_renderer: Arc::new(
+                crate::checker_messages::StandardCheckerMessageRenderer,
+            ),
             typed_resources: HashMap::new(),
             named_resources: BTreeMap::new(),
             locals: BTreeMap::new(),
@@ -286,6 +307,7 @@ impl Default for UserContext {
                     .as_nanos()
             ),
             runtime_telemetry: crate::telemetry_startup::standard_runtime_telemetry(),
+            runtime_logger,
             last_fix_evidence: Mutex::new(Vec::new()),
         }
     }
@@ -417,6 +439,8 @@ impl UserContext {
     }
 
     pub(crate) fn runtime_telemetry_is_noop(&self) -> bool {
+        // This describes only the SDK adapter. Local operation logging is
+        // independent; stream wrappers retain their existing identity rules.
         self.runtime_telemetry.is_noop()
     }
 
@@ -424,7 +448,13 @@ impl UserContext {
         &self,
         operation: crate::RuntimeOperation,
     ) -> crate::FailOpenRuntimeTelemetryScope {
-        crate::start_runtime_operation(&self.runtime_telemetry, operation)
+        let telemetry: Arc<dyn crate::RuntimeTelemetry> =
+            Arc::new(crate::runtime_logging::LocalLogTelemetry {
+                delegate: self.runtime_telemetry.clone(),
+                logger: self.runtime_logger.clone(),
+                error_category: None,
+            });
+        crate::start_runtime_operation(&telemetry, operation)
     }
 
     pub fn user_identifier(&self) -> Option<&str> {
@@ -775,7 +805,11 @@ impl UserContext {
         let generator = self.internal_id_generator.as_ref().ok_or_else(|| {
             RuntimeError::IdGeneration("missing internal ID generator".to_owned())
         })?;
-        generator.ensure_floor(entity_name, fixed_id)?;
+        let id_space = self
+            .entity(entity_name)
+            .map(|descriptor| descriptor.inheritance_root().name.as_str())
+            .unwrap_or(entity_name);
+        generator.ensure_floor(id_space, fixed_id)?;
         entity.mark_as_new();
         Ok(())
     }
@@ -798,6 +832,35 @@ impl UserContext {
         self.i18n_catalog = catalog;
     }
 
+    pub fn set_checker_message_catalog(
+        &mut self,
+        catalog: Arc<crate::checker_messages::CheckerMessageCatalog>,
+    ) {
+        self.checker_message_catalog = catalog;
+    }
+
+    /// Validation and compilation precede replacement; a bad resource cannot
+    /// leave a partially installed catalog in this Context.
+    pub fn install_checker_message_catalog(&mut self, source: &str) -> Result<(), RuntimeError> {
+        let catalog = crate::checker_messages::CheckerMessageCatalog::from_json(source)?;
+        self.checker_message_catalog = Arc::new(catalog);
+        Ok(())
+    }
+
+    pub fn set_checker_presentation_model(
+        &mut self,
+        model: Arc<crate::checker_messages::CheckerPresentationModel>,
+    ) {
+        self.checker_presentation_model = model;
+    }
+
+    pub fn set_checker_message_renderer(
+        &mut self,
+        renderer: Arc<dyn crate::checker_messages::CheckerMessageRenderer>,
+    ) {
+        self.checker_message_renderer = renderer;
+    }
+
     pub fn language(&self) -> Language {
         self.language
     }
@@ -815,6 +878,10 @@ impl UserContext {
     }
 
     pub fn generate_id(&self, entity: &str) -> Result<Option<u64>, RuntimeError> {
+        let entity = self
+            .entity(entity)
+            .map(|descriptor| descriptor.inheritance_root().name.as_str())
+            .unwrap_or(entity);
         self.internal_id_generator
             .as_ref()
             .map(|generator| generator.generate_id(entity))
@@ -822,10 +889,16 @@ impl UserContext {
     }
 
     pub fn next_id(&self, entity: &str) -> Result<u64, RuntimeError> {
-        match self.generate_id(entity)? {
-            Some(id) => Ok(id),
-            None => local_id_generator().generate_id(entity),
+        let id = match self.generate_id(entity)? {
+            Some(id) => id,
+            None => local_id_generator().generate_id(entity)?,
+        };
+        if id == 0 {
+            return Err(RuntimeError::IdGeneration(format!(
+                "ID generator returned reserved zero ID for {entity}"
+            )));
         }
+        Ok(id)
     }
 
     pub fn entity(&self, name: &str) -> Option<&EntityDescriptor> {
@@ -839,6 +912,31 @@ impl UserContext {
             .as_ref()
             .map(|metadata| metadata.all_entities())
             .unwrap_or_default()
+    }
+
+    pub fn require_entity_symbols(
+        &self,
+        symbols: &'static teaql_core::EntitySymbols,
+    ) -> Result<&EntityDescriptor, RuntimeError> {
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.entity_by_symbols(symbols))
+            .ok_or_else(|| {
+                RuntimeError::Graph(format!(
+                    "generated symbol model is not registered for {}",
+                    symbols.name().unwrap_or("<invalid entity ID>")
+                ))
+            })
+    }
+
+    pub(crate) fn require_entity_key(
+        &self,
+        key: &crate::EntityKey,
+    ) -> Result<&EntityDescriptor, RuntimeError> {
+        match key.symbols() {
+            Some(symbols) => self.require_entity_symbols(symbols),
+            None => self.require_entity(&key.entity),
+        }
     }
 
     pub fn require_entity(&self, name: &str) -> Result<&EntityDescriptor, RuntimeError> {
@@ -1215,11 +1313,12 @@ impl UserContext {
     /// graph save. The task-local scope keeps concurrent saves on one context
     /// isolated; standalone checker calls receive their own current value.
     pub fn fix_time(&self) -> teaql_core::time::Timestamp {
-        crate::entity_save::current_graph_fix_time()
+        crate::entity_save::current_graph_fix_time(self)
+            .unwrap_or_else(|| teaql_core::time::Timestamp(self.business_time().timestamp_millis()))
     }
 
     pub fn record_fix_evidence(&self, evidence: FixEvidence) {
-        crate::entity_save::record_graph_fix_evidence(evidence);
+        crate::entity_save::record_graph_fix_evidence(self, evidence);
     }
 
     pub(crate) fn replace_last_fix_evidence(&self, evidence: Vec<FixEvidence>) {
@@ -1244,6 +1343,68 @@ impl UserContext {
         values: &mut crate::EntityValues,
         location: &ObjectLocation,
     ) -> Result<(), RuntimeError> {
+        self.check_and_fix_values_scoped(entity, values, location, None)
+    }
+
+    fn check_and_fix_values_scoped(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+        changed: Option<bool>,
+    ) -> Result<(), RuntimeError> {
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, true)?;
+        }
+        let checker = self
+            .checker_registry
+            .as_ref()
+            .and_then(|registry| registry.checker(entity));
+        let fields: std::collections::BTreeSet<_> = checker
+            .as_ref()
+            .map(|checker| {
+                checker
+                    .managed_context_fields()
+                    .iter()
+                    .chain(checker.custom_context_fields())
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let before: BTreeMap<_, _> = fields
+            .iter()
+            .filter_map(|field| {
+                values
+                    .get(field)
+                    .cloned()
+                    .map(|value| ((*field).to_owned(), value))
+            })
+            .collect();
+        let result = crate::checker_messages::with_check_origin(self, entity, location, || {
+            self.check_and_fix_values_inner(entity, values, location, changed)
+        });
+        if result.is_err() {
+            for field in fields {
+                if let Some(value) = before.get(field) {
+                    values.insert(field.to_owned(), value.clone());
+                } else {
+                    values.remove(field);
+                }
+            }
+        }
+        result
+    }
+
+    fn check_and_fix_values_inner(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+        changed: Option<bool>,
+    ) -> Result<(), RuntimeError> {
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, true)?;
+        }
         let status = CheckObjectStatus::from_values(values);
         let checker = self
             .checker_registry
@@ -1251,19 +1412,167 @@ impl UserContext {
             .and_then(|registry| registry.checker(entity));
         let mut results = CheckResults::new();
         if let Some(checker) = checker {
-            checker.check_and_fix(self, values, location, &mut results);
+            crate::entity_save::with_fix_time(self, || {
+                if let Some(changed) = changed {
+                    checker.check_and_fix_for_mutation(
+                        self,
+                        values,
+                        location,
+                        &mut results,
+                        changed,
+                    );
+                } else {
+                    checker.check_and_fix(self, values, location, &mut results);
+                }
+            });
+            // Bind rule ownership before localization. Nested/custom checkers
+            // may already provide a more specific type; never replace it with
+            // the current graph root or infer identity from a rendered path.
+            for result in &mut results {
+                if result
+                    .entity_type
+                    .as_deref()
+                    .is_none_or(|name| name.trim().is_empty())
+                {
+                    result.entity_type = Some(checker.entity().to_owned());
+                }
+            }
+        }
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, true)?;
         }
 
         // Custom checkers get the first chance to supply or fix a value.
         self.collect_required_property_results(entity, values, status, location, &mut results);
+        self.collect_boolean_property_results(entity, values, location, &mut results);
+        self.collect_numeric_property_results(entity, values, location, &mut results);
         if results.is_empty() {
             return Ok(());
         }
+        self.translate_check_results_with_values(&mut results, Some((entity, values)));
+        Err(RuntimeError::Check(results))
+    }
+
+    /// Native graph/provider bridge. Public Checker callbacks remain canonical;
+    /// only this explicit boundary returns values to native storage vocabulary.
+    pub(crate) fn check_and_fix_storage_values_at(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+    ) -> Result<(), RuntimeError> {
+        let result = self.check_and_fix_values_at(entity, values, location);
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, false)?;
+        }
+        result
+    }
+
+    pub(crate) fn check_and_fix_storage_mutation_at(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+        intent: crate::checker::CheckMutationState<'_>,
+    ) -> Result<(), RuntimeError> {
+        let descriptor = self.require_entity(entity)?;
+        let checker = self
+            .checker_registry
+            .as_ref()
+            .and_then(|registry| registry.checker(entity));
+        let fields = checker
+            .as_ref()
+            .map(|checker| checker.managed_context_fields())
+            .unwrap_or(&[]);
+        let custom = checker
+            .as_ref()
+            .map(|checker| checker.custom_context_fields())
+            .unwrap_or(&[]);
+        let changed = intent.has_effective_change(values, descriptor, fields, custom);
+        let automatic = crate::ledger_keys::storage_fields_from_ledger(
+            descriptor,
+            &fields
+                .iter()
+                .chain(custom)
+                .map(|field| (*field).to_owned())
+                .collect(),
+        )?;
+        let before: Vec<_> = automatic
+            .into_iter()
+            .map(|field| {
+                let value = values.get(&field).cloned();
+                (field, value)
+            })
+            .collect();
+        let create = crate::CheckObjectStatus::from_values(values).is_create();
+        let result = self.check_and_fix_values_scoped(entity, values, location, Some(changed));
+        crate::ledger_keys::map_checker_values(descriptor, values, false)?;
+        // Inspect final persisted business values, not only the caller's dirty
+        // names: Fix can both repair an edit and introduce another valid edit.
+        // No original snapshot means no proof for cancelling unknown input.
+        if result.is_ok() && !create && intent.original.is_some() {
+            let final_intent = crate::checker::CheckMutationState {
+                original: intent.original,
+                dirty: None,
+                dynamic_changed: intent.dynamic_changed,
+            };
+            if !final_intent.has_effective_change(values, descriptor, fields, custom) {
+                for (field, old) in before {
+                    if let Some(old) = old {
+                        values.insert(field, old);
+                    } else {
+                        values.remove(&field);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Recheck intrinsic carriers in an already prepared sparse policy plan.
+    /// Never repeat customer Fix or apply full-object requiredness to changes.
+    pub(crate) fn validate_final_plan_scalars(
+        &self,
+        entity: &str,
+        values: &BTreeMap<String, Value>,
+    ) -> Result<(), RuntimeError> {
+        // A typed SQL null is still null. Normalize only this uncommon case,
+        // borrowing the ordinary plan map without copying its strings/values.
+        let normalized;
+        let values = if values
+            .values()
+            .any(|value| matches!(value, Value::TypedNull(_)))
+        {
+            normalized = values
+                .iter()
+                .map(|(field, value)| {
+                    (
+                        field.clone(),
+                        if matches!(value, Value::TypedNull(_)) {
+                            Value::Null
+                        } else {
+                            value.clone()
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            &normalized
+        } else {
+            values
+        };
+        let mut results = CheckResults::new();
+        let location = ObjectLocation::root();
+        self.collect_boolean_property_results(entity, values, &location, &mut results);
+        self.collect_numeric_property_results(entity, values, &location, &mut results);
+        if results.is_empty() {
+            return Ok(());
+        }
+        // Intrinsic messages describe the expected type, never the input value.
         self.translate_check_results(&mut results);
         Err(RuntimeError::Check(results))
     }
 
-    /// Validate the sparse values that a ledger CREATE will actually insert.
+    /// Validate required/portable scalar values a ledger CREATE actually inserts.
     /// This is intentionally metadata-only: the complete typed graph already
     /// ran Checker/Fix once, and running it again on sparse changes would
     /// misclassify unchanged loaded fields and repeat Fix side effects.
@@ -1281,10 +1590,12 @@ impl UserContext {
             location,
             &mut results,
         );
+        self.collect_boolean_property_results(entity, values, location, &mut results);
+        self.collect_numeric_property_results(entity, values, location, &mut results);
         if results.is_empty() {
             return Ok(());
         }
-        self.translate_check_results(&mut results);
+        self.translate_check_results_with_values(&mut results, Some((entity, values)));
         Err(RuntimeError::Check(results))
     }
 
@@ -1312,29 +1623,45 @@ impl UserContext {
                 // create caller must never be required to provide it.
                 .filter(|property| !property.nullable && !property.is_version)
             {
-                let missing = !values.contains_key(&property.name);
-                let null = matches!(values.get(&property.name), Some(Value::Null));
-                let property_location = location.clone().member(&property.name);
+                let canonical =
+                    crate::ledger_keys::canonical_field_from_storage(descriptor, &property.name)
+                        .unwrap_or_else(|_| property.name.clone());
+                let value = values
+                    .get(&canonical)
+                    .or_else(|| values.get(&property.name));
+                let missing = value.is_none();
+                let null = matches!(value, Some(Value::Null));
+                let property_location = location.clone().member(&canonical);
                 let already_reported = results.iter().any(|result| {
                     result.rule == crate::CheckRule::Required
                         && result.location == property_location
                 });
                 if ((status.is_create() && missing) || null) && !already_reported {
-                    results.push(CheckResult::required(property_location));
+                    results.push(CheckResult::required(property_location).with_entity_type(entity));
                 }
             }
         }
     }
 
     pub fn translate_check_results(&self, results: &mut CheckResults) {
-        for result in results {
-            if result.message.is_none() {
-                result.message = Some(
-                    self.i18n_catalog
-                        .translate_check_result(self.language, result),
-                );
-            }
-        }
+        self.translate_check_results_with_values(results, None);
+    }
+
+    /// For callers that already own a structured graph validation origin.
+    /// This argument is not the violation's declaring entity type.
+    pub fn translate_check_results_from(&self, origin: &str, results: &mut CheckResults) {
+        crate::checker_messages::with_origin(self, origin, || {
+            self.translate_check_results(results)
+        });
+    }
+
+    fn translate_check_results_with_values(
+        &self,
+        results: &mut CheckResults,
+        source_values: Option<(&str, &crate::EntityValues)>,
+    ) {
+        let warnings = std::cell::RefCell::new(BTreeSet::new());
+        crate::checker_privacy::translate(self, results, source_values, &warnings);
     }
 
     pub fn send_event(&self, mut event: RawAuditEvent) -> Result<(), RuntimeError> {
@@ -1391,19 +1718,23 @@ impl UserContext {
         if let Some(sink) = self.event_sink.as_ref() {
             sink.on_event(self, &event)?;
         }
-        if let Some(sink) = self.custom_event_sink.as_ref() {
-            let (mask_fields, max_len) = self
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.entity(&event.entity))
-                .map(|desc| (desc.audit_mask_fields.clone(), desc.audit_value_max_len))
-                .unwrap_or_else(|| (vec![], None));
+        let (mask_fields, max_len) = self
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.entity(&event.entity))
+            .map(|desc| (desc.audit_mask_fields.clone(), desc.audit_value_max_len))
+            .unwrap_or_else(|| (vec![], None));
 
+        if let Some(sink) = self.custom_event_sink.as_ref() {
             let safe_event = event.build_safe_event(&mask_fields, max_len);
             sink.on_safe_event(self, &safe_event)?;
         }
 
-        crate::log_formatter::LogManager::write_audit_log(&event);
+        // The plaintext acknowledgement applies to explicitly selected debug
+        // sinks. Ordinary runtime files always use the model's safe projection.
+        self.runtime_logger
+            .audit(&event.build_runtime_log_event(&mask_fields, max_len));
+        crate::log_formatter::LogManager::write_sensitive_audit_log(&event);
 
         Ok(())
     }

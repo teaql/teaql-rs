@@ -1,4 +1,7 @@
 //! Generated Q/E read shapes; fixture expansion SQL is outside measurements.
+#[path = "support/reserved_identity.rs"]
+mod reserved_identity;
+use reserved_identity::ReservedExampleIdentity as _;
 #[path = "../../../teaql-runtime/tests/support/allocation_counter.rs"]
 mod allocation_counter;
 use allocation_counter::measured;
@@ -255,7 +258,7 @@ fn generated_wide_dynamic_and_relations() -> Result<(), Error> {
         let mut school = Q::schools()
             .comment("what: allocate generated benchmark prototype")
             .purpose("why: seed through generated audited mutation")
-            .new_entity(&context);
+            .new_entity(&context).expect("reserve example identity");
         school.update_platform_id(1);
         school.update_school_type_to_primary();
         school.update_name("bench-school-1");

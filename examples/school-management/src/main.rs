@@ -1,15 +1,18 @@
 use school_management_service_core::{
-    request_support::AuditedSave as _, service_runtime, teaql_core::Entity as _,
-    ServiceRuntimeConfig, Q,
+    Q, ServiceRuntimeConfig, request_support::AuditedSave as _, service_runtime,
+    teaql_core::Entity as _,
 };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let database =
-        std::env::temp_dir().join(format!("teaql-school-rust-{}.sqlite", std::process::id()));
-    if database.exists() {
-        std::fs::remove_file(&database)?;
-    }
+    let scratch = tempfile::tempdir()?;
+    let database = std::env::var_os("TEAQL_SCHOOL_EXAMPLE_DATABASE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| scratch.path().join("school.sqlite"));
+    assert!(
+        !database.exists(),
+        "Use a new School smoke-test database; existing data is preserved"
+    );
     let context = service_runtime(ServiceRuntimeConfig {
         database_url: database.to_string_lossy().into_owned(),
     })
@@ -47,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     school.update_student_capacity(800_i64);
     school.update_active(true);
-    let now = school_management_service_core::teaql_core::time::Timestamp::now();
+    let now = context.fix_time();
     school.update_create_time(now);
     school.update_update_time(now);
     let _school = school
@@ -252,7 +255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         additional.update_student_capacity(100_i64 + index as i64);
         additional.update_active(true);
-        let timestamp = school_management_service_core::teaql_core::time::Timestamp::now();
+        let timestamp = context.fix_time();
         additional.update_create_time(timestamp);
         additional.update_update_time(timestamp);
         additional
@@ -264,7 +267,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let jumped_page = Q::schools()
         .order_by_id_desc()
         .optimize_pagination_with_id_set_config("school-example", 60, 100)
-        .offset(2, 2).count()
+        .offset(2, 2)
+        .count()
         .comment("Jump directly to the second retained ID-set page")
         .purpose("Verify generated Rust ID-set pagination on SQLite")
         .execute_for_list(&context)
@@ -282,7 +286,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let first_page = Q::schools()
         .order_by_id_desc()
         .optimize_pagination_with_id_set_config("school-example", 60, 100)
-        .offset(0, 2).count()
+        .offset(0, 2)
+        .count()
         .comment("Read the first page from the retained ID set")
         .purpose("Verify generated Rust ID-set pagination on SQLite")
         .execute_for_list(&context)
@@ -318,8 +323,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .expect("North School must exist before the isolation gate");
     let committed_id = committed.id();
-    assert!(committed.platform().is_some(), "Platform must be loaded before scalar save");
-    assert!(committed.school_type().is_some(), "SchoolType must be loaded before scalar save");
+    assert!(
+        committed.platform().is_some(),
+        "Platform must be loaded before scalar save"
+    );
+    assert!(
+        committed.school_type().is_some(),
+        "SchoolType must be loaded before scalar save"
+    );
     let committed_version = committed.version();
     let abandoned_id = abandoned.id();
     let abandoned_version = abandoned.version();
@@ -386,7 +397,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     assert_eq!(rejected.len(), 0);
 
-    println!("PASS Rust School bootstrap, ID-set pagination, portable Query, native SQLite Facet, independent ledger isolation, and sparse ledger Checker parity");
-    std::fs::remove_file(database)?;
+    println!(
+        "PASS Rust School bootstrap, ID-set pagination, portable Query, native SQLite Facet, independent ledger isolation, and sparse ledger Checker parity"
+    );
     Ok(())
 }

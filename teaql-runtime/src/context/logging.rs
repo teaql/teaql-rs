@@ -310,7 +310,7 @@ impl UserContext {
                 payload: LogPayload::Sql(safe_entry.clone()),
             });
         }
-        crate::log_formatter::LogManager::write_sql_log(&trace_path, &safe_entry);
+        self.runtime_logger.sql(&safe_entry);
         crate::log_formatter::LogManager::write_sensitive_sql_log(&trace_path, &sensitive_entry);
     }
 }

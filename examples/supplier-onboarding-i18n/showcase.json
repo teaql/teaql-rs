@@ -1,0 +1,76 @@
+{
+  "generatedDomainLibraryHandEdited": false,
+  "goalId": "rust:examples/supplier-onboarding-i18n",
+  "library": {
+    "generatedFilesManifestSHA256": "8bec16164448e8c7497679938191219fa67ba124249549615e1480add0e7d548",
+    "root": "rust-lib-core",
+    "scope": "rust-lib-core"
+  },
+  "model": {
+    "path": "model.xml",
+    "sha256": "961f3048ca9c8e9120d81fc0ce9a3ea35629c8d9607aab80319156c21391e2c5"
+  },
+  "producer": {
+    "assistSHA256": {
+      "rust-assist-create-supplier.md": "5381fe6cec7f225350ab00309f417d581c7fcaf5611b70b2977d10031d882b71",
+      "rust-assist-i18n.md": "cd8de958a479b22b8e09f571bcaec1c5cb4caec44e6c9e00dc3ab4192bf4f69f",
+      "rust-assist-query-supplier.md": "e17e2dcdacec1d6b5a189848115301b78c144f2ba6f38aaa775ef7850e22f35b"
+    },
+    "evaluationSHA256": "c7a0b3fe8953aec1f5c4a1ebc0ce02f6f17a11bd0db1fceddd395d7848dc985c",
+    "generatorBaseCommit": "92d612e95cde33c323a1b026b5c567f8c8fa4562",
+    "scopes": [
+      "rust-app-console",
+      "rust-lib-core"
+    ]
+  },
+  "qualification": {
+    "baseCommit": "ffe1d21d9ba3664bac2b00d167c298f66de8dccd",
+    "evidence": "teaql-conformance/evidence/2026-11-21-i18n-standard-examples/rust.jsonl",
+    "stdoutSHA256": "dd3111abe49cbcd1f44b4f7794ad971485b56e86d361207dc764992fc09f0287"
+  },
+  "scene": "Warehouse supplier onboarding with two real checker rejections and locale isolation",
+  "schema": "teaql.model-workspace-showcase/v1",
+  "semanticModel": {
+    "path": "semantics.json",
+    "sha256": "5ac183bbe622b4bf7bfc157d367714d36a88722c03d64fc1ba68d8ef01faaf18"
+  },
+  "status": "focused-verified",
+  "verification": [
+    "bash",
+    "run.sh",
+    "--verify"
+  ],
+  "workspace": {
+    "applicationEntry": "src/main.rs",
+    "applicationOwnedFiles": [
+      "rust-app-console/src/main.rs"
+    ],
+    "domainSourcesFromLibrary": [
+      "lib/Cargo.toml",
+      "lib/src/e.rs",
+      "lib/src/lib.rs",
+      "lib/src/q.rs",
+      "lib/src/request_support.rs",
+      "lib/src/rollup_support.rs",
+      "lib/src/runtime.rs",
+      "lib/src/sample_data.rs",
+      "lib/src/supplier/behavior.rs",
+      "lib/src/supplier/checker.rs",
+      "lib/src/supplier/entity.rs",
+      "lib/src/supplier/expression.rs",
+      "lib/src/supplier/mod.rs",
+      "lib/src/supplier/request.rs",
+      "lib/src/warehouse/behavior.rs",
+      "lib/src/warehouse/checker.rs",
+      "lib/src/warehouse/entity.rs",
+      "lib/src/warehouse/expression.rs",
+      "lib/src/warehouse/mod.rs",
+      "lib/src/warehouse/request.rs",
+      "teaql/checker-model.json",
+      "teaql/model-provenance.json"
+    ],
+    "generatedFilesManifestSHA256": "8bec16164448e8c7497679938191219fa67ba124249549615e1480add0e7d548",
+    "root": "rust-app-console",
+    "scope": "rust-app-console"
+  }
+}

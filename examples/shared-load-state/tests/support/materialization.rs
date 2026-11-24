@@ -1,4 +1,5 @@
 //! A readonly calculated property is persisted only by an explicit modeled target.
+use crate::reserved_identity::ReservedExampleIdentity as _;
 use school_management_service_core::{
     service_runtime, AuditedSave, School, SchoolCapacitySummary, ServiceRuntimeConfig, E, Q,
 };
@@ -24,7 +25,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut source = Q::schools()
             .comment("what: allocate the isolated capacity contributor")
             .purpose("why: keep reporting acceptance independent of the relation fixture")
-            .new_entity(&context);
+            .new_entity(&context).expect("reserve example identity");
         source.update_platform_id(1);
         source.update_school_type_to_primary();
         source.update_name(name.as_str());
@@ -113,7 +114,7 @@ pub async fn verify(
     let mut target = Q::school_capacity_summaries()
         .comment("what: allocate a modeled capacity summary")
         .purpose("why: explicitly persist the reporting result")
-        .new_entity(context);
+        .new_entity(context).expect("reserve example identity");
     target.update_platform_id(1_u64);
     target.update_name(format!("{round} capacity snapshot"));
     target.update_total_capacity(total);

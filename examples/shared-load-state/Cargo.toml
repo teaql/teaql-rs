@@ -14,14 +14,13 @@ teaql-runtime = { path = "../../teaql-runtime" }
 teaql-data-service = { path = "../../teaql-data-service" }
 teaql-provider-sqlite = { path = "../../teaql-provider-sqlite" }
 teaql-sql = { path = "../../teaql-sql" }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
 futures-util = "0.3"
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
-diesel = { version = "=2.3.13", default-features = false, features = ["sqlite"] }
-libsqlite3-sys = "=0.38.1"
+serde = { version = "1", features = ["derive"] }
 teaql-macros = { path = "../../teaql-macros" }
 futures-executor = "0.3"
 

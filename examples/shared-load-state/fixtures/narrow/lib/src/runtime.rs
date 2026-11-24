@@ -112,11 +112,11 @@ impl ServiceRuntimeExecutor {
         }
     }
 
-    /// Trusted runtime diagnostic SPI; it never changes query results or intent.
+    /// Trusted provider/test SPI, disabled by default. Metadata can contain raw
+    /// binds: never send it to operator logs or an untrusted transport. Normal
+    /// SQL/audit sinks retain their runtime-owned safe projections.
     #[doc(hidden)]
-    pub fn with_query_metadata_observer(mut self,
-        observer: std::sync::Arc<dyn Fn(&teaql_data_service::ExecutionMetadata) + Send + Sync>,
-    ) -> Self {
+    pub fn with_query_metadata_observer(mut self, observer: std::sync::Arc<dyn Fn(&teaql_data_service::ExecutionMetadata) + Send + Sync>) -> Self {
         self.query_metadata_observer = Some(observer);
         self
     }
@@ -410,8 +410,62 @@ pub fn generated_wire_field_aliases() -> std::collections::BTreeMap<String, std:
     std::collections::BTreeMap::new()
 }
 
+/// One immutable model schema shared across contexts, never across row values.
+pub fn generated_entity_json_model() -> &'static teaql_runtime::entity_json::Model {
+    use teaql_runtime::entity_json::{Definition, Field, Kind};
+    static MODEL: std::sync::OnceLock<teaql_runtime::entity_json::Model> = std::sync::OnceLock::new();
+    MODEL.get_or_init(|| teaql_runtime::entity_json::Model::new(vec![
+        Definition::new("Platform", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("name", "name", Kind::Text).nullable(false),
+            Field::new("base_url", "base_url", Kind::Text).nullable(false),
+            Field::new("create_time", "create_time", Kind::DateTime).nullable(false),
+            Field::new("update_time", "update_time", Kind::DateTime).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+            Field::new("school_type_list", "school_type_list", Kind::Many { target: "SchoolType".to_owned() }),
+            Field::new("school_list", "school_list", Kind::Many { target: "School".to_owned() }),
+            Field::new("school_capacity_summary_list", "school_capacity_summary_list", Kind::Many { target: "SchoolCapacitySummary".to_owned() }),
+        ]),
+        Definition::new("SchoolType", vec![
+            Field::new("platform", "platform_id", Kind::Reference { target: "Platform".to_owned(), detail_key: "platform".to_owned() }).nullable(false),
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("name", "name", Kind::Text).nullable(false),
+            Field::new("code", "code", Kind::Text).nullable(false),
+            Field::new("display_order", "display_order", Kind::Decimal).nullable(true),
+            Field::new("version", "version", Kind::Version).nullable(false),
+            Field::new("school_list", "school_list", Kind::Many { target: "School".to_owned() }),
+        ]),
+        Definition::new("School", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("platform", "platform_id", Kind::Reference { target: "Platform".to_owned(), detail_key: "platform".to_owned() }).nullable(false),
+            Field::new("school_type", "school_type_id", Kind::Reference { target: "SchoolType".to_owned(), detail_key: "school_type".to_owned() }).nullable(false),
+            Field::new("name", "name", Kind::Text).nullable(false),
+            Field::new("address", "address", Kind::Text).nullable(false),
+            Field::new("established_date", "established_date", Kind::Date).nullable(false),
+            Field::new("student_capacity", "student_capacity", Kind::Integer).nullable(false),
+            Field::new("active", "active", Kind::Boolean).nullable(false),
+            Field::new("create_time", "create_time", Kind::DateTime).nullable(false),
+            Field::new("update_time", "update_time", Kind::DateTime).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+        ]),
+        Definition::new("SchoolCapacitySummary", vec![
+            Field::new("id", "id", Kind::Id).nullable(false),
+            Field::new("platform", "platform_id", Kind::Reference { target: "Platform".to_owned(), detail_key: "platform".to_owned() }).nullable(false),
+            Field::new("name", "name", Kind::Text).nullable(false),
+            Field::new("total_capacity", "total_capacity", Kind::Integer).nullable(false),
+            Field::new("school_count", "school_count", Kind::Integer).nullable(false),
+            Field::new("version", "version", Kind::Version).nullable(false),
+        ])
+    ]).expect("invalid generated entity JSON metadata"))
+}
+
+pub fn generated_json_field_naming_profile() -> teaql_runtime::JsonFieldNamingProfile {
+    teaql_runtime::JsonFieldNamingProfile::CamelCase
+}
+
 pub fn module() -> teaql_runtime::RuntimeModule {
     teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone())
         .entity::<Platform>()
         .entity::<SchoolType>()
         .entity::<School>()
@@ -420,7 +474,8 @@ pub fn module() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity::<Platform>();
     module = module.checker(teaql_runtime::TypedEntityChecker::<Platform, _>::new(PlatformChecker::default()));
     module = module.entity::<SchoolType>();
@@ -434,7 +489,8 @@ pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity_with_behavior::<Platform, _>(PlatformBehavior::default());
     module = module.entity_with_behavior::<SchoolType, _>(SchoolTypeBehavior::default());
     module = module.entity_with_behavior::<School, _>(SchoolBehavior::default());
@@ -444,7 +500,8 @@ pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
 }
 
 pub fn module_with_behaviors_and_checkers() -> teaql_runtime::RuntimeModule {
-    let mut module = teaql_runtime::RuntimeModule::new();
+    let mut module = teaql_runtime::RuntimeModule::new()
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity_with_behavior::<Platform, _>(PlatformBehavior::default());
     module = module.checker(teaql_runtime::TypedEntityChecker::<Platform, _>::new(PlatformChecker::default()));
     module = module.entity_with_behavior::<SchoolType, _>(SchoolTypeBehavior::default());

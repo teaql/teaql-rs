@@ -585,9 +585,26 @@ fn facet_reverse_sum_preserves_explicit_comment_and_rejects_blank_before_aggrega
                     continue;
                 }
                 let facets = result.unwrap();
+                let mut sums = facets["typeChoices"]
+                    .data
+                    .iter()
+                    .map(|row| {
+                        (
+                            row.get("id").and_then(Value::try_i64).unwrap(),
+                            // A selected empty SUM is present-null, not an absent
+                            // dynamic property and not the COUNT default of zero.
+                            row.get("school_count").cloned().unwrap(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                sums.sort_by_key(|(id, _)| *id);
                 assert_eq!(
-                    counts(&facets["typeChoices"], "school_count"),
-                    vec![(10, 201), (20, 205), (30, 0)]
+                    sums,
+                    vec![
+                        (10, Value::from(201_i64)),
+                        (20, Value::from(205_i64)),
+                        (30, Value::Null)
+                    ]
                 );
                 let logs = runtime.0.sql_logs();
                 assert_eq!(logs.len(), if logging { 2 } else { 0 });
