@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo_dir"
+for round in 1 2; do
+  if ! output="$(cargo run --quiet -p teaql-examples --bin committed_events 2>&1)"; then
+    printf 'Rust committed-events example round %s failed\n%s\n' "$round" "$output" >&2
+    exit 1
+  fi
+  if [[ "$output" != *"COMMITTED_EVENTS_PASS authoritative=database accepted outbox=1 target=1 rollback=1"* ]]; then
+    printf 'Rust committed-events example round %s failed or lacked evidence\n%s\n' "$round" "$output" >&2
+    exit 1
+  fi
+  if [[ "$output" != *"COMMITTED_DELIVERY_RECOVERY_PASS language=rust ordered=2 lost_ack=1 restart=1 duplicate=1"* ]]; then
+    printf 'Rust committed-events example round %s lacked recovery evidence\n%s\n' "$round" "$output" >&2
+    exit 1
+  fi
+  printf 'PASS Rust committed-events example round %s\n' "$round"
+done
+bash examples/committed-events/verify-process-crash.sh
+bash examples/committed-events/verify-snapshot.sh
+bash examples/committed-events/verify-bootstrap-crash.sh
+bash examples/committed-events/verify-security.sh
+
+school_example="$repo_dir/examples/school-management"
+disposable_evidence=""
+if [[ -n "${TEAQL_COMMITTED_EVIDENCE_DIR:-}" ]]; then
+  if [[ "$TEAQL_COMMITTED_EVIDENCE_DIR" != /* || -e "$TEAQL_COMMITTED_EVIDENCE_DIR" ]]; then
+    echo 'Committed evidence directory must be an absent absolute path' >&2; exit 1
+  fi
+  school_evidence="$TEAQL_COMMITTED_EVIDENCE_DIR"; mkdir "$school_evidence"
+else
+  school_evidence="$(mktemp -d -t teaql-committed-school.XXXXXXXX)"
+  disposable_evidence="$school_evidence"
+fi
+cleanup() { status=$?; trap - EXIT; if [[ -n "$disposable_evidence" ]]; then rm -rf -- "$disposable_evidence"; fi; exit "$status"; }
+trap cleanup EXIT
+school_library_hash() {
+  (cd "$school_example/lib" && rg --files -g '*.rs' -g '*.toml' -g '!target/**' \
+    | LC_ALL=C sort | xargs -d '\n' sha256sum)
+}
+school_library_hash > "$school_evidence/generated-library-before.sha256"
+for round in 1 2; do
+  if ! output="$(TEAQL_COMMITTED_SCHOOL_SOURCE_DB="$school_evidence/source-$round.sqlite" \
+    TEAQL_COMMITTED_SCHOOL_TARGET_DB="$school_evidence/target-$round.sqlite" \
+    cargo run --quiet --locked --manifest-path "$school_example/Cargo.toml" \
+      --bin committed_q_readback 2>&1)"; then
+    printf 'Rust generated committed Q example round %s failed\n%s\n' "$round" "$output" >&2
+    exit 1
+  fi
+  if [[ "$output" != *"COMMITTED_GENERATED_Q_PASS"* ]]; then
+    printf 'Rust generated committed Q example round %s lacked its PASS marker\n%s\n' \
+      "$round" "$output" >&2
+    exit 1
+  fi
+  printf '%s\n' "$output" > "$school_evidence/runtime-$round.log"
+  if [[ "$output" != *"CMR15_GENERATED_READ_ONLY_PASS language=rust backend=sqlite generated_audited_save=1 fresh_query=1 source_isolated=1"* ]]; then
+    printf 'Rust generated target readonly example round %s lacked its native evidence\n' "$round" >&2
+    exit 1
+  fi
+  printf '%s\n' "$output" | rg -F 'CMR15_GENERATED_READ_ONLY_PASS language=rust '
+  school_library_hash > "$school_evidence/generated-library-after.sha256"
+  cmp "$school_evidence/generated-library-before.sha256" \
+    "$school_evidence/generated-library-after.sha256"
+  printf 'PASS Rust generated committed Q example round %s\n' "$round"
+done
+if [[ -n "${TEAQL_COMMITTED_EVIDENCE_DIR:-}" ]]; then
+  printf 'Rust generated committed Q evidence: %s\n' "$school_evidence"
+else
+  echo 'Rust generated committed Q disposable evidence removed on exit'
+fi

@@ -15,6 +15,9 @@ rust_decimal = { workspace = true }
 num-bigint = "0.4"
 encoding_rs = "=0.8.35"
 serde_json = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
 teaql-core = { workspace = true }
 teaql-data-service = { workspace = true }
 teaql-runtime = { workspace = true }
@@ -24,6 +27,8 @@ futures-core = "0.3"
 futures-util = "0.3"
 
 [dev-dependencies]
+async-trait = { workspace = true }
 futures-executor = "0.3"
 teaql-macros = { workspace = true }
 tempfile = "3"
+tokio = { workspace = true }

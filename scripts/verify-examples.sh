@@ -5,7 +5,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 verification_dir="${TEAQL_EXAMPLES_EVIDENCE_DIR:-$(mktemp -d -t teaql-rust-examples-evidence.XXXXXXXX)}/runtime"
 mkdir -p "$verification_dir"
 echo "Retained compact example logs and databases: $verification_dir"
-expected=(boolean-boundaries business-id-runtime conformance context-bound-order-document context-derived expression-profiles facet-trace fix-e-alignment http-resilience inheritance-save natural-messages object-storage order-management request-admission school-management secret-provider shared-load-state supplier-onboarding-i18n tests trace-chain)
+expected=(boolean-boundaries business-id-runtime committed-events conformance context-bound-order-document context-derived expression-profiles facet-trace fix-e-alignment http-resilience inheritance-save natural-messages object-storage order-management request-admission school-management secret-provider shared-load-state supplier-onboarding-i18n tests trace-chain)
 mapfile -t actual < <(find "$repo/examples" -mindepth 1 -maxdepth 1 -type d ! -name src -printf '%f\n' | sort)
 if [[ "${actual[*]}" != "${expected[*]}" ]]; then
   echo "example inventory changed; update scripts/verify-examples.sh: ${actual[*]}" >&2
@@ -30,6 +30,7 @@ TEAQL_GENERATED_E_PROFILE_EVIDENCE_DIR="${verification_dir%/runtime}/expression-
 node examples/tests/loaded-revert/verify-local.cjs
 node examples/tests/loaded-revert/verify-views.cjs
 bash examples/http-resilience/verify.sh
+bash examples/committed-events/verify.sh
 bash examples/secret-provider/verify.sh
 bash examples/object-storage/verify.sh
 bash examples/trace-chain/verify-standard-telemetry.sh

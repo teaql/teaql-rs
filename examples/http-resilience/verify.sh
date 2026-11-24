@@ -36,14 +36,21 @@ for round in 1 2; do
     printf '%s\n' "$output" | safe_diagnostic >&2
     exit "$status"
   fi
+  for inner in 1 2; do
+    if [[ "$output" != *"HTTP_SAME_FIXTURE_PASS language=rust round=$inner requests=$((2 * inner)) trace=$((2 * inner)) lineage=3"* ]]; then
+      printf 'Rust HTTP example lacked same-fixture round %s\n' "$inner" >&2
+      exit 1
+    fi
+  done
   if [[ "$output" == *"PRIVATE_QUERY"* || "$output" == *"PRIVATE_HEADER"* || "$output" == *"PRIVATE_BODY"* ]]; then
     printf 'Rust HTTP example round %s leaked a private request canary\n' "$round" >&2
     exit 1
   fi
-  if [[ "$output" != *"HTTP_RESILIENCE_PASS status=200 attempts=1 requests=2 trace=2 lineage=3"* ]]; then
+  if [[ "$output" != *"HTTP_RESILIENCE_PASS status=200 attempts=1 requests=4 trace=4 lineage=3"* ]]; then
     printf 'Rust HTTP example round %s lacked acceptance marker\n' "$round" >&2
     printf '%s\n' "$output" | safe_diagnostic >&2
     exit 1
   fi
+  printf '%s\n' "$output"
   printf 'PASS Rust HTTP example round %s\n' "$round"
 done

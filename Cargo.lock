@@ -3646,6 +3646,7 @@ dependencies = [
  "reqwest 0.13.4",
  "rustls",
  "teaql-runtime",
+ "tempfile",
  "tokio",
  "url",
 ]
@@ -3742,21 +3743,26 @@ name = "teaql-provider-sqlite"
 version = "8.2.0"
 dependencies = [
  "async-stream",
+ "async-trait",
  "chrono",
  "encoding_rs",
  "futures-core",
  "futures-executor",
  "futures-util",
+ "hmac 0.12.1",
  "num-bigint",
  "rusqlite",
  "rust_decimal",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
  "teaql-core",
  "teaql-data-service",
  "teaql-macros",
  "teaql-runtime",
  "teaql-sql",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -3780,6 +3786,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prost",
  "reqwest 0.13.4",
+ "rusqlite",
  "rust_decimal",
  "serde",
  "serde_json",

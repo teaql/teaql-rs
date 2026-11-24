@@ -36,6 +36,7 @@ hmac = { workspace = true }
 libc = "0.2"
 sha2 = { workspace = true }
 subtle = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
 
 [features]
 opentelemetry = ["dep:opentelemetry"]
@@ -43,6 +44,7 @@ standard-telemetry = ["opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemet
 
 [dev-dependencies]
 teaql-macros = { workspace = true }
+rusqlite = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 opentelemetry_sdk = { version = "0.32.1", features = ["testing"] }
 opentelemetry-otlp = { version = "0.32.0", default-features = true }

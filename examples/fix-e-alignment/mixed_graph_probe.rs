@@ -65,7 +65,8 @@ fn parent(context: &UserContext) -> PurchaseOrder {
     let mut value = Q::purchase_orders()
         .comment("Prepare a mixed mutation owner")
         .purpose("Verify one graph save commits create update and deletion")
-        .new_entity(context).expect("reserve example identity");
+        .new_entity(context)
+        .expect("reserve example identity");
     value.update_contact_phone("5550680");
     value.update_internal_note(Value::Null);
     value
@@ -74,7 +75,8 @@ fn child(context: &UserContext, owner: u64, name: &str) -> OrderItem {
     let mut value = Q::order_items()
         .comment("Prepare a mixed mutation child")
         .purpose("Verify explicit composition and retryable graph mutations")
-        .new_entity(context).expect("reserve example identity");
+        .new_entity(context)
+        .expect("reserve example identity");
     value.update_purchase_order_id(owner);
     value.update_product_name(name);
     value.update_unit_price(Value::Decimal("10.00".parse().unwrap()));
@@ -275,14 +277,14 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
         let mut owner = load_parent(&context, owner_id).await?;
         let mut old = load_child(&context, old_id).await?;
         let new = child(&context, owner_id, "new child");
-        let new_id = new.id();
+        let mut new_id = new.id();
         assert!(new_id > 0 && new_id != old_id);
         old.mark_for_deletion();
         owner.update_contact_phone("5550681");
         // These exact methods are documented by model-aware create Assist.
         owner.include_pending_mutations_from(&old)?;
         owner.include_pending_mutations_from(&new)?;
-        let pending = owner.entity_runtime_state().unwrap();
+        let mut pending = owner.entity_runtime_state().unwrap();
         let root_key = EntityKey::new_static("PurchaseOrder", owner_id);
         let old_key = EntityKey::new_static("OrderItem", old_id);
         let new_key = EntityKey::new_static("OrderItem", new_id);
@@ -346,6 +348,39 @@ pub async fn verify() -> Result<(), Box<dyn std::error::Error>> {
             failure = json!({"operations":operations,"actualWritesBeforeFailure":writes,"storedAfterRollback":original,
                 "stage":if fail_commit {"commit"} else {"statement"},"error":error,"commitCallbacks":commits,
                 "committedAudits":0,"pendingCreate":true,"pendingDelete":true,"pendingUpdate":true,"originalVersionsRetained":true});
+            if fail_commit {
+                evidence.begin(0);
+                let blocked = owner
+                    .clone()
+                    .audit_as("Reject a retry of the graph with an unconfirmed commit")
+                    .save(&context)
+                    .await;
+                assert!(matches!(
+                    blocked,
+                    Err(RuntimeError::TransactionOutcomeUnknownReloadRequired)
+                ));
+                assert!(evidence.writes.lock().unwrap().is_empty());
+                assert!(evidence.audits.lock().unwrap().is_empty());
+                assert!(evidence.commits.lock().unwrap().is_empty());
+                failure["retryRequiresReload"] = json!(true);
+                failure["rejectedChildId"] = json!(new_id);
+
+                // Reload the durable version and explicitly rebuild the edits.
+                // The original graph stays fenced even though this test can
+                // independently prove that SQLite's commit hook rolled back.
+                evidence.stop();
+                owner = load_parent(&context, owner_id).await?;
+                let mut old = load_child(&context, old_id).await?;
+                let replacement = child(&context, owner_id, "new child");
+                assert_ne!(replacement.id(), new_id);
+                new_id = replacement.id();
+                old.mark_for_deletion();
+                owner.update_contact_phone("5550681");
+                owner.include_pending_mutations_from(&old)?;
+                owner.include_pending_mutations_from(&replacement)?;
+                pending = owner.entity_runtime_state().unwrap();
+                install_triggers(&pool, owner_id, old_id, new_id);
+            }
         }
         evidence.begin(0);
         let saved = owner

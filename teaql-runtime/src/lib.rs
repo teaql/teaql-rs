@@ -10,6 +10,7 @@ mod checker;
 pub mod checker_messages;
 mod checker_privacy;
 mod commit_audit;
+mod committed_events;
 mod context;
 mod context_fix;
 mod data_service;
@@ -67,6 +68,7 @@ pub use business_id::{
     FixedBusinessClock, InMemoryBusinessIdAllocator, PermutedDailyBusinessIdProfile,
     StaticBusinessIdKeyProvider, SystemBusinessClock,
 };
+pub use committed_events::CommittedEventSource;
 pub use context::{
     ContextEntityRef, ContextRootError, ContinuousPageCursor, ContinuousPageCursorStore, DataStore,
     FixEvidence, FixEvidenceSource, GeneratedSchemaBootstrap, GeneratedSchemaBootstrapFuture,

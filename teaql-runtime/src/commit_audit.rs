@@ -127,24 +127,56 @@ pub(crate) fn deliver(
     context: &UserContext,
     events: Vec<RawAuditEvent>,
 ) -> Result<(), RuntimeError> {
-    let mut first_error = None;
+    let mut failures = 0_usize;
     for event in events {
-        if let Err(error) = context.deliver_audit_event(event) {
+        if context.deliver_audit_event(event).is_err() {
             // A sink failure must not hide the other committed entity facts.
-            first_error.get_or_insert(error);
+            failures = failures.saturating_add(1);
         }
     }
-    match first_error {
-        Some(source) => Err(RuntimeError::AuditAfterCommit {
-            source: Box::new(source),
-        }),
-        None => Ok(()),
+    if failures == 0 {
+        Ok(())
+    } else {
+        Err(RuntimeError::AuditAfterCommit { failures })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FailingSink(Arc<AtomicUsize>);
+
+    impl crate::RawAuditEventSink for FailingSink {
+        fn on_event(
+            &self,
+            _context: &UserContext,
+            _event: &RawAuditEvent,
+        ) -> Result<(), RuntimeError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(RuntimeError::Event("P1-AUDIT-SECRET-CANARY".to_owned()))
+        }
+    }
+
+    #[test]
+    fn every_committed_fact_is_attempted_without_exposing_sink_errors() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let context = UserContext::default().with_event_sink(FailingSink(attempts.clone()));
+        let events = vec![
+            RawAuditEvent::created("Order", Default::default()),
+            RawAuditEvent::created("OrderItem", Default::default()),
+        ];
+        let error = deliver(&context, events).unwrap_err();
+        assert!(matches!(
+            error,
+            RuntimeError::AuditAfterCommit { failures: 2 }
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(!error.to_string().contains("P1-AUDIT-SECRET-CANARY"));
+        assert!(!format!("{error:?}").contains("P1-AUDIT-SECRET-CANARY"));
+    }
 
     #[test]
     fn audit_scope_does_not_inline_work_future_payload() {
