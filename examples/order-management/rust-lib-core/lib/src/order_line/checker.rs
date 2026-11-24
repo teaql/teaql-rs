@@ -2,8 +2,6 @@
 use teaql_runtime::{CheckObjectStatus, CheckResults, ObjectLocation, TypedChecker, UserContext};
 
 pub trait OrderLineCheckerLogic: Send + Sync {
-    /// Trusted application-owned declarations, never accepted from mutation JSON.
-    fn custom_context_fields(&self) -> &'static [&'static str] { &[] }
     fn check_and_fix_order_line(
         &self,
         _context: &UserContext,
@@ -13,20 +11,6 @@ pub trait OrderLineCheckerLogic: Send + Sync {
         _results: &mut CheckResults,
     ) {
     }
-
-    /// Context/state defaults run only for create or an independent business mutation.
-    fn fix_order_line(
-        &self, context: &UserContext, entity: &mut crate::OrderLine,
-        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults,
-    ) {
-        self.check_and_fix_order_line(context, entity, status, location, results);
-    }
-
-    /// Readonly validation is independent of automatic Context eligibility.
-    fn check_order_line(
-        &self, _context: &UserContext, _entity: &crate::OrderLine,
-        _status: CheckObjectStatus, _location: &ObjectLocation, _results: &mut CheckResults,
-    ) {}
 
     fn required(
         &self,
@@ -130,15 +114,7 @@ impl<L> TypedChecker<crate::OrderLine> for OrderLineChecker<L>
 where
     L: OrderLineCheckerLogic,
 {
-    fn separate_fix_and_check(&self) -> bool { true }
-
-    fn managed_context_fields(&self) -> &'static [&'static str] {
-        &["create_time", ]
-    }
-
-    fn custom_context_fields(&self) -> &'static [&'static str] { self.logic.custom_context_fields() }
-
-    fn fix_typed(
+    fn check_and_fix_typed(
         &self,
         context: &UserContext,
         entity: &mut crate::OrderLine,
@@ -147,23 +123,11 @@ where
         results: &mut CheckResults,
     ) {
         if status.is_create() {
-            if let Some(value) = context.context_fix_value::<teaql_core::time::Timestamp>(
-                "OrderLine", "create_time", "now",
-                &[], status, location, results) {
-                entity.update_create_time(value);
-                context.record_fix_evidence(teaql_runtime::FixEvidence::new("OrderLine", "create_time", teaql_runtime::FixEvidenceSource::Clock, "contextFix:now"));
-            }
+            entity.update_create_time(context.fix_time());
+            context.record_fix_evidence(teaql_runtime::FixEvidence::new("OrderLine", "create_time", teaql_runtime::FixEvidenceSource::Clock, "graphClock"));
         }
 
 
-        self.logic.fix_order_line(context, entity, status, location, results);
-    }
-
-    fn check_typed(
-        &self, context: &UserContext, entity: &crate::OrderLine,
-        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults, has_mutation: bool,
-    ) {
-        if has_mutation {
         if status.is_update() && !entity.is_loaded("id") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -173,7 +137,6 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
-
         if status.is_update() && !entity.is_loaded("customer_order_id") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -183,7 +146,6 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
-
         if status.is_update() && !entity.is_loaded("product_id") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -193,7 +155,6 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
-
         if status.is_update() && !entity.is_loaded("product_name") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -203,7 +164,6 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
-
         if status.is_update() && !entity.is_loaded("sku") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -213,7 +173,6 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
-
         if status.is_update() && !entity.is_loaded("quantity") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -223,7 +182,6 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
-
         if status.is_update() && !entity.is_loaded("commerce_platform_id") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -233,7 +191,6 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
-
         if status.is_update() && !entity.is_loaded("create_time") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -243,7 +200,6 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
-
         if status.is_update() && !entity.is_loaded("version") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -253,46 +209,7 @@ where
                 .with_message("Mutation requires a fully loaded entity"),
             );
         }
-
-        }
-        self.logic.check_order_line(context, entity, status, location, results);
-    }
-
-    fn check_and_fix_typed(
-        &self, context: &UserContext, entity: &mut crate::OrderLine,
-        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults,
-    ) {
-        let eligible = status.is_create() || teaql_core::Entity::dirty_fields(entity).is_some_and(|fields|
-            fields.iter().any(|field| !field.starts_with('_') && field != "id" && field != "version"
-                && !self.managed_context_fields().contains(&field.as_str())));
-        if eligible { self.fix_typed(context, entity, status, location, results); }
-        self.check_typed(context, entity, status, location, results, eligible);
-    }
-
-    fn check_fixed_values(
-        &self,
-        _context: &UserContext,
-        values: &teaql_runtime::EntityValues,
-        location: &ObjectLocation,
-        results: &mut CheckResults,
-    ) {
-        if let Some(teaql_core::Value::Text(value)) = values.get("product_name") {
-            let length = value.chars().count() as u64;
-            if length > 100_u64 {
-                results.push(teaql_runtime::CheckResult::max_str(location.clone().member("product_name"), 100_u64, value.clone()));
-            }
-        }
-
-        if let Some(teaql_core::Value::Text(value)) = values.get("sku") {
-            let length = value.chars().count() as u64;
-            if length > 100_u64 {
-                results.push(teaql_runtime::CheckResult::max_str(location.clone().member("sku"), 100_u64, value.clone()));
-            }
-        }
-
-
-
-
-
+        self.logic
+            .check_and_fix_order_line(context, entity, status, location, results);
     }
 }

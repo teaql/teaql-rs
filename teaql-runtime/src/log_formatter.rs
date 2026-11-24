@@ -408,6 +408,11 @@ impl LogManager {
     }
 
     pub fn write_sql_log(trace_chain: &[TraceNode], entry: &SqlLogEntry) {
+        // An off endpoint cannot consume the projected entry. Avoid cloning
+        // and masking it when only the in-memory context log is requested.
+        if matches!(Self::get_log_endpoint(), Some("off")) {
+            return;
+        }
         let mut source = entry.clone();
         source.trace_path = trace_chain.to_vec();
         let safe = crate::log_privacy::sql_entry(&source, false);

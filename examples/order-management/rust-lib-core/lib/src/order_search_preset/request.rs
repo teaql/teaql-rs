@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use serde_json::Value as JsonValue;
 use teaql_core::{Aggregate, AggregateFunction, EntityDescriptor, Expr, SelectQuery, SmartList};
-use teaql_runtime::RuntimeError;
+use teaql_runtime::{DataServiceError, RuntimeError};
 
 use crate::request_support::*;
 
@@ -26,34 +26,17 @@ pub struct OrderSearchPresetRequest<R = crate::OrderSearchPreset> {
     relation_filters: Vec<RelationFilter>,
     child_enhancements: Vec<QuerySelection>,
     query_options: QueryOptions,
-    roll_up_links: Vec<RollupLink>,
-    roll_up_publication: Option<RollupTarget>,
     marker: PhantomData<R>,
 }
 
 impl<R> Clone for OrderSearchPresetRequest<R> {
     fn clone(&self) -> Self {
-        if !self.roll_up_links.is_empty() {
-            let snapshot = self.__resolved_roll_up_selection().expect("invalid roll-up configuration");
-            return Self {
-                query: snapshot.query,
-                relation_selections: snapshot.relation_selections,
-                relation_filters: snapshot.relation_filters,
-                child_enhancements: snapshot.child_enhancements,
-                query_options: snapshot.query_options,
-                roll_up_links: Vec::new(),
-                roll_up_publication: None,
-                marker: PhantomData,
-            };
-        }
         Self {
             query: self.query.clone(),
             relation_selections: self.relation_selections.clone(),
             relation_filters: self.relation_filters.clone(),
             child_enhancements: self.child_enhancements.clone(),
             query_options: self.query_options.clone(),
-            roll_up_links: Vec::new(),
-            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -63,14 +46,12 @@ impl<R> OrderSearchPresetRequest<R> {
     pub(crate) fn new() -> Self {
         Self {
             query: SelectQuery::new("OrderSearchPreset")
-                .project("id")
-                .project("version"),
+                .project(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key)
+                .project(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key),
             relation_selections: Vec::new(),
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
             query_options: QueryOptions::default(),
-            roll_up_links: Vec::new(),
-            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -82,8 +63,6 @@ impl<R> OrderSearchPresetRequest<R> {
             relation_filters: self.relation_filters,
             child_enhancements: self.child_enhancements,
             query_options: self.query_options,
-            roll_up_links: self.roll_up_links,
-            roll_up_publication: self.roll_up_publication,
             marker: PhantomData,
         }
     }
@@ -109,57 +88,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn into_query(self) -> SelectQuery {
-        QuerySelection::from(self).into_query()
-    }
-
-    fn __base_roll_up_selection(&self) -> QuerySelection {
-        QuerySelection {
-            query: self.query.clone(),
-            relation_selections: self.relation_selections.clone(),
-            relation_filters: self.relation_filters.clone(),
-            child_enhancements: self.child_enhancements.clone(),
-            query_options: self.query_options.clone(),
-        }
-    }
-
-    fn __resolved_roll_up_selection(&self) -> Result<QuerySelection, RuntimeError> {
-        resolve_rollup_links(self.__base_roll_up_selection(), &self.roll_up_links)
-    }
-
-    fn __publish_roll_up(&self) {
-        if let Some(target) = &self.roll_up_publication {
-            *target.lock().expect("poisoned roll-up configuration") = RollupState {
-                selection: self.__base_roll_up_selection(),
-                links: self.roll_up_links.clone(),
-            };
-        }
-    }
-
-    fn __synced(self) -> Self {
-        self.__publish_roll_up();
-        self
-    }
-
-    pub(crate) fn __roll_up_target(&mut self) -> RollupTarget {
-        if self.roll_up_publication.is_none() {
-            self.roll_up_publication = Some(std::sync::Arc::new(std::sync::Mutex::new(RollupState {
-                selection: self.__base_roll_up_selection(), links: self.roll_up_links.clone(),
-            })));
-        }
-        self.__publish_roll_up();
-        self.roll_up_publication.as_ref().unwrap().clone()
-    }
-
-    fn __resolve_roll_ups(&mut self) -> Result<(), RuntimeError> {
-        if self.roll_up_links.is_empty() { return Ok(()); }
-        let selection = self.__resolved_roll_up_selection()?;
-        self.query = selection.query;
-        self.relation_selections = selection.relation_selections;
-        self.relation_filters = selection.relation_filters;
-        self.child_enhancements = selection.child_enhancements;
-        self.query_options = selection.query_options;
-        self.roll_up_links.clear();
-        Ok(())
+        self.query
     }
 
 
@@ -168,106 +97,96 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub(crate) async fn _execute_for_list<'a, C>(
-        mut self,
+        self,
         context: &'a C,
-    ) -> Result<SmartList<R>, RuntimeError>
+    ) -> Result<SmartList<R>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity,
     {
-        self.__resolve_roll_ups()?;
+        let repository = context
+            .order_search_preset_repository()
+            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
-        let mut query = authorize_query(apply_runtime_metadata(
+        let query = authorize_query(apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
-        ))?;
-        let requested_count = query.take_requested_list_count(&query_options);
-        let use_id_set = query.as_query().id_set_pagination.is_some();
-        context.user_context().observe_generated_list("OrderSearchPreset", async {
-        let mut total = None;
-        if !use_id_set {
-            if let Some((alias, count_query)) = &requested_count {
-                let count_rows = context.fetch_compact_rows("OrderSearchPreset", count_query).await?;
-                total = Some(exact_list_count(&count_rows, alias)?);
-            }
-        }
-        if !query.as_query().group_by.is_empty() || !query.as_query().object_group_bys.is_empty() {
-            return Err(RuntimeError::Graph("grouped projections require execute_for_rows".into()));
-        }
-        let mut rows = if !query.as_query().aggregates.is_empty() {
-            let records = context.fetch_compact_rows("OrderSearchPreset", &query).await?;
-            let mut rows = SmartList::new(Vec::new());
-            if let Some(record) = records.into_iter().next() { rows.aggregations = record.into_map(); }
-            rows
+        )).map_err(DataServiceError::Runtime)?;
+        let (mut rows, facets) = if query_options.facets.is_empty() {
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates_owned::<R>(
+                query,
+                &relation_aggregates,
+            ).await?;
+            (rows, std::collections::BTreeMap::new())
         } else {
-            context.fetch_entity_smart_list::<R>(
-                "OrderSearchPreset", query.clone(), relation_aggregates,
-            ).await?
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates::<R>(
+                &query,
+                &relation_aggregates,
+            ).await?;
+            let facets = execute_facets(context, query.as_query(), &query_options)
+                .await
+                .map_err(DataServiceError::Runtime)?;
+            (rows, facets)
         };
-        let facets = if query_options.facets.is_empty() { std::collections::BTreeMap::new() }
-            else { execute_facets(context, query.as_query(), &query_options).await? };
-        if let Some((alias, count_query)) = requested_count {
-            if total.is_none() { total = rows.total_count; }
-            if total.is_none() {
-                let count_rows = context.fetch_compact_rows("OrderSearchPreset", &count_query).await?;
-                total = Some(exact_list_count(&count_rows, &alias)?);
-            }
-            rows.total_count = total;
-            rows.aggregations.insert(alias, teaql_core::Value::U64(total.expect("requested count resolved")));
-        }
         attach_facets(&mut rows, facets);
         Ok(rows)
-        }).await
     }
 
     pub(crate) async fn _execute_for_rows<'a, C>(
-        mut self,
+        self,
         context: &'a C,
-    ) -> Result<SmartList<teaql_core::CompactRow>, RuntimeError>
+    ) -> Result<SmartList<teaql_core::CompactRow>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
+        C: TeaqlRepositoryProvider + ?Sized,
     {
-        self.__resolve_roll_ups()?;
+        let repository = context
+            .order_search_preset_repository()
+            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?.with_facet_diagnostics(&self.query_options);
-        context.fetch_compact_smart_list("OrderSearchPreset", &query).await
+        )).map_err(DataServiceError::Runtime)?;
+        repository.fetch_smart_list(&query).await
     }
 
     pub(crate) async fn _execute_for_stream<'a, C>(
-        mut self,
+        self,
         context: &'a C,
-    ) -> Result<TeaqlEntityStream<'a, R, RuntimeError>, RuntimeError>
+    ) -> Result<TeaqlEntityStream<'a, R, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity + 'a,
     {
-        self.__resolve_roll_ups()?;
-        let query = authorize_query(apply_runtime_metadata(
-            self.query,
-            &self.query_options,
-            &self.child_enhancements,
-        ))?;
-        let shape = query.as_query();
-        if !shape.aggregates.is_empty() || !shape.group_by.is_empty() || !shape.object_group_bys.is_empty() {
-            return Err(RuntimeError::Graph("Entity streams require entity rows; use a record or aggregation query".to_owned()));
-        }
-        Ok(context.user_context().observe_generated_stream(
-            "OrderSearchPreset", context.fetch_entity_stream("OrderSearchPreset", query),
-        ))
+        Ok(Box::pin(async_stream::try_stream! {
+            use futures_util::StreamExt;
+            let repository = context
+                .order_search_preset_repository()
+                .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
+            let query_options = self.query_options.clone();
+            let query = authorize_query(apply_runtime_metadata(
+                self.query,
+                &query_options,
+                &self.child_enhancements,
+            )).map_err(DataServiceError::Runtime)?;
+            let mut chunks = repository.fetch_stream(&query).await?;
+            while let Some(chunk) = chunks.next().await {
+                for row in chunk?.rows {
+                    yield R::from_compact_row(row).map_err(DataServiceError::Entity)?;
+                }
+            }
+        }))
     }
 
     pub(crate) async fn _execute_for_first<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<Option<R>, RuntimeError>
+    ) -> Result<Option<R>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity,
     {
         let rows = self.limit(1)._execute_for_list(context).await?;
         Ok(rows.into_iter().next())
@@ -276,78 +195,107 @@ impl<R> OrderSearchPresetRequest<R> {
     pub(crate) async fn _execute_for_one<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<Option<R>, RuntimeError>
+    ) -> Result<Option<R>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity,
     {
         self._execute_for_first(context).await
     }
 
 
-    pub(crate) async fn _execute_for_count<'a, C>(
-        mut self,
+    pub(crate) async fn _execute_for_page<'a, C>(
+        self,
         context: &'a C,
-    ) -> Result<u64, RuntimeError>
+        offset: u64,
+        limit: u64,
+    ) -> Result<SmartList<R>, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
+        C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity,
     {
-        self.__resolve_roll_ups()?;
+        if self.query.id_set_pagination.is_some() {
+            let mut rows = self
+                .clone()
+                .page_offset(offset, limit)
+                ._execute_for_list(context)
+                .await?;
+            if rows.total_count.is_none() {
+                rows.total_count = Some(self._execute_for_count(context).await?);
+            }
+            return Ok(rows);
+        }
+        let total_count = self.clone()._execute_for_count(context).await?;
+        let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
+        rows.total_count = Some(total_count);
+        Ok(rows)
+    }
+
+    pub(crate) async fn _execute_for_count<'a, C>(
+        self,
+        context: &'a C,
+    ) -> Result<u64, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
+    where
+        C: TeaqlRepositoryProvider + ?Sized,
+    {
+        let repository = context
+            .order_search_preset_repository()
+            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query_options = self.query_options.clone();
-        let query = apply_runtime_metadata(
+        let mut query = apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
         );
-        let operation = query_options.page_count_operation.clone().unwrap_or_else(||
-            QueryOperation::new(QueryOperationKind::NamedCount, "execute_for_count"));
-        let alias = operation.alias().unwrap_or(COUNT_ALIAS).to_owned();
-        let query = authorize_query(query)?.with_facet_diagnostics(&query_options)
-            .for_exact_count_with_operation(&alias, operation);
-        let rows = context.fetch_compact_rows("OrderSearchPreset", &query).await?;
+        query.projection.clear();
+        query.expr_projection.clear();
+        query.order_by.clear();
+        query.slice = None;
+        query.relations.clear();
+        query = query.count(COUNT_ALIAS);
+        let query = authorize_query(query).map_err(DataServiceError::Runtime)?;
+        let rows = repository.fetch_all(&query).await?;
         rows.first()
-            .and_then(|row| row.get(&alias))
+            .and_then(|row| row.get(COUNT_ALIAS))
             .and_then(teaql_core::Value::try_u64)
-            .ok_or_else(|| RuntimeError::Graph(format!("count result for OrderSearchPreset is missing or not numeric")))
+            .ok_or_else(|| DataServiceError::Runtime(RuntimeError::Graph(format!("count result for OrderSearchPreset is missing or not numeric"))))
     }
 
     pub(crate) async fn _execute_for_exists<'a, C>(
-        mut self,
+        self,
         context: &'a C,
-    ) -> Result<bool, RuntimeError>
+    ) -> Result<bool, TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
+        C: TeaqlRepositoryProvider + ?Sized,
     {
-        self.__resolve_roll_ups()?;
-        let mut query = apply_runtime_metadata(
-            self.query,
-            &self.query_options,
-            &self.child_enhancements,
-        ).limit(1);
+        let repository = context
+            .order_search_preset_repository()
+            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
+        let mut query = self.query.limit(1);
         query.relations.clear();
-        let query = authorize_query(query)?.with_facet_diagnostics(&self.query_options);
-        let rows = context.fetch_compact_rows("OrderSearchPreset", &query).await?;
+        let query = authorize_query(query).map_err(DataServiceError::Runtime)?;
+        let rows = repository.fetch_all(&query).await?;
         Ok(!rows.is_empty())
     }
 
     pub fn search_with_text(mut self, text: impl Into<String>) -> Self {
         self.query = self.query.search_with_text(text);
-        self.__synced()
+        self
     }
 
     pub fn filter(mut self, filter: Expr) -> Self {
         self.query = self.query.filter(filter);
-        self.__synced()
+        self
     }
 
     pub fn and_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.and_filter(filter);
-        self.__synced()
+        self
     }
 
     pub fn or_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.or_filter(filter);
-        self.__synced()
+        self
     }
 
     pub fn append_search_criteria(self, criteria: Expr) -> Self {
@@ -365,18 +313,18 @@ impl<R> OrderSearchPresetRequest<R> {
             operator,
             property2.as_ref(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_deleted_rows(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self.__synced()
+        self
     }
 
     pub fn deleted_rows_only(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self.query = self.query.and_filter(Expr::lte("version", 0_i64));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key, 0_i64));
+        self
     }
 
     pub fn match_types(
@@ -384,36 +332,29 @@ impl<R> OrderSearchPresetRequest<R> {
         types: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(TYPE_FIELD, types.into_iter().map(Into::into)));
-        self.__synced()
+        self
     }
 
 
     pub fn with_type_group(mut self) -> Self {
         self.query = self.query.project(TYPE_GROUP_FIELD);
-        self.__synced()
+        self
     }
 
-    pub fn matching_any_of<O>(mut self, request: OrderSearchPresetRequest<O>) -> Self {
-        let filter = QuerySelection::from(request).into_query().filter;
-        if let Some(criteria) = crate::request_support::criteria_alternatives_excluding_version(filter) {
-            self.query = self.query.and_filter(criteria);
-        }
-        self.__synced()
+    pub fn matching_any_of(mut self, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        let entity = EntityDescriptor::new(selection.query.entity.clone());
+        self.query = self.query.and_filter(Expr::in_subquery("id", entity, selection.query.clone(), "id"));
+        self
     }
 
-    pub fn match_any_of<O>(self, request: OrderSearchPresetRequest<O>) -> Self {
+    pub fn match_any_of(self, request: impl Into<QuerySelection>) -> Self {
         self.matching_any_of(request)
-    }
-
-    pub fn matching_ids_of<O>(mut self, request: OrderSearchPresetRequest<O>) -> Self {
-        let entity = <crate::OrderSearchPreset as teaql_core::TeaqlEntity>::entity_descriptor();
-        self.query = self.query.and_filter(Expr::in_subquery("id", entity, QuerySelection::from(request).into_query(), "id"));
-        self.__synced()
     }
 
     pub fn enhance_child(mut self, request: impl Into<QuerySelection>) -> Self {
         self.child_enhancements.push(request.into());
-        self.__synced()
+        self
     }
 
     pub fn enhance_children_if_needed(self) -> Self {
@@ -424,7 +365,7 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.query_options.comment = Some(comment.into());
-        self.__synced()
+        self
     }
 
     pub fn raw_sql(self, raw_sql: impl Into<String>) -> Self {
@@ -433,7 +374,7 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub fn unsafe_raw_sql(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql = Some(raw_sql.into_sql());
-        self.__synced()
+        self
     }
 
     pub fn raw_sql_filter(self, raw_sql: impl Into<String>) -> Self {
@@ -442,7 +383,7 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub fn unsafe_raw_sql_filter(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql_search_criteria.push(raw_sql.into_sql());
-        self.__synced()
+        self
     }
     pub fn filter_with_json(self, json_expr: impl Into<String>) -> Self {
         self.merge_dynamic_json_expr(json_expr.into())
@@ -488,7 +429,7 @@ impl<R> OrderSearchPresetRequest<R> {
             }
         }
 
-        self.__synced()
+        self
     }
 
     pub(crate) fn apply_dynamic_json_filter(self, field: &str, value: &JsonValue) -> Self {
@@ -497,7 +438,7 @@ impl<R> OrderSearchPresetRequest<R> {
         } else if let Some(storage_field) = Self::dynamic_json_self_field(field) {
             self.and_filter(dynamic_json_filter_expr(storage_field, value))
         } else {
-            self.__synced()
+            self
         }
     }
 
@@ -520,7 +461,7 @@ impl<R> OrderSearchPresetRequest<R> {
             }
             _ => {}
         }
-        self.__synced()
+        self
     }
 
     fn apply_dynamic_json_single_order_by(
@@ -542,7 +483,7 @@ impl<R> OrderSearchPresetRequest<R> {
         } else {
             self.query = self.query.order_desc(storage_field);
         }
-        self.__synced()
+        self
     }
 
     fn dynamic_json_self_field(field: &str) -> Option<&'static str> {
@@ -589,28 +530,28 @@ impl<R> OrderSearchPresetRequest<R> {
         self.query_options
             .dynamic_properties
             .push(RawDynamicProperty::new(property_name, raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn limit(mut self, limit: u64) -> Self {
         self.query = self.query.limit(limit);
-        self.__synced()
+        self
     }
 
     pub fn stream(mut self, chunk_size: usize) -> Self {
         assert!(chunk_size > 0, "stream chunk size must be positive");
         self.query = self.query.stream(chunk_size);
-        self.__synced()
+        self
     }
 
     pub fn stream_default(mut self) -> Self {
         self.query = self.query.stream_default();
-        self.__synced()
+        self
     }
 
     pub fn skip(mut self, offset: u64) -> Self {
         self.query = self.query.offset(offset);
-        self.__synced()
+        self
     }
 
     pub fn offset_only(self, offset: u64) -> Self {
@@ -623,12 +564,12 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub fn page_offset(mut self, offset: u64, limit: u64) -> Self {
         self.query = self.query.page(offset, limit);
-        self.__synced()
+        self
     }
 
     pub fn optimize_for_continuous_page_fetch(mut self) -> Self {
         self.query = self.query.optimize_for_continuous_page_fetch();
-        self.__synced()
+        self
     }
 
     pub fn optimize_for_continuous_page_fetch_with(
@@ -639,12 +580,12 @@ impl<R> OrderSearchPresetRequest<R> {
         self.query = self
             .query
             .optimize_for_continuous_page_fetch_with(namespace, ttl_seconds);
-        self.__synced()
+        self
     }
 
     pub fn optimize_pagination_with_id_set(mut self) -> Self {
         self.query = self.query.optimize_pagination_with_id_set();
-        self.__synced()
+        self
     }
 
     pub fn optimize_pagination_with_id_set_config(
@@ -656,7 +597,7 @@ impl<R> OrderSearchPresetRequest<R> {
         self.query = self
             .query
             .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
-        self.__synced()
+        self
     }
 
     /// Select bounded indexed probes for a per-parent Top-N relation only
@@ -664,7 +605,7 @@ impl<R> OrderSearchPresetRequest<R> {
     /// Passing zero explicitly selects the provider window plan.
     pub fn top_n_probe_parent_threshold(mut self, threshold: usize) -> Self {
         self.query = self.query.top_n_probe_parent_threshold(threshold);
-        self.__synced()
+        self
     }
 
     pub fn top(self, top_n: u64) -> Self {
@@ -677,7 +618,7 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub fn unlimited(mut self) -> Self {
         self.query.slice = None;
-        self.__synced()
+        self
     }
 
     pub fn page_number(self, page_number: u64, page_size: u64) -> Self {
@@ -698,21 +639,16 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn select_self(mut self) -> Self {
-        self.query = self.query.project("id");
-        self.query = self.query.project("name");
-        self.query = self.query.project("filter_json");
-        self.query = self.query.project("request_id");
-        self.query = self.query.project("owner_user_id");
-        self.query = self.query.project("create_time");
-        self.query = self.query.project("update_time");
-        self.query = self.query.project("version");
-        self.query = self.query.project("commerce_platform_id");
-        self.__synced()
-    }
-
-    pub fn select_dynamic_fields_with(mut self, selection: teaql_core::dynamic_fields::DynamicFieldSelection) -> Self {
-        self.query = self.query.select_dynamic_fields(selection);
-        self.__synced()
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key);
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key);
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key);
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key);
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key);
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key);
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key);
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key);
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_commerce_platform.query_key);
+        self
     }
 
     pub fn select_self_fields(self) -> Self {
@@ -739,64 +675,25 @@ impl<R> OrderSearchPresetRequest<R> {
 
     pub fn group_by(mut self, field: impl Into<String>) -> Self {
         self.query = self.query.group_by(field);
-        self.__synced()
+        self
     }
 
-    /// Order a selected statistical alias or nested result path, matching Java.
-    pub fn add_order_by_ascending(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_asc(result_key);
-        self.__synced()
+    pub fn count(self) -> Self {
+        self.count_as("count")
     }
 
-    pub fn add_order_by_descending(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_desc(result_key);
-        self.__synced()
-    }
-
-    pub fn add_order_by_ascending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_gbk_asc(result_key);
-        self.__synced()
-    }
-
-    pub fn add_order_by_descending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_gbk_desc(result_key);
-        self.__synced()
-    }
-
-    pub fn count(mut self) -> Self {
-        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count"));
-        self.aggregate_count("count")
-    }
-
-    pub fn count_as(mut self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count_as").with_alias(&alias));
+    pub fn count_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count(alias)
     }
 
     pub fn aggregate_count(mut self, alias: impl Into<String>) -> Self {
         self.query = self.query.count(alias);
-        self.__synced()
-    }
-    /// Java addAggregate(SimpleNamedExpression): bind a typed aggregate AST.
-    pub fn add_aggregate(mut self, aggregate: teaql_core::NamedExpr) -> Self {
-        self.query = self.query.aggregate_expression(aggregate);
-        self.__synced()
-    }
-
-    /// Filter selected statistical results. Repeated conditions compose with AND.
-    pub fn having(mut self, condition: Expr) -> Self {
-        let condition = match self.query.having.take() {
-            Some(previous) => Expr::and([previous, condition]),
-            None => condition,
-        };
-        self.query = self.query.having(condition);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_count_field(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.count_field(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_with_function(
@@ -806,98 +703,99 @@ impl<R> OrderSearchPresetRequest<R> {
         function: AggregateFunction,
     ) -> Self {
         self.query = self.query.aggregate(Aggregate::new(function, field, alias));
-        self.__synced()
+        self
     }
 
     pub fn aggregate_sum(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.sum(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_avg(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.avg(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_min(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.min(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_max(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.max(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_stddev(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_stddev_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev_pop(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_var_samp(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_samp(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_var_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_pop(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_bit_and(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_and(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_bit_or(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_or(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_bit_xor(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_xor(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn enable_aggregation_cache(mut self) -> Self {
         self.query = self.query.enable_aggregation_cache();
-        self.__synced()
+        self
     }
 
     pub fn enable_aggregation_cache_for(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.enable_aggregation_cache_for(cache_expired_millis);
-        self.__synced()
+        self
     }
 
     pub fn propagate_aggregation_cache(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.propagate_aggregation_cache(cache_expired_millis);
-        self.__synced()
+        self
     }
 
     pub fn group_by_id(self) -> Self {
-        self.group_by("id")
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key)
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("id"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key));
+        request
     }
 
     pub fn group_by_id_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("id")]));
-        request.__synced()
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key)
+            .aggregate_with_function(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key, alias, function)
     }
 
     pub fn count_id(self) -> Self {
@@ -905,14 +803,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("id", alias)
-    }
-    pub fn count_distinct_id(self) -> Self {
-        self.count_distinct_id_as("id_distinct_count")
-    }
-
-    pub fn count_distinct_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("id", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn sum_id(self) -> Self {
@@ -920,7 +811,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn sum_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("id", alias)
+        self.aggregate_sum(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn avg_id(self) -> Self {
@@ -928,7 +819,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn avg_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("id", alias)
+        self.aggregate_avg(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn min_id(self) -> Self {
@@ -936,7 +827,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn min_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("id", alias)
+        self.aggregate_min(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn max_id(self) -> Self {
@@ -944,7 +835,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn max_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("id", alias)
+        self.aggregate_max(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key, alias)
     }
 
 
@@ -954,11 +845,11 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "id",
+            crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_id_criteria(
@@ -966,22 +857,22 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "id",
+            crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key, value));
+        self
     }
 
 
 
     pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key, value));
+        self
     }
 
     pub fn with_id_in(
@@ -992,7 +883,7 @@ impl<R> OrderSearchPresetRequest<R> {
             "id",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_id_not_in(
@@ -1003,33 +894,33 @@ impl<R> OrderSearchPresetRequest<R> {
             "id",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn order_by_id_asc(mut self) -> Self {
-        self.query = self.query.order_asc("id");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key);
+        self
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
-        self.query = self.query.order_desc("id");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key);
+        self
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("id");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key);
+        self
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("id");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderSearchPreset::__TEAQL_FIELD_id.query_key);
+        self
     }
 
 
     pub fn select_name(mut self) -> Self {
-        self.query = self.query.project("name");
-        self.__synced()
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn project_name(self) -> Self {
@@ -1044,28 +935,29 @@ impl<R> OrderSearchPresetRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("name", raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn group_by_name(self) -> Self {
-        self.group_by("name")
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key)
     }
 
     pub fn group_by_name_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("name"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key));
+        request
     }
 
     pub fn group_by_name_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("name")]));
-        request.__synced()
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key)
+            .aggregate_with_function(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, alias, function)
     }
 
     pub fn count_name(self) -> Self {
@@ -1073,14 +965,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn count_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("name", alias)
-    }
-    pub fn count_distinct_name(self) -> Self {
-        self.count_distinct_name_as("name_distinct_count")
-    }
-
-    pub fn count_distinct_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("name", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn sum_name(self) -> Self {
@@ -1088,7 +973,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn sum_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("name", alias)
+        self.aggregate_sum(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn avg_name(self) -> Self {
@@ -1096,7 +981,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn avg_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("name", alias)
+        self.aggregate_avg(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn min_name(self) -> Self {
@@ -1104,7 +989,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn min_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("name", alias)
+        self.aggregate_min(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn max_name(self) -> Self {
@@ -1112,13 +997,13 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn max_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("name", alias)
+        self.aggregate_max(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn unselect_name(mut self) -> Self {
         self.query.projection.retain(|field| field != "name");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "name");
-        self.__synced()
+        self
     }
 
 
@@ -1128,11 +1013,11 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "name",
+            crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_name_criteria(
@@ -1140,42 +1025,42 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "name",
+            crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_name_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
 
 
     pub fn with_name_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gte(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_between(
@@ -1183,8 +1068,8 @@ impl<R> OrderSearchPresetRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("name", lower, upper));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::between(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, lower, upper));
+        self
     }
 
     pub fn with_name_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1192,11 +1077,11 @@ impl<R> OrderSearchPresetRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "name",
+            crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key,
             range.start,
             range.end,
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_name_in(
@@ -1207,7 +1092,7 @@ impl<R> OrderSearchPresetRequest<R> {
             "name",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_name_not_in(
@@ -1218,90 +1103,90 @@ impl<R> OrderSearchPresetRequest<R> {
             "name",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_name_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::contain(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::not_contain(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::begin_with(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("name", value));
-        self.__synced()
+        self
     }
 
     pub fn with_name_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::end_with(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("name", value));
-        self.__synced()
+        self
     }
 
     pub fn with_name_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::sound_like(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
     pub fn with_name_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("name"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key));
+        self
     }
 
 
 
     pub fn with_name_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("name"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key));
+        self
     }
 
 
     pub fn order_by_name_asc(mut self) -> Self {
-        self.query = self.query.order_asc("name");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn order_by_name_desc(mut self) -> Self {
-        self.query = self.query.order_desc("name");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn order_by_name_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("name");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn order_by_name_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("name");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderSearchPreset::__TEAQL_FIELD_name.query_key);
+        self
     }
 
 
     pub fn select_filter_json(mut self) -> Self {
-        self.query = self.query.project("filter_json");
-        self.__synced()
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key);
+        self
     }
 
     pub fn project_filter_json(self) -> Self {
@@ -1316,28 +1201,29 @@ impl<R> OrderSearchPresetRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("filter_json", raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn group_by_filter_json(self) -> Self {
-        self.group_by("filter_json")
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key)
     }
 
     pub fn group_by_filter_json_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("filter_json"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key));
+        request
     }
 
     pub fn group_by_filter_json_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("filter_json")]));
-        request.__synced()
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key)
+            .aggregate_with_function(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, alias, function)
     }
 
     pub fn count_filter_json(self) -> Self {
@@ -1345,14 +1231,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn count_filter_json_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("filter_json", alias)
-    }
-    pub fn count_distinct_filter_json(self) -> Self {
-        self.count_distinct_filter_json_as("filter_json_distinct_count")
-    }
-
-    pub fn count_distinct_filter_json_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("filter_json", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, alias)
     }
 
     pub fn sum_filter_json(self) -> Self {
@@ -1360,7 +1239,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn sum_filter_json_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("filter_json", alias)
+        self.aggregate_sum(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, alias)
     }
 
     pub fn avg_filter_json(self) -> Self {
@@ -1368,7 +1247,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn avg_filter_json_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("filter_json", alias)
+        self.aggregate_avg(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, alias)
     }
 
     pub fn min_filter_json(self) -> Self {
@@ -1376,7 +1255,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn min_filter_json_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("filter_json", alias)
+        self.aggregate_min(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, alias)
     }
 
     pub fn max_filter_json(self) -> Self {
@@ -1384,13 +1263,13 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn max_filter_json_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("filter_json", alias)
+        self.aggregate_max(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, alias)
     }
 
     pub fn unselect_filter_json(mut self) -> Self {
         self.query.projection.retain(|field| field != "filter_json");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "filter_json");
-        self.__synced()
+        self
     }
 
 
@@ -1400,11 +1279,11 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "filter_json",
+            crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_filter_json_criteria(
@@ -1412,42 +1291,42 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "filter_json",
+            crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_filter_json_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
 
 
     pub fn with_filter_json_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
     pub fn with_filter_json_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
     pub fn with_filter_json_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gte(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
     pub fn with_filter_json_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
     pub fn with_filter_json_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
     pub fn with_filter_json_between(
@@ -1455,8 +1334,8 @@ impl<R> OrderSearchPresetRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("filter_json", lower, upper));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::between(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, lower, upper));
+        self
     }
 
     pub fn with_filter_json_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1464,11 +1343,11 @@ impl<R> OrderSearchPresetRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "filter_json",
+            crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key,
             range.start,
             range.end,
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_filter_json_in(
@@ -1479,7 +1358,7 @@ impl<R> OrderSearchPresetRequest<R> {
             "filter_json",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_filter_json_not_in(
@@ -1490,90 +1369,90 @@ impl<R> OrderSearchPresetRequest<R> {
             "filter_json",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_filter_json_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::contain(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
     pub fn with_filter_json_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::not_contain(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
     pub fn with_filter_json_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::begin_with(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
     pub fn with_filter_json_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("filter_json", value));
-        self.__synced()
+        self
     }
 
     pub fn with_filter_json_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::end_with(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
     pub fn with_filter_json_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("filter_json", value));
-        self.__synced()
+        self
     }
 
     pub fn with_filter_json_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::sound_like(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
     pub fn with_filter_json_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
     pub fn with_filter_json_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("filter_json", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key, value));
+        self
     }
 
     pub fn with_filter_json_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("filter_json"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key));
+        self
     }
 
 
 
     pub fn with_filter_json_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("filter_json"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key));
+        self
     }
 
 
     pub fn order_by_filter_json_asc(mut self) -> Self {
-        self.query = self.query.order_asc("filter_json");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key);
+        self
     }
 
     pub fn order_by_filter_json_desc(mut self) -> Self {
-        self.query = self.query.order_desc("filter_json");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key);
+        self
     }
 
     pub fn order_by_filter_json_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("filter_json");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key);
+        self
     }
 
     pub fn order_by_filter_json_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("filter_json");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderSearchPreset::__TEAQL_FIELD_filter_json.query_key);
+        self
     }
 
 
     pub fn select_request_id(mut self) -> Self {
-        self.query = self.query.project("request_id");
-        self.__synced()
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key);
+        self
     }
 
     pub fn project_request_id(self) -> Self {
@@ -1588,28 +1467,29 @@ impl<R> OrderSearchPresetRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("request_id", raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn group_by_request_id(self) -> Self {
-        self.group_by("request_id")
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key)
     }
 
     pub fn group_by_request_id_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("request_id"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key));
+        request
     }
 
     pub fn group_by_request_id_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("request_id")]));
-        request.__synced()
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key)
+            .aggregate_with_function(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, alias, function)
     }
 
     pub fn count_request_id(self) -> Self {
@@ -1617,14 +1497,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn count_request_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("request_id", alias)
-    }
-    pub fn count_distinct_request_id(self) -> Self {
-        self.count_distinct_request_id_as("request_id_distinct_count")
-    }
-
-    pub fn count_distinct_request_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("request_id", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, alias)
     }
 
     pub fn sum_request_id(self) -> Self {
@@ -1632,7 +1505,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn sum_request_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("request_id", alias)
+        self.aggregate_sum(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, alias)
     }
 
     pub fn avg_request_id(self) -> Self {
@@ -1640,7 +1513,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn avg_request_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("request_id", alias)
+        self.aggregate_avg(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, alias)
     }
 
     pub fn min_request_id(self) -> Self {
@@ -1648,7 +1521,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn min_request_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("request_id", alias)
+        self.aggregate_min(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, alias)
     }
 
     pub fn max_request_id(self) -> Self {
@@ -1656,13 +1529,13 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn max_request_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("request_id", alias)
+        self.aggregate_max(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, alias)
     }
 
     pub fn unselect_request_id(mut self) -> Self {
         self.query.projection.retain(|field| field != "request_id");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "request_id");
-        self.__synced()
+        self
     }
 
 
@@ -1672,11 +1545,11 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "request_id",
+            crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_request_id_criteria(
@@ -1684,42 +1557,42 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "request_id",
+            crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_request_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
 
 
     pub fn with_request_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
     pub fn with_request_id_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
     pub fn with_request_id_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gte(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
     pub fn with_request_id_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
     pub fn with_request_id_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
     pub fn with_request_id_between(
@@ -1727,8 +1600,8 @@ impl<R> OrderSearchPresetRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("request_id", lower, upper));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::between(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, lower, upper));
+        self
     }
 
     pub fn with_request_id_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1736,11 +1609,11 @@ impl<R> OrderSearchPresetRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "request_id",
+            crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key,
             range.start,
             range.end,
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_request_id_in(
@@ -1751,7 +1624,7 @@ impl<R> OrderSearchPresetRequest<R> {
             "request_id",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_request_id_not_in(
@@ -1762,90 +1635,90 @@ impl<R> OrderSearchPresetRequest<R> {
             "request_id",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_request_id_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::contain(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
     pub fn with_request_id_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::not_contain(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
     pub fn with_request_id_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::begin_with(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
     pub fn with_request_id_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("request_id", value));
-        self.__synced()
+        self
     }
 
     pub fn with_request_id_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::end_with(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
     pub fn with_request_id_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("request_id", value));
-        self.__synced()
+        self
     }
 
     pub fn with_request_id_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::sound_like(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
     pub fn with_request_id_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
     pub fn with_request_id_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("request_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key, value));
+        self
     }
 
     pub fn with_request_id_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("request_id"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key));
+        self
     }
 
 
 
     pub fn with_request_id_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("request_id"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key));
+        self
     }
 
 
     pub fn order_by_request_id_asc(mut self) -> Self {
-        self.query = self.query.order_asc("request_id");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key);
+        self
     }
 
     pub fn order_by_request_id_desc(mut self) -> Self {
-        self.query = self.query.order_desc("request_id");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key);
+        self
     }
 
     pub fn order_by_request_id_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("request_id");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key);
+        self
     }
 
     pub fn order_by_request_id_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("request_id");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderSearchPreset::__TEAQL_FIELD_request_id.query_key);
+        self
     }
 
 
     pub fn select_owner_user_id(mut self) -> Self {
-        self.query = self.query.project("owner_user_id");
-        self.__synced()
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key);
+        self
     }
 
     pub fn project_owner_user_id(self) -> Self {
@@ -1860,28 +1733,29 @@ impl<R> OrderSearchPresetRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("owner_user_id", raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn group_by_owner_user_id(self) -> Self {
-        self.group_by("owner_user_id")
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key)
     }
 
     pub fn group_by_owner_user_id_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("owner_user_id"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key));
+        request
     }
 
     pub fn group_by_owner_user_id_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("owner_user_id")]));
-        request.__synced()
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key)
+            .aggregate_with_function(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, alias, function)
     }
 
     pub fn count_owner_user_id(self) -> Self {
@@ -1889,14 +1763,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn count_owner_user_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("owner_user_id", alias)
-    }
-    pub fn count_distinct_owner_user_id(self) -> Self {
-        self.count_distinct_owner_user_id_as("owner_user_id_distinct_count")
-    }
-
-    pub fn count_distinct_owner_user_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("owner_user_id", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, alias)
     }
 
     pub fn sum_owner_user_id(self) -> Self {
@@ -1904,7 +1771,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn sum_owner_user_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("owner_user_id", alias)
+        self.aggregate_sum(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, alias)
     }
 
     pub fn avg_owner_user_id(self) -> Self {
@@ -1912,7 +1779,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn avg_owner_user_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("owner_user_id", alias)
+        self.aggregate_avg(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, alias)
     }
 
     pub fn min_owner_user_id(self) -> Self {
@@ -1920,7 +1787,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn min_owner_user_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("owner_user_id", alias)
+        self.aggregate_min(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, alias)
     }
 
     pub fn max_owner_user_id(self) -> Self {
@@ -1928,13 +1795,13 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn max_owner_user_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("owner_user_id", alias)
+        self.aggregate_max(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, alias)
     }
 
     pub fn unselect_owner_user_id(mut self) -> Self {
         self.query.projection.retain(|field| field != "owner_user_id");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "owner_user_id");
-        self.__synced()
+        self
     }
 
 
@@ -1944,11 +1811,11 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "owner_user_id",
+            crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_owner_user_id_criteria(
@@ -1956,42 +1823,42 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "owner_user_id",
+            crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_owner_user_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
 
 
     pub fn with_owner_user_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
     pub fn with_owner_user_id_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
     pub fn with_owner_user_id_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gte(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
     pub fn with_owner_user_id_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
     pub fn with_owner_user_id_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
     pub fn with_owner_user_id_between(
@@ -1999,8 +1866,8 @@ impl<R> OrderSearchPresetRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("owner_user_id", lower, upper));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::between(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, lower, upper));
+        self
     }
 
     pub fn with_owner_user_id_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -2008,11 +1875,11 @@ impl<R> OrderSearchPresetRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "owner_user_id",
+            crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key,
             range.start,
             range.end,
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_owner_user_id_in(
@@ -2023,7 +1890,7 @@ impl<R> OrderSearchPresetRequest<R> {
             "owner_user_id",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_owner_user_id_not_in(
@@ -2034,90 +1901,90 @@ impl<R> OrderSearchPresetRequest<R> {
             "owner_user_id",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_owner_user_id_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::contain(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
     pub fn with_owner_user_id_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::not_contain(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
     pub fn with_owner_user_id_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::begin_with(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
     pub fn with_owner_user_id_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("owner_user_id", value));
-        self.__synced()
+        self
     }
 
     pub fn with_owner_user_id_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::end_with(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
     pub fn with_owner_user_id_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("owner_user_id", value));
-        self.__synced()
+        self
     }
 
     pub fn with_owner_user_id_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::sound_like(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
     pub fn with_owner_user_id_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
     pub fn with_owner_user_id_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("owner_user_id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key, value));
+        self
     }
 
     pub fn with_owner_user_id_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("owner_user_id"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key));
+        self
     }
 
 
 
     pub fn with_owner_user_id_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("owner_user_id"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key));
+        self
     }
 
 
     pub fn order_by_owner_user_id_asc(mut self) -> Self {
-        self.query = self.query.order_asc("owner_user_id");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key);
+        self
     }
 
     pub fn order_by_owner_user_id_desc(mut self) -> Self {
-        self.query = self.query.order_desc("owner_user_id");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key);
+        self
     }
 
     pub fn order_by_owner_user_id_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("owner_user_id");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key);
+        self
     }
 
     pub fn order_by_owner_user_id_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("owner_user_id");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderSearchPreset::__TEAQL_FIELD_owner_user_id.query_key);
+        self
     }
 
 
     pub fn select_create_time(mut self) -> Self {
-        self.query = self.query.project("create_time");
-        self.__synced()
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key);
+        self
     }
 
     pub fn project_create_time(self) -> Self {
@@ -2132,28 +1999,29 @@ impl<R> OrderSearchPresetRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("create_time", raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn group_by_create_time(self) -> Self {
-        self.group_by("create_time")
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key)
     }
 
     pub fn group_by_create_time_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("create_time"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key));
+        request
     }
 
     pub fn group_by_create_time_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("create_time")]));
-        request.__synced()
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key)
+            .aggregate_with_function(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, alias, function)
     }
 
     pub fn count_create_time(self) -> Self {
@@ -2161,14 +2029,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn count_create_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("create_time", alias)
-    }
-    pub fn count_distinct_create_time(self) -> Self {
-        self.count_distinct_create_time_as("create_time_distinct_count")
-    }
-
-    pub fn count_distinct_create_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("create_time", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, alias)
     }
 
     pub fn sum_create_time(self) -> Self {
@@ -2176,7 +2037,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn sum_create_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("create_time", alias)
+        self.aggregate_sum(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, alias)
     }
 
     pub fn avg_create_time(self) -> Self {
@@ -2184,7 +2045,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn avg_create_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("create_time", alias)
+        self.aggregate_avg(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, alias)
     }
 
     pub fn min_create_time(self) -> Self {
@@ -2192,7 +2053,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn min_create_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("create_time", alias)
+        self.aggregate_min(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, alias)
     }
 
     pub fn max_create_time(self) -> Self {
@@ -2200,13 +2061,13 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn max_create_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("create_time", alias)
+        self.aggregate_max(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, alias)
     }
 
     pub fn unselect_create_time(mut self) -> Self {
         self.query.projection.retain(|field| field != "create_time");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "create_time");
-        self.__synced()
+        self
     }
 
 
@@ -2216,11 +2077,11 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "create_time",
+            crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_create_time_criteria(
@@ -2228,42 +2089,42 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "create_time",
+            crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_create_time_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("create_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, value));
+        self
     }
 
 
 
     pub fn with_create_time_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("create_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, value));
+        self
     }
 
     pub fn with_create_time_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("create_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, value));
+        self
     }
 
     pub fn with_create_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("create_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gte(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, value));
+        self
     }
 
     pub fn with_create_time_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("create_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, value));
+        self
     }
 
     pub fn with_create_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("create_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, value));
+        self
     }
 
     pub fn with_create_time_between(
@@ -2271,8 +2132,8 @@ impl<R> OrderSearchPresetRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("create_time", lower, upper));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::between(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, lower, upper));
+        self
     }
 
     pub fn with_create_time_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -2280,11 +2141,11 @@ impl<R> OrderSearchPresetRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "create_time",
+            crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key,
             range.start,
             range.end,
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_create_time_in(
@@ -2295,7 +2156,7 @@ impl<R> OrderSearchPresetRequest<R> {
             "create_time",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_create_time_not_in(
@@ -2306,56 +2167,56 @@ impl<R> OrderSearchPresetRequest<R> {
             "create_time",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_create_time_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("create_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, value));
+        self
     }
 
     pub fn with_create_time_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("create_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key, value));
+        self
     }
 
     pub fn with_create_time_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("create_time"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key));
+        self
     }
 
 
 
     pub fn with_create_time_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("create_time"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key));
+        self
     }
 
 
     pub fn order_by_create_time_asc(mut self) -> Self {
-        self.query = self.query.order_asc("create_time");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key);
+        self
     }
 
     pub fn order_by_create_time_desc(mut self) -> Self {
-        self.query = self.query.order_desc("create_time");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key);
+        self
     }
 
     pub fn order_by_create_time_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("create_time");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key);
+        self
     }
 
     pub fn order_by_create_time_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("create_time");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderSearchPreset::__TEAQL_FIELD_create_time.query_key);
+        self
     }
 
 
     pub fn select_update_time(mut self) -> Self {
-        self.query = self.query.project("update_time");
-        self.__synced()
+        self.query = self.query.project(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key);
+        self
     }
 
     pub fn project_update_time(self) -> Self {
@@ -2370,28 +2231,29 @@ impl<R> OrderSearchPresetRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("update_time", raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn group_by_update_time(self) -> Self {
-        self.group_by("update_time")
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key)
     }
 
     pub fn group_by_update_time_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("update_time"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key));
+        request
     }
 
     pub fn group_by_update_time_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("update_time")]));
-        request.__synced()
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key)
+            .aggregate_with_function(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, alias, function)
     }
 
     pub fn count_update_time(self) -> Self {
@@ -2399,14 +2261,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn count_update_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("update_time", alias)
-    }
-    pub fn count_distinct_update_time(self) -> Self {
-        self.count_distinct_update_time_as("update_time_distinct_count")
-    }
-
-    pub fn count_distinct_update_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("update_time", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, alias)
     }
 
     pub fn sum_update_time(self) -> Self {
@@ -2414,7 +2269,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn sum_update_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("update_time", alias)
+        self.aggregate_sum(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, alias)
     }
 
     pub fn avg_update_time(self) -> Self {
@@ -2422,7 +2277,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn avg_update_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("update_time", alias)
+        self.aggregate_avg(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, alias)
     }
 
     pub fn min_update_time(self) -> Self {
@@ -2430,7 +2285,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn min_update_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("update_time", alias)
+        self.aggregate_min(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, alias)
     }
 
     pub fn max_update_time(self) -> Self {
@@ -2438,13 +2293,13 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn max_update_time_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("update_time", alias)
+        self.aggregate_max(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, alias)
     }
 
     pub fn unselect_update_time(mut self) -> Self {
         self.query.projection.retain(|field| field != "update_time");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "update_time");
-        self.__synced()
+        self
     }
 
 
@@ -2454,11 +2309,11 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "update_time",
+            crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_update_time_criteria(
@@ -2466,42 +2321,42 @@ impl<R> OrderSearchPresetRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "update_time",
+            crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_update_time_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("update_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, value));
+        self
     }
 
 
 
     pub fn with_update_time_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("update_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, value));
+        self
     }
 
     pub fn with_update_time_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("update_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, value));
+        self
     }
 
     pub fn with_update_time_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("update_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gte(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, value));
+        self
     }
 
     pub fn with_update_time_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("update_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, value));
+        self
     }
 
     pub fn with_update_time_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("update_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, value));
+        self
     }
 
     pub fn with_update_time_between(
@@ -2509,8 +2364,8 @@ impl<R> OrderSearchPresetRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("update_time", lower, upper));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::between(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, lower, upper));
+        self
     }
 
     pub fn with_update_time_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -2518,11 +2373,11 @@ impl<R> OrderSearchPresetRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "update_time",
+            crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key,
             range.start,
             range.end,
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_update_time_in(
@@ -2533,7 +2388,7 @@ impl<R> OrderSearchPresetRequest<R> {
             "update_time",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_update_time_not_in(
@@ -2544,71 +2399,72 @@ impl<R> OrderSearchPresetRequest<R> {
             "update_time",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_update_time_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("update_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, value));
+        self
     }
 
     pub fn with_update_time_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("update_time", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key, value));
+        self
     }
 
     pub fn with_update_time_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("update_time"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key));
+        self
     }
 
 
 
     pub fn with_update_time_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("update_time"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key));
+        self
     }
 
 
     pub fn order_by_update_time_asc(mut self) -> Self {
-        self.query = self.query.order_asc("update_time");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key);
+        self
     }
 
     pub fn order_by_update_time_desc(mut self) -> Self {
-        self.query = self.query.order_desc("update_time");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key);
+        self
     }
 
     pub fn order_by_update_time_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("update_time");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key);
+        self
     }
 
     pub fn order_by_update_time_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("update_time");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderSearchPreset::__TEAQL_FIELD_update_time.query_key);
+        self
     }
 
     pub fn group_by_version(self) -> Self {
-        self.group_by("version")
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key)
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("version"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key));
+        request
     }
 
     pub fn group_by_version_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("version")]));
-        request.__synced()
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key)
+            .aggregate_with_function(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key, alias, function)
     }
 
     pub fn count_version(self) -> Self {
@@ -2616,14 +2472,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("version", alias)
-    }
-    pub fn count_distinct_version(self) -> Self {
-        self.count_distinct_version_as("version_distinct_count")
-    }
-
-    pub fn count_distinct_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("version", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn sum_version(self) -> Self {
@@ -2631,7 +2480,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn sum_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("version", alias)
+        self.aggregate_sum(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn avg_version(self) -> Self {
@@ -2639,7 +2488,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn avg_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("version", alias)
+        self.aggregate_avg(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn min_version(self) -> Self {
@@ -2647,7 +2496,7 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn min_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("version", alias)
+        self.aggregate_min(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn max_version(self) -> Self {
@@ -2655,31 +2504,31 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn max_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("version", alias)
+        self.aggregate_max(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn order_by_version_asc(mut self) -> Self {
-        self.query = self.query.order_asc("version");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key);
+        self
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
-        self.query = self.query.order_desc("version");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key);
+        self
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("version");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key);
+        self
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("version");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderSearchPreset::__TEAQL_FIELD_version.query_key);
+        self
     }
     pub fn filter_by_commerce_platform(mut self, value: impl EntityReference) -> Self {
-        self.query = self.query.and_filter(Expr::eq("commerce_platform_id", value.entity_id_value()));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderSearchPreset::__TEAQL_FIELD_commerce_platform.query_key, value.entity_id_value()));
+        self
     }
 
     pub fn with_commerce_platform_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -2687,11 +2536,11 @@ impl<R> OrderSearchPresetRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "commerce_platform_id",
             <crate::CommercePlatform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.clone().into_query(),
+            selection.query.clone(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("commerce_platform", selection));
-        self.__synced()
+        self
     }
 
 
@@ -2700,114 +2549,74 @@ impl<R> OrderSearchPresetRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "commerce_platform_id",
             <crate::CommercePlatform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.clone().into_query(),
+            selection.query.clone(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("commerce_platform", selection));
-        self.__synced()
+        self
     }
 
 
     pub fn have_commerce_platform(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("commerce_platform_id"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderSearchPreset::__TEAQL_FIELD_commerce_platform.query_key));
+        self
     }
 
     pub fn have_no_commerce_platform(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("commerce_platform_id"));
-        self.__synced()
-    }
-
-    pub fn order_by_commerce_platform_asc(mut self) -> Self {
-        self.query = self.query.order_asc("commerce_platform_id");
-        self.__synced()
-    }
-
-    pub fn order_by_commerce_platform_desc(mut self) -> Self {
-        self.query = self.query.order_desc("commerce_platform_id");
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderSearchPreset::__TEAQL_FIELD_commerce_platform.query_key));
+        self
     }
 
 
     pub fn group_by_commerce_platform(self) -> Self {
-        self.group_by("commerce_platform_id")
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_commerce_platform.query_key)
     }
 
     pub fn group_by_commerce_platform_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("commerce_platform_id"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_commerce_platform.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderSearchPreset::__TEAQL_FIELD_commerce_platform.query_key));
+        request
     }
 
     pub fn group_by_commerce_platform_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("commerce_platform_id")]));
-        request.__synced()
+        self.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_commerce_platform.query_key)
+            .aggregate_with_function(crate::OrderSearchPreset::__TEAQL_FIELD_commerce_platform.query_key, alias, function)
     }
 
     pub fn group_by_commerce_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
-        self.__group_by_commerce_platform_with_operation(request, "group_by_commerce_platform_with")
-    }
-
-    fn __group_by_commerce_platform_with_operation(mut self, request: impl Into<QuerySelection>, method: &str) -> Self {
-        self.query = self.query.group_by("commerce_platform_id");
+        self.query = self.query.group_by(crate::OrderSearchPreset::__TEAQL_FIELD_commerce_platform.query_key);
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "commerce_platform",
             "commerce_platform_id",
             request,
-        ).with_operation(
-            QueryOperation::new(QueryOperationKind::Aggregate, method)
-                .with_relation("commerce_platform")));
-        self.__synced()
+        ));
+        self
     }
 
     pub fn group_by_commerce_platform_with_details(self) -> Self {
-        self.__group_by_commerce_platform_with_operation(crate::Q::commerce_platforms().unlimited(), "group_by_commerce_platform_with_details")
+        self.group_by_commerce_platform_with_details_from(crate::Q::commerce_platforms().unlimited())
     }
 
     pub fn group_by_commerce_platform_with_details_from(self, request: impl Into<QuerySelection>) -> Self {
-        self.__group_by_commerce_platform_with_operation(request, "group_by_commerce_platform_with_details_from")
+        self.group_by_commerce_platform_with(request)
     }
 
 
-    pub fn roll_up_to_commerce_platform(&mut self) -> crate::CommercePlatformRequest {
-        self.__bind_roll_up_to_commerce_platform(crate::Q::commerce_platforms().unlimited(),
-            QueryOperation::new(QueryOperationKind::Aggregate, "roll_up_to_commerce_platform")
-                .with_relation("commerce_platform"))
+    pub fn roll_up_to_commerce_platform(self) -> Self {
+        self.roll_up_to_commerce_platform_with(crate::Q::commerce_platforms().unlimited())
     }
 
-    pub fn roll_up_to_commerce_platform_with<T>(&mut self, request: crate::CommercePlatformRequest<T>) -> crate::CommercePlatformRequest<T> {
-        self.__bind_roll_up_to_commerce_platform(request,
-            QueryOperation::new(QueryOperationKind::Aggregate, "roll_up_to_commerce_platform_with")
-                .with_relation("commerce_platform"))
-    }
-
-    fn __bind_roll_up_to_commerce_platform<T>(&mut self, mut request: crate::CommercePlatformRequest<T>, operation: QueryOperation) -> crate::CommercePlatformRequest<T> {
-        let target = request.__roll_up_target();
-        if let Some(source) = &self.roll_up_publication {
-            assert!(!crate::rollup_support::reaches(&target, source).expect("invalid roll-up configuration"),
-                "cyclic roll-up configuration");
-        }
-        teaql_core::request::clear_rollup_navigation(&mut self.query,
-            "commerce_platform", "id").expect("invalid roll-up configuration");
-        self.roll_up_links.retain(|link| link.property != "commerce_platform");
-        self.roll_up_links.push(RollupLink {
-            property: "commerce_platform".into(),
-            storage: "commerce_platform_id".into(),
-            descriptor: <crate::CommercePlatform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            operation,
-            target,
-        });
-        if !self.query.group_by.iter().any(|field| field == "commerce_platform_id") {
-            self.query.group_by.push("commerce_platform_id".into());
-        }
-        self.__publish_roll_up();
-        request
+    pub fn roll_up_to_commerce_platform_with(self, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        self.with_commerce_platform_matching(selection.clone())
+            .group_by_commerce_platform_with(selection)
     }
 
     pub fn count_commerce_platform(self) -> Self {
@@ -2815,58 +2624,42 @@ impl<R> OrderSearchPresetRequest<R> {
     }
 
     pub fn count_commerce_platform_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("commerce_platform_id", alias)
-    }
-    pub fn count_distinct_commerce_platform(self) -> Self {
-        self.count_distinct_commerce_platform_as("commerce_platform_distinct_count")
-    }
-
-    pub fn count_distinct_commerce_platform_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("commerce_platform_id", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderSearchPreset::__TEAQL_FIELD_commerce_platform.query_key, alias)
     }
 
     pub fn unselect_commerce_platform(mut self) -> Self {
         self.query.projection.retain(|field| field != "commerce_platform_id");
         self.query.relations.retain(|relation| relation.name != "commerce_platform");
-        self.__synced()
+        self
     }
     pub fn select_commerce_platform(mut self) -> Self {
-        self.query.relations.push(teaql_core::RelationLoad::new("commerce_platform")
-            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_commerce_platform").with_relation("commerce_platform")));
-        self.__synced()
+        self.query = self.query.relation("commerce_platform");
+        self
     }
 
     pub fn select_commerce_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query.relations.push(teaql_core::RelationLoad::with_query("commerce_platform", selection.into_query())
-            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_commerce_platform_with").with_relation("commerce_platform")));
-        self.__synced()
+        self.query = self.query.relation_query("commerce_platform", selection.into_query());
+        self
 }
 
     pub fn facet_by_commerce_platform_as(self, facet_name: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.facet_by_commerce_platform_internal(facet_name, request, true, "facet_by_commerce_platform_as")
+        self.facet_by_commerce_platform_as_with_options(facet_name, request, true)
     }
 
     pub fn facet_by_commerce_platform_as_with_options(
-        self,
+        mut self,
         facet_name: impl Into<String>,
         request: impl Into<QuerySelection>,
         include_all_facets: bool,
     ) -> Self {
-        self.facet_by_commerce_platform_internal(facet_name, request, include_all_facets, "facet_by_commerce_platform_as_with_options")
-    }
-
-    fn facet_by_commerce_platform_internal(mut self, facet_name: impl Into<String>, request: impl Into<QuerySelection>, include_all_facets: bool, method: &'static str) -> Self {
-        let facet_name = facet_name.into();
-        let operation = QueryOperation::new(QueryOperationKind::Facet, method)
-            .with_alias(&facet_name).with_relation("commerce_platform");
         self.query_options.facets.push(FacetRequest::new(
             facet_name,
             "commerce_platform",
             request,
             include_all_facets,
-        ).with_operation(operation));
-        self.__synced()
+        ));
+        self
     }
 }
 
@@ -2883,8 +2676,7 @@ impl<R> From< OrderSearchPresetRequest<R> > for SelectQuery {
 }
 
 impl<R> From< OrderSearchPresetRequest<R> > for QuerySelection {
-    fn from(mut request: OrderSearchPresetRequest<R>) -> Self {
-        request.__resolve_roll_ups().expect("invalid roll-up configuration");
+    fn from(request: OrderSearchPresetRequest<R>) -> Self {
         Self {
             query: request.query,
             relation_selections: request.relation_selections,
@@ -2897,13 +2689,15 @@ impl<R> From< OrderSearchPresetRequest<R> > for QuerySelection {
 
 
 impl<'a, C> crate::request_support::AuditedSave<'a, C> for teaql_core::Audited<crate::OrderSearchPreset> 
-where C: crate::TeaqlRuntime + ?Sized + 'a
+where C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a
 {
-    type Error = teaql_runtime::RuntimeError;
+    type Error = crate::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>;
     type Entity = crate::OrderSearchPreset;
-    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + Send + '_>> {
+    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + '_>> {
         Box::pin(async move {
-            context.save_audited_entity(self).await
+            teaql_runtime::save_audited_ledger_entity(self, context.user_context())
+                .await
+                .map_err(DataServiceError::Runtime)
         })
     }
 }
@@ -2911,33 +2705,29 @@ where C: crate::TeaqlRuntime + ?Sized + 'a
 impl<R: teaql_core::Entity> crate::PurposedQuery<OrderSearchPresetRequest<R>> {
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.inner.query_options.comment = Some(comment.into());
-        self.inner.__publish_roll_up();
         self
     }
 
-    pub fn new_entity<C>(&self, context: &C) -> Result<crate::OrderSearchPreset, RuntimeError>
+    pub fn new_entity<C>(&self, context: &C) -> crate::OrderSearchPreset
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
-        // Reserve identity before allocating mutation state. A failed reservation
-        // must not escape as an entity or fall back to a different allocator.
-        let id = context.user_context().next_id(crate::OrderSearchPreset::ENTITY_NAME)?;
         let mut entity = crate::OrderSearchPreset::runtime_new(context.user_context().entity_runtime_state());
-        entity.update_id(id);
+        if let Ok(id) = context.user_context().next_id(crate::OrderSearchPreset::ENTITY_NAME) {
+            entity.update_id(id);
+        }
         teaql_core::Entity::mark_as_new(&mut entity);
-        Ok(entity)
+        entity
     }
 
     fn into_inner_with_trace(mut self) -> OrderSearchPresetRequest<R> {
         self.require_comment();
-        self.inner.query.trace_chain.push(teaql_core::TraceNode::typed(
-            teaql_core::TraceKind::Purpose,
+        self.inner.query.trace_chain.push(teaql_core::TraceNode::new(
             self.inner.query.entity.clone(),
             None,
             self.purpose,
         ));
-        self.inner.__publish_roll_up();
         self.inner
     }
 
@@ -2948,68 +2738,74 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<OrderSearchPresetRequest<R>> {
                 .comment
                 .as_deref()
                 .is_some_and(|comment| !comment.trim().is_empty()),
-            "{}", teaql_core::RequestIntentError {
-                request_kind: teaql_core::RequestKind::Query,
-                field: "comment",
-            }
+            "query comment must not be empty"
         );
+    }
+
+    pub async fn execute_for_page<'a, C>(
+        self,
+        context: &'a C,
+        offset: u64,
+        limit: u64,
+    ) -> Result<teaql_core::SmartList<R>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
+    where
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+    {
+        self.into_inner_with_trace()._execute_for_page(context, offset, limit).await
     }
 
     pub async fn execute_for_exists<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<bool, teaql_runtime::RuntimeError>
+    ) -> Result<bool, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_exists(context).await
     }
 
-    pub async fn execute_for_list<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_list<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<R>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_list(context).await
     }
 
-    pub async fn execute_for_rows<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::CompactRow>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_rows<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::CompactRow>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_rows(context).await
     }
 
     /// Execute query as a lazy entity stream without materializing the result set.
     /// Set chunk size via .stream(chunk_size) or .stream_default() on the query.
-    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<crate::request_support::TeaqlEntityStream<'a, R, teaql_runtime::RuntimeError>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<crate::request_support::TeaqlEntityStream<'a, R, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity + 'a,
     {
         self.into_inner_with_trace()._execute_for_stream(context).await
     }
 
-    pub async fn execute_for_first<'a, C>(self, context: &'a C) -> Result<Option<R>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_first<'a, C>(self, context: &'a C) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_first(context).await
     }
 
-    pub async fn execute_for_one<'a, C>(self, context: &'a C) -> Result<Option<R>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_one<'a, C>(self, context: &'a C) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_one(context).await
     }
 
 
-    pub async fn execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, teaql_runtime::RuntimeError>
+    pub async fn execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, crate::request_support::TeaqlDataServiceError<C::OrderSearchPresetRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_count(context).await
     }

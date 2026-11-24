@@ -1,0 +1,48 @@
+{
+  "schema": "teaql.i18n-showcase/v1",
+  "scene": "supplier-onboarding",
+  "entity": "supplier",
+  "operation": "register a supplier for warehouse purchasing",
+  "warehouse": {"id": 1, "name": "Central Warehouse"},
+  "defaultLocale": "en",
+  "locales": [
+    {"code": "en", "chinese": "英语", "native": "English"},
+    {"code": "zh-CN", "chinese": "简体中文", "native": "简体中文"},
+    {"code": "zh-TW", "chinese": "繁体中文", "native": "繁體中文"},
+    {"code": "ja", "chinese": "日语", "native": "日本語"},
+    {"code": "ko", "chinese": "韩语", "native": "한국어"},
+    {"code": "de", "chinese": "德语", "native": "Deutsch"},
+    {"code": "fr", "chinese": "法语", "native": "français"},
+    {"code": "es", "chinese": "西班牙语", "native": "español"},
+    {"code": "pt", "chinese": "葡萄牙语", "native": "português"},
+    {"code": "ar", "chinese": "阿拉伯语", "native": "العربية"},
+    {"code": "th", "chinese": "泰语", "native": "ไทย"},
+    {"code": "id", "chinese": "印度尼西亚语", "native": "Bahasa Indonesia"},
+    {"code": "fil", "chinese": "菲律宾语", "native": "Filipino"},
+    {"code": "uk", "chinese": "乌克兰语", "native": "Українська"},
+    {"code": "vi", "chinese": "越南语", "native": "Tiếng Việt"}
+  ],
+  "cases": [
+    {
+      "id": "missing-supplier-name",
+      "input": {"name": null, "minimum_order_quantity": 10},
+      "error": {"messageKey": "checker.required", "location": "name"}
+    },
+    {
+      "id": "order-quantity-below-minimum",
+      "input": {"name": "Orchid Paper", "minimum_order_quantity": 3},
+      "error": {
+        "messageKey": "checker.min",
+        "location": "minimum_order_quantity",
+        "arguments": {"minimum": 10}
+      }
+    }
+  ],
+  "localeCases": {
+    "alias": {"input": "ZH_hant", "effectiveLocale": "zh-TW"},
+    "unsupported": ["", "xx-XX"],
+    "missingTranslationLocale": "vi",
+    "switchSequence": ["ja", "ar", "ja"],
+    "independentContextLocale": "fr"
+  }
+}

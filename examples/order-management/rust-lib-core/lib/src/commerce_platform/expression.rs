@@ -2,94 +2,83 @@
 pub struct CommercePlatformExpression<'a> {
     result: teaql_core::eval::EvalResult<&'a crate::CommercePlatform>,
     root_desc: std::sync::Arc<String>,
-    path: teaql_core::eval_location::ExpressionPath,
 }
 
 impl<'a> CommercePlatformExpression<'a> {
     pub fn new(result: teaql_core::eval::EvalResult<&'a crate::CommercePlatform>, root_desc: std::sync::Arc<String>) -> Self {
-        Self { result, root_desc, path: Default::default() }
+        Self { result, root_desc }
     }
 
-    pub(crate) fn with_path(mut self, mut path: teaql_core::eval_location::ExpressionPath) -> Self { if matches!(&self.result, teaql_core::eval::EvalResult::NotLoaded { .. }) { path.mark_missing(); } self.path = path; self }
-
-    fn resolve(&self, terminal: &'static str) -> Option<&'a crate::CommercePlatform> {
+    fn resolve(&self) -> Option<&'a crate::CommercePlatform> {
         match &self.result {
             teaql_core::eval::EvalResult::Value(v) => Some(*v),
             teaql_core::eval::EvalResult::Null => None,
             teaql_core::eval::EvalResult::NotLoaded { failed_node, attempted_path } => {
-                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path, &self.path, terminal)
+                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path)
             }
         }
     }
 
-    pub fn try_eval(&self) -> Result<Option<&'a crate::CommercePlatform>, teaql_core::eval_location::NotLoadedDiagnostic> {
-        match &self.result {
-            teaql_core::eval::EvalResult::Value(value) => Ok(Some(*value)),
-            teaql_core::eval::EvalResult::Null => Ok(None),
-            teaql_core::eval::EvalResult::NotLoaded { failed_node, .. } => Err(teaql_core::eval_location::NotLoadedDiagnostic::from_path(&self.path, failed_node, "try_eval()").with_profile(teaql_core::object_location::JsonFieldNamingProfile::from_model_value("camelCase").expect("validated model JSON naming"))),
-        }
-    }
-
     pub fn eval(&self) -> Option<&'a crate::CommercePlatform> {
-        self.resolve("eval()")
+        self.resolve()
     }
 
     pub fn unwrap(&self) -> &'a crate::CommercePlatform {
-        self.resolve("unwrap()").expect("Relation was legitimately null in database!")
+        self.resolve().expect("Relation was legitimately null in database!")
     }
 
     pub fn get_id(self) -> crate::ValueExpression<'a, u64> {
         let next = self.result.and_then("id", |entity| entity.eval_id());
-        crate::ValueExpression::new(next, self.root_desc.clone()).with_path(self.path.member_as("id", "get_id"))
+        crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_name(self) -> crate::ValueExpression<'a, String> {
         let next = self.result.and_then("name", |entity| entity.eval_name());
-        crate::ValueExpression::new(next, self.root_desc.clone()).with_path(self.path.member_as("name", "get_name"))
+        crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_create_time(self) -> crate::ValueExpression<'a, teaql_core::time::Timestamp> {
         let next = self.result.and_then("create_time", |entity| entity.eval_create_time());
-        crate::ValueExpression::new(next, self.root_desc.clone()).with_path(self.path.member_as("create_time", "get_create_time"))
+        crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_update_time(self) -> crate::ValueExpression<'a, teaql_core::time::Timestamp> {
         let next = self.result.and_then("update_time", |entity| entity.eval_update_time());
-        crate::ValueExpression::new(next, self.root_desc.clone()).with_path(self.path.member_as("update_time", "get_update_time"))
+        crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_version(self) -> crate::ValueExpression<'a, i64> {
         let next = self.result.and_then("version", |entity| entity.eval_version());
-        crate::ValueExpression::new(next, self.root_desc.clone()).with_path(self.path.member_as("version", "get_version"))
+        crate::ValueExpression::new(next, self.root_desc.clone())
     }
     pub fn get_customer_list(self) -> crate::CustomerListExpression<'a> {
         let next = self.result.and_then("customer_list", |entity| entity.eval_customer_list());
-        crate::CustomerListExpression::new(next, self.root_desc.clone()).with_path(self.path.member("customer_list"))
+        crate::CustomerListExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_order_status_list(self) -> crate::OrderStatusListExpression<'a> {
         let next = self.result.and_then("order_status_list", |entity| entity.eval_order_status_list());
-        crate::OrderStatusListExpression::new(next, self.root_desc.clone()).with_path(self.path.member("order_status_list"))
+        crate::OrderStatusListExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_customer_order_list(self) -> crate::CustomerOrderListExpression<'a> {
         let next = self.result.and_then("customer_order_list", |entity| entity.eval_customer_order_list());
-        crate::CustomerOrderListExpression::new(next, self.root_desc.clone()).with_path(self.path.member("customer_order_list"))
+        crate::CustomerOrderListExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_product_list(self) -> crate::ProductListExpression<'a> {
         let next = self.result.and_then("product_list", |entity| entity.eval_product_list());
-        crate::ProductListExpression::new(next, self.root_desc.clone()).with_path(self.path.member("product_list"))
+        crate::ProductListExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_order_line_list(self) -> crate::OrderLineListExpression<'a> {
         let next = self.result.and_then("order_line_list", |entity| entity.eval_order_line_list());
-        crate::OrderLineListExpression::new(next, self.root_desc.clone()).with_path(self.path.member("order_line_list"))
+        crate::OrderLineListExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get_order_search_preset_list(self) -> crate::OrderSearchPresetListExpression<'a> {
         let next = self.result.and_then("order_search_preset_list", |entity| entity.eval_order_search_preset_list());
-        crate::OrderSearchPresetListExpression::new(next, self.root_desc.clone()).with_path(self.path.member("order_search_preset_list"))
+        crate::OrderSearchPresetListExpression::new(next, self.root_desc.clone())
     }
 }
 
@@ -97,45 +86,34 @@ impl<'a> CommercePlatformExpression<'a> {
 pub struct CommercePlatformListExpression<'a> {
     result: teaql_core::eval::EvalResult<&'a teaql_core::SmartList<crate::CommercePlatform>>,
     root_desc: std::sync::Arc<String>,
-    path: teaql_core::eval_location::ExpressionPath,
 }
 
 impl<'a> CommercePlatformListExpression<'a> {
     pub fn new(result: teaql_core::eval::EvalResult<&'a teaql_core::SmartList<crate::CommercePlatform>>, root_desc: std::sync::Arc<String>) -> Self {
-        Self { result, root_desc, path: Default::default() }
+        Self { result, root_desc }
     }
 
-    pub(crate) fn with_path(mut self, mut path: teaql_core::eval_location::ExpressionPath) -> Self { if matches!(&self.result, teaql_core::eval::EvalResult::NotLoaded { .. }) { path.mark_missing(); } self.path = path; self }
-
-    fn resolve(&self, terminal: &'static str) -> Option<&'a teaql_core::SmartList<crate::CommercePlatform>> {
+    fn resolve(&self) -> Option<&'a teaql_core::SmartList<crate::CommercePlatform>> {
         match &self.result {
             teaql_core::eval::EvalResult::Value(v) => Some(*v),
             teaql_core::eval::EvalResult::Null => None,
             teaql_core::eval::EvalResult::NotLoaded { failed_node, attempted_path } => {
-                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path, &self.path, terminal)
+                crate::trigger_logic_bug_panic(&self.root_desc, &failed_node, &attempted_path)
             }
         }
     }
 
-    pub fn try_eval(&self) -> Result<Option<&'a teaql_core::SmartList<crate::CommercePlatform>>, teaql_core::eval_location::NotLoadedDiagnostic> {
-        match &self.result {
-            teaql_core::eval::EvalResult::Value(value) => Ok(Some(*value)),
-            teaql_core::eval::EvalResult::Null => Ok(None),
-            teaql_core::eval::EvalResult::NotLoaded { failed_node, .. } => Err(teaql_core::eval_location::NotLoadedDiagnostic::from_path(&self.path, failed_node, "try_eval()").with_profile(teaql_core::object_location::JsonFieldNamingProfile::from_model_value("camelCase").expect("validated model JSON naming"))),
-        }
-    }
-
     pub fn eval(&self) -> Option<&'a teaql_core::SmartList<crate::CommercePlatform>> {
-        self.resolve("eval()")
+        self.resolve()
     }
 
     pub fn unwrap(&self) -> &'a teaql_core::SmartList<crate::CommercePlatform> {
-        self.resolve("unwrap()").expect("List relation was legitimately null in database!")
+        self.resolve().expect("List relation was legitimately null in database!")
     }
 
     pub fn size(&self) -> crate::ValueExpression<'a, usize> {
         let next = self.result.clone().and_then("size", |list| teaql_core::eval::EvalResult::Value(list.len()));
-        crate::ValueExpression::new(next, self.root_desc.clone()).with_path(self.path.operation("size()"))
+        crate::ValueExpression::new(next, self.root_desc.clone())
     }
 
     pub fn first(&self) -> crate::CommercePlatformExpression<'a> {
@@ -146,7 +124,7 @@ impl<'a> CommercePlatformListExpression<'a> {
                 teaql_core::eval::EvalResult::Null
             }
         });
-        crate::CommercePlatformExpression::new(next, self.root_desc.clone()).with_path(self.path.first())
+        crate::CommercePlatformExpression::new(next, self.root_desc.clone())
     }
 
     pub fn get(&self, index: usize) -> crate::CommercePlatformExpression<'a> {
@@ -157,6 +135,6 @@ impl<'a> CommercePlatformListExpression<'a> {
                 teaql_core::eval::EvalResult::Null
             }
         });
-        crate::CommercePlatformExpression::new(next, self.root_desc.clone()).with_path(self.path.element(index))
+        crate::CommercePlatformExpression::new(next, self.root_desc.clone())
     }
 }

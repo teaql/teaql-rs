@@ -10,6 +10,24 @@
 //! domain-library source to learn method names. If Assist lacks an operation,
 //! report `MISSING_ASSIST` for that path.
 
+// Shared metadata for one fixed model field. Keep storage aliases and the
+// canonical change-set key distinct for references.
+#[derive(Clone, Copy)]
+pub(crate) struct GeneratedField {
+    pub(crate) model_key: &'static str,
+    pub(crate) query_key: &'static str,
+    pub(crate) member_name: &'static str,
+    pub(crate) column_name: &'static str,
+    pub(crate) load_index: usize,
+    pub(crate) reference: bool,
+}
+
+impl GeneratedField {
+    pub(crate) const fn mutation_key(self) -> &'static str {
+        if self.reference { self.model_key } else { self.query_key }
+    }
+}
+
 pub mod e;
 pub mod q;
 pub mod request_support;

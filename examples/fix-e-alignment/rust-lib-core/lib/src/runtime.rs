@@ -395,18 +395,10 @@ pub fn generated_json_field_naming_profile() -> teaql_runtime::JsonFieldNamingPr
     teaql_runtime::JsonFieldNamingProfile::CamelCase
 }
 
-fn generated_checker_presentation() -> std::sync::Arc<teaql_runtime::checker_messages::CheckerPresentationModel> {
-    static MODEL: std::sync::OnceLock<std::sync::Arc<teaql_runtime::checker_messages::CheckerPresentationModel>> = std::sync::OnceLock::new();
-    MODEL.get_or_init(|| std::sync::Arc::new(
-        teaql_runtime::checker_messages::CheckerPresentationModel::from_json("{\"schema\":\"teaql.checker-model/v1\",\"revision\":\"sha256:cbc03c71084d5ff17fe312ca583e790e692d2ecb065fe3a55ec2398eb9189248\",\"entities\":{\"OrderItem\":{\"labels\":{\"en\":\"order item\"},\"fields\":[{\"name\":\"create_time\",\"labels\":{\"en\":\"create time\"},\"aliases\":[\"CreateTime\",\"createTime\"]},{\"name\":\"id\",\"labels\":{\"en\":\"id\"},\"aliases\":[\"Id\"]},{\"name\":\"product_name\",\"labels\":{\"en\":\"product name\"},\"aliases\":[\"ProductName\",\"productName\"]},{\"name\":\"purchase_order\",\"targetType\":\"PurchaseOrder\",\"labels\":{\"en\":\"purchase order\"},\"aliases\":[\"PurchaseOrder\",\"purchaseOrder\"]},{\"name\":\"tenant\",\"targetType\":\"Tenant\",\"labels\":{\"en\":\"tenant\"},\"aliases\":[\"Tenant\"]},{\"name\":\"unit_price\",\"labels\":{\"en\":\"unit price\"},\"aliases\":[\"UnitPrice\",\"unitPrice\"]},{\"name\":\"update_time\",\"labels\":{\"en\":\"update time\"},\"aliases\":[\"UpdateTime\",\"updateTime\"]},{\"name\":\"version\",\"labels\":{\"en\":\"version\"},\"aliases\":[\"Version\"]}]},\"PurchaseOrder\":{\"labels\":{\"en\":\"purchase order\"},\"fields\":[{\"name\":\"contact_phone\",\"labels\":{\"en\":\"contact phone\"},\"aliases\":[\"ContactPhone\",\"contactPhone\"]},{\"name\":\"create_time\",\"labels\":{\"en\":\"create time\"},\"aliases\":[\"CreateTime\",\"createTime\"]},{\"name\":\"id\",\"labels\":{\"en\":\"id\"},\"aliases\":[\"Id\"]},{\"name\":\"internal_note\",\"labels\":{\"en\":\"internal note\"},\"aliases\":[\"InternalNote\",\"internalNote\"]},{\"name\":\"order_item_list\",\"targetType\":\"OrderItem\",\"labels\":{\"en\":\"order item\"},\"aliases\":[\"OrderItemList\",\"orderItemList\"]},{\"name\":\"tenant\",\"targetType\":\"Tenant\",\"labels\":{\"en\":\"tenant\"},\"aliases\":[\"Tenant\"]},{\"name\":\"update_time\",\"labels\":{\"en\":\"update time\"},\"aliases\":[\"UpdateTime\",\"updateTime\"]},{\"name\":\"version\",\"labels\":{\"en\":\"version\"},\"aliases\":[\"Version\"]}]},\"Tenant\":{\"labels\":{\"en\":\"tenant\"},\"fields\":[{\"name\":\"id\",\"labels\":{\"en\":\"id\"},\"aliases\":[\"Id\"]},{\"name\":\"name\",\"labels\":{\"en\":\"name\"},\"aliases\":[\"Name\"]},{\"name\":\"order_item_list\",\"targetType\":\"OrderItem\",\"labels\":{\"en\":\"order item\"},\"aliases\":[\"OrderItemList\",\"orderItemList\"]},{\"name\":\"purchase_order_list\",\"targetType\":\"PurchaseOrder\",\"labels\":{\"en\":\"purchase order\"},\"aliases\":[\"PurchaseOrderList\",\"purchaseOrderList\"]},{\"name\":\"version\",\"labels\":{\"en\":\"version\"},\"aliases\":[\"Version\"]}]}}}")
-            .expect("Invalid generated Checker presentation metadata")
-    )).clone()
-}
-
 pub fn module() -> teaql_runtime::RuntimeModule {
     teaql_runtime::RuntimeModule::new()
         .entity_json_model(generated_entity_json_model().clone())
-        .checker_presentation_model(generated_checker_presentation())        .entity::<Tenant>()
+        .entity::<Tenant>()
         .entity::<PurchaseOrder>()
         .entity::<OrderItem>()
         .generated_schema_bootstrap(ensure_generated_bootstrap)
@@ -414,8 +406,7 @@ pub fn module() -> teaql_runtime::RuntimeModule {
 
 pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
     let mut module = teaql_runtime::RuntimeModule::new()
-        .entity_json_model(generated_entity_json_model().clone())
-        .checker_presentation_model(generated_checker_presentation());
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity::<Tenant>();
     module = module.checker(teaql_runtime::TypedEntityChecker::<Tenant, _>::new(TenantChecker::default()));
     module = module.entity::<PurchaseOrder>();
@@ -428,8 +419,7 @@ pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
 
 pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
     let mut module = teaql_runtime::RuntimeModule::new()
-        .entity_json_model(generated_entity_json_model().clone())
-        .checker_presentation_model(generated_checker_presentation());
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity_with_behavior::<Tenant, _>(TenantBehavior::default());
     module = module.entity_with_behavior::<PurchaseOrder, _>(PurchaseOrderBehavior::default());
     module = module.entity_with_behavior::<OrderItem, _>(OrderItemBehavior::default());
@@ -439,8 +429,7 @@ pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
 
 pub fn module_with_behaviors_and_checkers() -> teaql_runtime::RuntimeModule {
     let mut module = teaql_runtime::RuntimeModule::new()
-        .entity_json_model(generated_entity_json_model().clone())
-        .checker_presentation_model(generated_checker_presentation());
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity_with_behavior::<Tenant, _>(TenantBehavior::default());
     module = module.checker(teaql_runtime::TypedEntityChecker::<Tenant, _>::new(TenantChecker::default()));
     module = module.entity_with_behavior::<PurchaseOrder, _>(PurchaseOrderBehavior::default());

@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use crate::TeaqlRuntime;
 use crate::Q;
 use teaql_core::Entity as _;
+use crate::request_support::TeaqlUserContextExt as _;
 use crate::request_support::AuditedSave as _;
 
 pub trait IntoU64 {
@@ -148,7 +149,7 @@ pub async fn generate_sample_data<C>(
     plan: SampleDataPlan,
 ) -> Result<SampleDataReport, SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized,
+    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
     log::info!("Starting sample data generation. Scale: {:?}, Seed: {}", plan.scale, plan.seed);
     let mut state = SampleDataState::new(plan);
@@ -156,7 +157,11 @@ where
     load_root_platforms(context, &mut state).await?; //depth: 0
 
 
-    generate_work_items(context, &mut state).await?;
+    context.user_context().transaction_data(|| async {
+        Box::pin(generate_work_items(context, &mut state)).await.map_err(|e| {
+            teaql_runtime::DataServiceError::Runtime(teaql_runtime::RuntimeError::Graph(e.to_string()))
+        })
+    }).await.map_err(SampleDataError::from_display)?;
 
 
     let report = state.into_report();
@@ -169,7 +174,7 @@ async fn load_root_platforms<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized,
+    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
     let list = Q::platforms().comment("what: inspect existing entities before sample-data initialization").purpose("why: avoid duplicate sample records").execute_for_list(context).await.unwrap_or_default();
     for item in list {
@@ -184,7 +189,7 @@ async fn generate_work_items<C>(
     state: &mut SampleDataState,
 ) -> Result<(), SampleDataError>
 where
-    C: TeaqlRuntime + ?Sized,
+    C: TeaqlRuntime + ?Sized + crate::TeaqlRepositoryProvider,
 {
         if state.ids("Platform").is_empty() {
             state.record_skipped(crate::WorkItem::ENTITY_NAME, "Required dependency Platform is missing in reference pool".to_string());
@@ -205,8 +210,8 @@ where
     log::info!("Generating sample data for Work Item (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::work_items().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context).map_err(SampleDataError::from_display)?;
-        let mut used_refs = std::collections::HashSet::<u64>::new();
+        let mut entity = Q::work_items().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
+        let mut used_refs = std::collections::HashSet::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Platform", i as usize, &used_refs) {
                     entity.update_platform_id(ref_id);

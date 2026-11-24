@@ -407,26 +407,17 @@ pub fn generated_json_field_naming_profile() -> teaql_runtime::JsonFieldNamingPr
     teaql_runtime::JsonFieldNamingProfile::CamelCase
 }
 
-fn generated_checker_presentation() -> std::sync::Arc<teaql_runtime::checker_messages::CheckerPresentationModel> {
-    static MODEL: std::sync::OnceLock<std::sync::Arc<teaql_runtime::checker_messages::CheckerPresentationModel>> = std::sync::OnceLock::new();
-    MODEL.get_or_init(|| std::sync::Arc::new(
-        teaql_runtime::checker_messages::CheckerPresentationModel::from_json("{\"schema\":\"teaql.checker-model/v1\",\"revision\":\"sha256:841a468d4530e236b3e8b3c9400e7e9ae833a21319368d8320686732f2516732\",\"entities\":{\"ScalarTypeProbe\":{\"labels\":{\"en\":\"Scalar Type Probe\"},\"fields\":[{\"name\":\"create_time\",\"labels\":{\"en\":\"create time\"},\"aliases\":[\"CreateTime\",\"createTime\"]},{\"name\":\"id\",\"labels\":{\"en\":\"id\"},\"aliases\":[\"Id\"]},{\"name\":\"large_text\",\"labels\":{\"en\":\"large text\"},\"aliases\":[\"LargeText\",\"largeText\"]},{\"name\":\"optional_boolean\",\"labels\":{\"en\":\"optional boolean\"},\"aliases\":[\"OptionalBoolean\",\"optionalBoolean\"]},{\"name\":\"optional_date\",\"labels\":{\"en\":\"optional date\"},\"aliases\":[\"OptionalDate\",\"optionalDate\"]},{\"name\":\"optional_datetime\",\"labels\":{\"en\":\"optional datetime\"},\"aliases\":[\"OptionalDatetime\",\"optionalDatetime\"]},{\"name\":\"optional_decimal\",\"labels\":{\"en\":\"optional decimal\"},\"aliases\":[\"OptionalDecimal\",\"optionalDecimal\"]},{\"name\":\"optional_double\",\"labels\":{\"en\":\"optional double\"},\"aliases\":[\"OptionalDouble\",\"optionalDouble\"]},{\"name\":\"optional_float\",\"labels\":{\"en\":\"optional float\"},\"aliases\":[\"OptionalFloat\",\"optionalFloat\"]},{\"name\":\"optional_integer\",\"labels\":{\"en\":\"optional integer\"},\"aliases\":[\"OptionalInteger\",\"optionalInteger\"]},{\"name\":\"optional_long\",\"labels\":{\"en\":\"optional long\"},\"aliases\":[\"OptionalLong\",\"optionalLong\"]},{\"name\":\"optional_string\",\"labels\":{\"en\":\"optional string\"},\"aliases\":[\"OptionalString\",\"optionalString\"]},{\"name\":\"optional_time\",\"labels\":{\"en\":\"optional time\"},\"aliases\":[\"OptionalTime\",\"optionalTime\"]},{\"name\":\"required_boolean\",\"labels\":{\"en\":\"required boolean\"},\"aliases\":[\"RequiredBoolean\",\"requiredBoolean\"]},{\"name\":\"required_date\",\"labels\":{\"en\":\"required date\"},\"aliases\":[\"RequiredDate\",\"requiredDate\"]},{\"name\":\"required_datetime\",\"labels\":{\"en\":\"required datetime\"},\"aliases\":[\"RequiredDatetime\",\"requiredDatetime\"]},{\"name\":\"required_decimal\",\"labels\":{\"en\":\"required decimal\"},\"aliases\":[\"RequiredDecimal\",\"requiredDecimal\"]},{\"name\":\"required_double\",\"labels\":{\"en\":\"required double\"},\"aliases\":[\"RequiredDouble\",\"requiredDouble\"]},{\"name\":\"required_float\",\"labels\":{\"en\":\"required float\"},\"aliases\":[\"RequiredFloat\",\"requiredFloat\"]},{\"name\":\"required_integer\",\"labels\":{\"en\":\"required integer\"},\"aliases\":[\"RequiredInteger\",\"requiredInteger\"]},{\"name\":\"required_long\",\"labels\":{\"en\":\"required long\"},\"aliases\":[\"RequiredLong\",\"requiredLong\"]},{\"name\":\"required_string\",\"labels\":{\"en\":\"required string\"},\"aliases\":[\"RequiredString\",\"requiredString\"]},{\"name\":\"required_time\",\"labels\":{\"en\":\"required time\"},\"aliases\":[\"RequiredTime\",\"requiredTime\"]},{\"name\":\"type_platform\",\"targetType\":\"TypePlatform\",\"labels\":{\"en\":\"Type Platform\"},\"aliases\":[\"TypePlatform\",\"typePlatform\"]},{\"name\":\"update_time\",\"labels\":{\"en\":\"update time\"},\"aliases\":[\"UpdateTime\",\"updateTime\"]},{\"name\":\"version\",\"labels\":{\"en\":\"version\"},\"aliases\":[\"Version\"]}]},\"TypePlatform\":{\"labels\":{\"en\":\"Type Platform\"},\"fields\":[{\"name\":\"id\",\"labels\":{\"en\":\"id\"},\"aliases\":[\"Id\"]},{\"name\":\"name\",\"labels\":{\"en\":\"name\"},\"aliases\":[\"Name\"]},{\"name\":\"scalar_type_probe_list\",\"targetType\":\"ScalarTypeProbe\",\"labels\":{\"en\":\"Scalar Type Probe\"},\"aliases\":[\"ScalarTypeProbeList\",\"scalarTypeProbeList\"]},{\"name\":\"version\",\"labels\":{\"en\":\"version\"},\"aliases\":[\"Version\"]}]}}}")
-            .expect("Invalid generated Checker presentation metadata")
-    )).clone()
-}
-
 pub fn module() -> teaql_runtime::RuntimeModule {
     teaql_runtime::RuntimeModule::new()
         .entity_json_model(generated_entity_json_model().clone())
-        .checker_presentation_model(generated_checker_presentation())        .entity::<TypePlatform>()
+        .entity::<TypePlatform>()
         .entity::<ScalarTypeProbe>()
         .generated_schema_bootstrap(ensure_generated_bootstrap)
 }
 
 pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
     let mut module = teaql_runtime::RuntimeModule::new()
-        .entity_json_model(generated_entity_json_model().clone())
-        .checker_presentation_model(generated_checker_presentation());
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity::<TypePlatform>();
     module = module.checker(teaql_runtime::TypedEntityChecker::<TypePlatform, _>::new(TypePlatformChecker::default()));
     module = module.entity::<ScalarTypeProbe>();
@@ -437,8 +428,7 @@ pub fn module_with_checkers() -> teaql_runtime::RuntimeModule {
 
 pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
     let mut module = teaql_runtime::RuntimeModule::new()
-        .entity_json_model(generated_entity_json_model().clone())
-        .checker_presentation_model(generated_checker_presentation());
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity_with_behavior::<TypePlatform, _>(TypePlatformBehavior::default());
     module = module.entity_with_behavior::<ScalarTypeProbe, _>(ScalarTypeProbeBehavior::default());
     module = module.generated_schema_bootstrap(ensure_generated_bootstrap);
@@ -447,8 +437,7 @@ pub fn module_with_behaviors() -> teaql_runtime::RuntimeModule {
 
 pub fn module_with_behaviors_and_checkers() -> teaql_runtime::RuntimeModule {
     let mut module = teaql_runtime::RuntimeModule::new()
-        .entity_json_model(generated_entity_json_model().clone())
-        .checker_presentation_model(generated_checker_presentation());
+        .entity_json_model(generated_entity_json_model().clone());
     module = module.entity_with_behavior::<TypePlatform, _>(TypePlatformBehavior::default());
     module = module.checker(teaql_runtime::TypedEntityChecker::<TypePlatform, _>::new(TypePlatformChecker::default()));
     module = module.entity_with_behavior::<ScalarTypeProbe, _>(ScalarTypeProbeBehavior::default());

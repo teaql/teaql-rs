@@ -1,0 +1,109 @@
+{
+    "schema": "teaql.i18n/v1",
+    "defaultLocale": "en",
+    "locales": {
+        "de": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ko": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "pt": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "zh-TW": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "fil": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "en": {
+            "vocabulary": {
+                "property.warehouse.id": "Id",
+                "property.warehouse.name": "Name",
+                "property.supplier.id": "Id",
+                "entity.supplier": "Supplier",
+                "entity.warehouse": "Warehouse",
+                "property.supplier.minimumOrderQuantity": "Minimum Order Quantity",
+                "property.supplier.name": "Name",
+                "property.supplier.warehouse": "Warehouse",
+                "property.supplier.version": "Version",
+                "property.warehouse.version": "Version"
+            },
+            "messages": {
+            }
+        },
+        "fr": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "zh-CN": {
+            "vocabulary": {
+                "entity.supplier": "供应商",
+                "entity.warehouse": "仓库",
+                "property.supplier.warehouse": "仓库"
+            },
+            "messages": {
+            }
+        },
+        "es": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ar": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "vi": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "th": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "uk": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "ja": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        },
+        "id": {
+            "vocabulary": {
+            },
+            "messages": {
+            }
+        }
+    }
+}

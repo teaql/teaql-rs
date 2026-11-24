@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 
 use teaql_macros::{teaql_entity, TeaqlEntity};
 
-
 /// [TEAQL AI WARNING]
 /// TeaQL was explicitly designed to PREVENT AI hallucinations and random guessing.
 /// DO NOT GUESS METHOD NAMES!
@@ -13,18 +12,15 @@ use teaql_macros::{teaql_entity, TeaqlEntity};
 /// Read the method signatures in this file before proceeding.
 #[teaql_entity]
 #[derive(Clone, Debug, PartialEq, TeaqlEntity)]
-#[teaql(indexed_layout)]
-#[teaql(entity = "WorkItem", table = "work_item_data", data_service = "sqlite", audit_mask_fields = "")]
+#[teaql(entity = "WorkItem", table = "work_item_data", data_service = "sqlite")]
 pub struct WorkItem {
 #[teaql(id)]
     id: u64,
 
 // @source model.xml:15
-#[teaql(max_length = 80)]
     title: String,
 
 // @source model.xml:15
-#[teaql(max_length = 100)]
     description: Option<String>,
 #[teaql(version)]
     version: i64,
@@ -41,24 +37,53 @@ pub struct WorkItem {
 }
 
 impl WorkItem {
-    pub const ENTITY_NAME: &'static str = "Work Item";
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_id: crate::GeneratedField = crate::GeneratedField {
+        model_key: "id",
+        query_key: "id",
+        member_name: "id",
+        column_name: "id",
+        load_index: 0,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_title: crate::GeneratedField = crate::GeneratedField {
+        model_key: "title",
+        query_key: "title",
+        member_name: "title",
+        column_name: "title",
+        load_index: 1,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_description: crate::GeneratedField = crate::GeneratedField {
+        model_key: "description",
+        query_key: "description",
+        member_name: "description",
+        column_name: "description",
+        load_index: 2,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_platform: crate::GeneratedField = crate::GeneratedField {
+        model_key: "platform",
+        query_key: "platform_id",
+        member_name: "platform_id",
+        column_name: "platform",
+        load_index: 3,
+        reference: true,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_version: crate::GeneratedField = crate::GeneratedField {
+        model_key: "version",
+        query_key: "version",
+        member_name: "version",
+        column_name: "version",
+        load_index: 4,
+        reference: false,
+    };
 
-    // Framework metadata: complete fixed layout, including overflow slots.
-    pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "ff6df6930613256f676f63204201b7b20d7ecd9fa363bae51492c66e562f023c";
-    pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
-        ("id", 0),
-        ("title", 1),
-        ("description", 2),
-        ("platform", 3),
-        ("version", 4),
-    ];
-    pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
-        ("id", "id", "id"),
-        ("title", "title", "title"),
-        ("description", "description", "description"),
-        ("platform", "platform_id", "platform"),
-        ("version", "version", "version"),
-    ];
+    pub const ENTITY_NAME: &'static str = "Work Item";
 
     pub fn with_id(id: u64) -> teaql_core::Value {
         teaql_core::Value::U64(id)
@@ -74,9 +99,7 @@ impl WorkItem {
             platform: None,
             dynamic: BTreeMap::new(),
             __teaql_runtime_state: root,
-            __load_state: teaql_core::eval::LoadState::NotLoaded.into_indexed(
-                <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
-            ).expect("new entity load state"),
+            __load_state: teaql_core::eval::LoadState::FullyLoaded,
         }
     }
 
@@ -93,9 +116,7 @@ impl WorkItem {
     }
 
     pub fn set_load_state(&mut self, state: teaql_core::eval::LoadState) {
-        self.__load_state = state.into_indexed(
-            <Self as teaql_core::TeaqlEntity>::field_layout().expect("generated field layout").expect("indexed layout")
-        ).expect("compatible entity load state");
+        self.__load_state = state;
     }
 
     pub fn id(&self) -> u64 {
@@ -105,22 +126,20 @@ impl WorkItem {
     pub fn update_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "id", value);
-        self.__load_state.mark_loaded("id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_id.model_key, value);
         self
     }
 
     pub fn changed_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "id")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_id.model_key)
     }
 
     pub fn eval_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_id.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "id".to_string(), attempted_path: "id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.id())
                 }}
-
 
     pub fn title(&self) -> String {
         self.changed_title().and_then(|value| value.try_text().map(|value| value.to_owned())).unwrap_or_else(|| self.title.clone())
@@ -129,22 +148,20 @@ impl WorkItem {
     pub fn update_title(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.title = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.title.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "title", value);
-        self.__load_state.mark_loaded("title").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_title.model_key, value);
         self
     }
 
     pub fn changed_title(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "title")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_title.model_key)
     }
 
     pub fn eval_title(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("title") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_title.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "title".to_string(), attempted_path: "title".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.title())
                 }}
-
 
     pub fn description(&self) -> Option<String> {
         self.description.clone()
@@ -153,17 +170,16 @@ impl WorkItem {
     pub fn update_description(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.description = if matches!(value, teaql_core::Value::Null) { None } else { value.try_text().map(|value| value.trim().to_owned()).map(Some).unwrap_or_else(|| self.description.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "description", value);
-        self.__load_state.mark_loaded("description").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_description.model_key, value);
         self
     }
 
     pub fn changed_description(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "description")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_description.model_key)
     }
 
     pub fn eval_description(&self) -> teaql_core::eval::EvalResult<Option<String>> {
-        if !self.is_loaded("description") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_description.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "description".to_string(), attempted_path: "description".to_string() }
                 } else {
                     match &self.description {
@@ -172,7 +188,6 @@ impl WorkItem {
                     }
                 }}
 
-
     pub fn version(&self) -> i64 {
         self.changed_version().and_then(|value| value.try_i64()).unwrap_or(self.version)
     }
@@ -180,22 +195,20 @@ impl WorkItem {
     pub fn update_version(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "version", value);
-        self.__load_state.mark_loaded("version").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_version.model_key, value);
         self
     }
 
     pub fn changed_version(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "version")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_version.model_key)
     }
 
     pub fn eval_version(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("version") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_version.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "version".to_string(), attempted_path: "version".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.version())
                 }}
-
     pub fn platform_id(&self) -> u64 {
         self.changed_platform_id().and_then(|value| value.try_u64()).unwrap_or(self.platform_id)
     }
@@ -203,31 +216,21 @@ impl WorkItem {
     pub fn update_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.platform_id = value.try_u64().unwrap_or(self.platform_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "platform", value);
-        self.__load_state.mark_loaded("platform_id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_platform.query_key, value);
         self
     }
 
     pub fn changed_platform_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "platform")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_platform.query_key)
     }
 
     pub fn eval_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("platform_id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_platform.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "platform_id".to_string(), attempted_path: "platform_id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.platform_id())
                 }}
     pub fn platform(&self) -> Option<&crate::Platform> {
-        if self.changed_platform_id().is_some()
-            || !self.is_loaded("platform") {
-            return None;
-        }
-        if let Some(edge) = self.__teaql_runtime_state().resolve_relation_option::<crate::Platform>(
-            <Self as teaql_core::TeaqlEntity>::ENTITY_NAME, self.id(), "platform",
-        ) {
-            return edge.as_ref();
-        }
         self.platform.as_deref().or_else(|| {
             self.__teaql_runtime_state().resolve_entity(self.platform_id())})
     }
@@ -235,9 +238,9 @@ impl WorkItem {
     pub fn eval_platform(&self) -> teaql_core::eval::EvalResult<&crate::Platform> {
         match self.platform() {
             Some(v) => teaql_core::eval::EvalResult::Value(v),
+            None if self.is_loaded("platform") => teaql_core::eval::EvalResult::Null,
             None => teaql_core::eval::EvalResult::NotLoaded { failed_node: "platform".to_string(), attempted_path: "platform".to_string() },
         }
     }
 
 }
-

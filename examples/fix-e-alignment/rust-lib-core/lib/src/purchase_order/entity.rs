@@ -27,26 +27,26 @@ pub struct PurchaseOrder {
 #[teaql(id)]
     id: u64,
 
-// @source model.xml:9
+// @source main.xml:9
 #[teaql(max_length = 32)]
     contact_phone: String,
 
-// @source model.xml:9
+// @source main.xml:9
 #[teaql(max_length = 100)]
     internal_note: Option<String>,
 
-// @source model.xml:9
+// @source main.xml:9
     create_time: teaql_core::time::Timestamp,
 
-// @source model.xml:9
+// @source main.xml:9
     update_time: teaql_core::time::Timestamp,
 #[teaql(version)]
     version: i64,
-// @source model.xml:9
+// @source main.xml:9
 #[teaql(column = "tenant")]
     #[teaql(context_root = "Tenant")]
     tenant_id: u64,
-// @source model.xml:9
+// @source main.xml:9
 #[teaql(relation(target = "Tenant", local_key = "tenant_id", foreign_key = "id"))]
     tenant: Option<Box<crate::Tenant>>,
     #[teaql(dynamic)]
@@ -56,27 +56,91 @@ pub struct PurchaseOrder {
 }
 
 impl PurchaseOrder {
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_id: crate::GeneratedField = crate::GeneratedField {
+        model_key: "id",
+        query_key: "id",
+        member_name: "id",
+        column_name: "id",
+        load_index: 0,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_tenant: crate::GeneratedField = crate::GeneratedField {
+        model_key: "tenant",
+        query_key: "tenant_id",
+        member_name: "tenant_id",
+        column_name: "tenant",
+        load_index: 1,
+        reference: true,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_contact_phone: crate::GeneratedField = crate::GeneratedField {
+        model_key: "contact_phone",
+        query_key: "contact_phone",
+        member_name: "contact_phone",
+        column_name: "contact_phone",
+        load_index: 2,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_internal_note: crate::GeneratedField = crate::GeneratedField {
+        model_key: "internal_note",
+        query_key: "internal_note",
+        member_name: "internal_note",
+        column_name: "internal_note",
+        load_index: 3,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_create_time: crate::GeneratedField = crate::GeneratedField {
+        model_key: "create_time",
+        query_key: "create_time",
+        member_name: "create_time",
+        column_name: "create_time",
+        load_index: 4,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_update_time: crate::GeneratedField = crate::GeneratedField {
+        model_key: "update_time",
+        query_key: "update_time",
+        member_name: "update_time",
+        column_name: "update_time",
+        load_index: 5,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_version: crate::GeneratedField = crate::GeneratedField {
+        model_key: "version",
+        query_key: "version",
+        member_name: "version",
+        column_name: "version",
+        load_index: 6,
+        reference: false,
+    };
+
     pub const ENTITY_NAME: &'static str = "purchase_order";
 
     // Framework metadata: complete fixed layout, including overflow slots.
     pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "fc779222657a345b62cacc08e4beb1351e6097a5fd25927366703543a4afdd39";
     pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
-        ("id", 0),
-        ("tenant", 1),
-        ("contact_phone", 2),
-        ("internal_note", 3),
-        ("create_time", 4),
-        ("update_time", 5),
-        ("version", 6),
+        (Self::__TEAQL_FIELD_id.model_key, Self::__TEAQL_FIELD_id.load_index),
+        (Self::__TEAQL_FIELD_tenant.model_key, Self::__TEAQL_FIELD_tenant.load_index),
+        (Self::__TEAQL_FIELD_contact_phone.model_key, Self::__TEAQL_FIELD_contact_phone.load_index),
+        (Self::__TEAQL_FIELD_internal_note.model_key, Self::__TEAQL_FIELD_internal_note.load_index),
+        (Self::__TEAQL_FIELD_create_time.model_key, Self::__TEAQL_FIELD_create_time.load_index),
+        (Self::__TEAQL_FIELD_update_time.model_key, Self::__TEAQL_FIELD_update_time.load_index),
+        (Self::__TEAQL_FIELD_version.model_key, Self::__TEAQL_FIELD_version.load_index),
     ];
     pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
-        ("id", "id", "id"),
-        ("tenant", "tenant_id", "tenant"),
-        ("contact_phone", "contact_phone", "contact_phone"),
-        ("internal_note", "internal_note", "internal_note"),
-        ("create_time", "create_time", "create_time"),
-        ("update_time", "update_time", "update_time"),
-        ("version", "version", "version"),
+        (Self::__TEAQL_FIELD_id.model_key, Self::__TEAQL_FIELD_id.member_name, Self::__TEAQL_FIELD_id.column_name),
+        (Self::__TEAQL_FIELD_tenant.model_key, Self::__TEAQL_FIELD_tenant.member_name, Self::__TEAQL_FIELD_tenant.column_name),
+        (Self::__TEAQL_FIELD_contact_phone.model_key, Self::__TEAQL_FIELD_contact_phone.member_name, Self::__TEAQL_FIELD_contact_phone.column_name),
+        (Self::__TEAQL_FIELD_internal_note.model_key, Self::__TEAQL_FIELD_internal_note.member_name, Self::__TEAQL_FIELD_internal_note.column_name),
+        (Self::__TEAQL_FIELD_create_time.model_key, Self::__TEAQL_FIELD_create_time.member_name, Self::__TEAQL_FIELD_create_time.column_name),
+        (Self::__TEAQL_FIELD_update_time.model_key, Self::__TEAQL_FIELD_update_time.member_name, Self::__TEAQL_FIELD_update_time.column_name),
+        (Self::__TEAQL_FIELD_version.model_key, Self::__TEAQL_FIELD_version.member_name, Self::__TEAQL_FIELD_version.column_name),
     ];
 
     pub fn with_id(id: u64) -> teaql_core::Value {
@@ -88,8 +152,8 @@ impl PurchaseOrder {
             id: 0_u64,
             contact_phone: String::new(),
             internal_note: None,
-            create_time: Default::default(),
-            update_time: Default::default(),
+            create_time: teaql_core::time::Timestamp::now(),
+            update_time: teaql_core::time::Timestamp::now(),
             version: 0_i64,
             tenant_id: 0_u64,
             tenant: None,
@@ -126,17 +190,17 @@ impl PurchaseOrder {
     pub fn update_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "id", value);
-        self.__load_state.mark_loaded("id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_id.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_id.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "id")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_id.model_key)
     }
 
     pub fn eval_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_id.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "id".to_string(), attempted_path: "id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.id())
@@ -150,17 +214,17 @@ impl PurchaseOrder {
     pub fn update_contact_phone(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.contact_phone = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.contact_phone.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "contact_phone", value);
-        self.__load_state.mark_loaded("contact_phone").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_contact_phone.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_contact_phone.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_contact_phone(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "contact_phone")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_contact_phone.model_key)
     }
 
     pub fn eval_contact_phone(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("contact_phone") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_contact_phone.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "contact_phone".to_string(), attempted_path: "contact_phone".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.contact_phone())
@@ -174,17 +238,17 @@ impl PurchaseOrder {
     pub fn update_internal_note(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.internal_note = if matches!(value, teaql_core::Value::Null) { None } else { value.try_text().map(|value| value.trim().to_owned()).map(Some).unwrap_or_else(|| self.internal_note.clone()) };
-        self.__teaql_runtime_state().set(self.entity_key(), "internal_note", value);
-        self.__load_state.mark_loaded("internal_note").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_internal_note.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_internal_note.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_internal_note(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "internal_note")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_internal_note.model_key)
     }
 
     pub fn eval_internal_note(&self) -> teaql_core::eval::EvalResult<Option<String>> {
-        if !self.is_loaded("internal_note") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_internal_note.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "internal_note".to_string(), attempted_path: "internal_note".to_string() }
                 } else {
                     match &self.internal_note {
@@ -201,16 +265,16 @@ impl PurchaseOrder {
     pub fn update_create_time(&mut self, value: teaql_core::time::Timestamp) -> &mut Self {
         self.create_time = value;
         let value = teaql_core::Value::from(value);
-        self.__teaql_runtime_state().set(self.entity_key(), "create_time", value);
-        self.__load_state.mark_loaded("create_time").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_create_time.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_create_time.query_key).expect("generated field layout");
         self
     }
     pub fn changed_create_time(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "create_time")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_create_time.model_key)
     }
 
     pub fn eval_create_time(&self) -> teaql_core::eval::EvalResult<teaql_core::time::Timestamp> {
-        if !self.is_loaded("create_time") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_create_time.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "create_time".to_string(), attempted_path: "create_time".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.create_time())
@@ -224,16 +288,16 @@ impl PurchaseOrder {
     pub fn update_update_time(&mut self, value: teaql_core::time::Timestamp) -> &mut Self {
         self.update_time = value;
         let value = teaql_core::Value::from(value);
-        self.__teaql_runtime_state().set(self.entity_key(), "update_time", value);
-        self.__load_state.mark_loaded("update_time").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_update_time.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_update_time.query_key).expect("generated field layout");
         self
     }
     pub fn changed_update_time(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "update_time")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_update_time.model_key)
     }
 
     pub fn eval_update_time(&self) -> teaql_core::eval::EvalResult<teaql_core::time::Timestamp> {
-        if !self.is_loaded("update_time") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_update_time.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "update_time".to_string(), attempted_path: "update_time".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.update_time())
@@ -247,17 +311,17 @@ impl PurchaseOrder {
     pub fn update_version(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "version", value);
-        self.__load_state.mark_loaded("version").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_version.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_version.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_version(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "version")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_version.model_key)
     }
 
     pub fn eval_version(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("version") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_version.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "version".to_string(), attempted_path: "version".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.version())
@@ -270,17 +334,17 @@ impl PurchaseOrder {
     pub(crate) fn update_tenant_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.tenant_id = value.try_u64().unwrap_or(self.tenant_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "tenant", value);
-        self.__load_state.mark_loaded("tenant_id").expect("generated field layout");
+        self.__teaql_runtime_state().set(self.entity_key(), Self::__TEAQL_FIELD_tenant.model_key, value);
+        self.__load_state.mark_loaded(Self::__TEAQL_FIELD_tenant.query_key).expect("generated field layout");
         self
     }
 
     pub fn changed_tenant_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "tenant")
+        self.__teaql_runtime_state().get(&self.entity_key(), Self::__TEAQL_FIELD_tenant.model_key)
     }
 
     pub fn eval_tenant_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("tenant_id") {
+        if !self.is_loaded(Self::__TEAQL_FIELD_tenant.query_key) {
                     teaql_core::eval::EvalResult::NotLoaded { failed_node: "tenant_id".to_string(), attempted_path: "tenant_id".to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.tenant_id())

@@ -26,34 +26,17 @@ pub struct TenantRequest<R = crate::Tenant> {
     relation_filters: Vec<RelationFilter>,
     child_enhancements: Vec<QuerySelection>,
     query_options: QueryOptions,
-    roll_up_links: Vec<RollupLink>,
-    roll_up_publication: Option<RollupTarget>,
     marker: PhantomData<R>,
 }
 
 impl<R> Clone for TenantRequest<R> {
     fn clone(&self) -> Self {
-        if !self.roll_up_links.is_empty() {
-            let snapshot = self.__resolved_roll_up_selection().expect("invalid roll-up configuration");
-            return Self {
-                query: snapshot.query,
-                relation_selections: snapshot.relation_selections,
-                relation_filters: snapshot.relation_filters,
-                child_enhancements: snapshot.child_enhancements,
-                query_options: snapshot.query_options,
-                roll_up_links: Vec::new(),
-                roll_up_publication: None,
-                marker: PhantomData,
-            };
-        }
         Self {
             query: self.query.clone(),
             relation_selections: self.relation_selections.clone(),
             relation_filters: self.relation_filters.clone(),
             child_enhancements: self.child_enhancements.clone(),
             query_options: self.query_options.clone(),
-            roll_up_links: Vec::new(),
-            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -63,14 +46,12 @@ impl<R> TenantRequest<R> {
     pub(crate) fn new() -> Self {
         Self {
             query: SelectQuery::new("Tenant")
-                .project("id")
-                .project("version"),
+                .project(crate::Tenant::__TEAQL_FIELD_id.query_key)
+                .project(crate::Tenant::__TEAQL_FIELD_version.query_key),
             relation_selections: Vec::new(),
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
             query_options: QueryOptions::default(),
-            roll_up_links: Vec::new(),
-            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -82,8 +63,6 @@ impl<R> TenantRequest<R> {
             relation_filters: self.relation_filters,
             child_enhancements: self.child_enhancements,
             query_options: self.query_options,
-            roll_up_links: self.roll_up_links,
-            roll_up_publication: self.roll_up_publication,
             marker: PhantomData,
         }
     }
@@ -109,57 +88,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn into_query(self) -> SelectQuery {
-        QuerySelection::from(self).into_query()
-    }
-
-    fn __base_roll_up_selection(&self) -> QuerySelection {
-        QuerySelection {
-            query: self.query.clone(),
-            relation_selections: self.relation_selections.clone(),
-            relation_filters: self.relation_filters.clone(),
-            child_enhancements: self.child_enhancements.clone(),
-            query_options: self.query_options.clone(),
-        }
-    }
-
-    fn __resolved_roll_up_selection(&self) -> Result<QuerySelection, RuntimeError> {
-        resolve_rollup_links(self.__base_roll_up_selection(), &self.roll_up_links)
-    }
-
-    fn __publish_roll_up(&self) {
-        if let Some(target) = &self.roll_up_publication {
-            *target.lock().expect("poisoned roll-up configuration") = RollupState {
-                selection: self.__base_roll_up_selection(),
-                links: self.roll_up_links.clone(),
-            };
-        }
-    }
-
-    fn __synced(self) -> Self {
-        self.__publish_roll_up();
-        self
-    }
-
-    pub(crate) fn __roll_up_target(&mut self) -> RollupTarget {
-        if self.roll_up_publication.is_none() {
-            self.roll_up_publication = Some(std::sync::Arc::new(std::sync::Mutex::new(RollupState {
-                selection: self.__base_roll_up_selection(), links: self.roll_up_links.clone(),
-            })));
-        }
-        self.__publish_roll_up();
-        self.roll_up_publication.as_ref().unwrap().clone()
-    }
-
-    fn __resolve_roll_ups(&mut self) -> Result<(), RuntimeError> {
-        if self.roll_up_links.is_empty() { return Ok(()); }
-        let selection = self.__resolved_roll_up_selection()?;
-        self.query = selection.query;
-        self.relation_selections = selection.relation_selections;
-        self.relation_filters = selection.relation_filters;
-        self.child_enhancements = selection.child_enhancements;
-        self.query_options = selection.query_options;
-        self.roll_up_links.clear();
-        Ok(())
+        self.query
     }
 
 
@@ -168,14 +97,13 @@ impl<R> TenantRequest<R> {
     }
 
     pub(crate) async fn _execute_for_list<'a, C>(
-        mut self,
+        self,
         context: &'a C,
     ) -> Result<SmartList<R>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
     {
-        self.__resolve_roll_ups()?;
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
         let mut query = authorize_query(apply_runtime_metadata(
@@ -190,29 +118,35 @@ impl<R> TenantRequest<R> {
         if !use_id_set {
             if let Some((alias, count_query)) = &requested_count {
                 let count_rows = context.fetch_compact_rows("Tenant", count_query).await?;
-                total = Some(exact_list_count(&count_rows, alias)?);
+                total = Some(count_rows.first().and_then(|row| row.get(alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
             }
         }
-        if !query.as_query().group_by.is_empty() || !query.as_query().object_group_bys.is_empty() {
-            return Err(RuntimeError::Graph("grouped projections require execute_for_rows".into()));
-        }
-        let mut rows = if !query.as_query().aggregates.is_empty() {
-            let records = context.fetch_compact_rows("Tenant", &query).await?;
-            let mut rows = SmartList::new(Vec::new());
-            if let Some(record) = records.into_iter().next() { rows.aggregations = record.into_map(); }
-            rows
+        let (mut rows, facets) = if query_options.facets.is_empty() {
+            let rows = context.fetch_entity_smart_list::<R>(
+                "Tenant",
+                query,
+                relation_aggregates,
+            ).await?;
+            (rows, std::collections::BTreeMap::new())
         } else {
-            context.fetch_entity_smart_list::<R>(
-                "Tenant", query.clone(), relation_aggregates,
-            ).await?
+            let rows = context.fetch_entity_smart_list::<R>(
+                "Tenant",
+                query.clone(),
+                relation_aggregates,
+            ).await?;
+            let facets = execute_facets(context, query.as_query(), &query_options)
+                .await?;
+            (rows, facets)
         };
-        let facets = if query_options.facets.is_empty() { std::collections::BTreeMap::new() }
-            else { execute_facets(context, query.as_query(), &query_options).await? };
         if let Some((alias, count_query)) = requested_count {
             if total.is_none() { total = rows.total_count; }
             if total.is_none() {
                 let count_rows = context.fetch_compact_rows("Tenant", &count_query).await?;
-                total = Some(exact_list_count(&count_rows, &alias)?);
+                total = Some(count_rows.first().and_then(|row| row.get(&alias))
+                    .and_then(teaql_core::Value::try_u64)
+                    .ok_or_else(|| RuntimeError::Graph("requested list count is missing or not numeric".into()))?);
             }
             rows.total_count = total;
             rows.aggregations.insert(alias, teaql_core::Value::U64(total.expect("requested count resolved")));
@@ -223,13 +157,12 @@ impl<R> TenantRequest<R> {
     }
 
     pub(crate) async fn _execute_for_rows<'a, C>(
-        mut self,
+        self,
         context: &'a C,
     ) -> Result<SmartList<teaql_core::CompactRow>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
-        self.__resolve_roll_ups()?;
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &self.query_options,
@@ -239,23 +172,18 @@ impl<R> TenantRequest<R> {
     }
 
     pub(crate) async fn _execute_for_stream<'a, C>(
-        mut self,
+        self,
         context: &'a C,
     ) -> Result<TeaqlEntityStream<'a, R, RuntimeError>, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
         R: teaql_core::Entity + Send + 'a,
     {
-        self.__resolve_roll_ups()?;
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &self.query_options,
             &self.child_enhancements,
         ))?;
-        let shape = query.as_query();
-        if !shape.aggregates.is_empty() || !shape.group_by.is_empty() || !shape.object_group_bys.is_empty() {
-            return Err(RuntimeError::Graph("Entity streams require entity rows; use a record or aggregation query".to_owned()));
-        }
         Ok(context.user_context().observe_generated_stream(
             "Tenant", context.fetch_entity_stream("Tenant", query),
         ))
@@ -286,13 +214,12 @@ impl<R> TenantRequest<R> {
 
 
     pub(crate) async fn _execute_for_count<'a, C>(
-        mut self,
+        self,
         context: &'a C,
     ) -> Result<u64, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
-        self.__resolve_roll_ups()?;
         let query_options = self.query_options.clone();
         let query = apply_runtime_metadata(
             self.query,
@@ -312,13 +239,12 @@ impl<R> TenantRequest<R> {
     }
 
     pub(crate) async fn _execute_for_exists<'a, C>(
-        mut self,
+        self,
         context: &'a C,
     ) -> Result<bool, RuntimeError>
     where
         C: TeaqlRuntime + ?Sized,
     {
-        self.__resolve_roll_ups()?;
         let mut query = apply_runtime_metadata(
             self.query,
             &self.query_options,
@@ -332,22 +258,22 @@ impl<R> TenantRequest<R> {
 
     pub fn search_with_text(mut self, text: impl Into<String>) -> Self {
         self.query = self.query.search_with_text(text);
-        self.__synced()
+        self
     }
 
     pub fn filter(mut self, filter: Expr) -> Self {
         self.query = self.query.filter(filter);
-        self.__synced()
+        self
     }
 
     pub fn and_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.and_filter(filter);
-        self.__synced()
+        self
     }
 
     pub fn or_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.or_filter(filter);
-        self.__synced()
+        self
     }
 
     pub fn append_search_criteria(self, criteria: Expr) -> Self {
@@ -365,18 +291,18 @@ impl<R> TenantRequest<R> {
             operator,
             property2.as_ref(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_deleted_rows(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self.__synced()
+        self
     }
 
     pub fn deleted_rows_only(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self.query = self.query.and_filter(Expr::lte("version", 0_i64));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::Tenant::__TEAQL_FIELD_version.query_key, 0_i64));
+        self
     }
 
     pub fn match_types(
@@ -384,36 +310,29 @@ impl<R> TenantRequest<R> {
         types: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(TYPE_FIELD, types.into_iter().map(Into::into)));
-        self.__synced()
+        self
     }
 
 
     pub fn with_type_group(mut self) -> Self {
         self.query = self.query.project(TYPE_GROUP_FIELD);
-        self.__synced()
+        self
     }
 
-    pub fn matching_any_of<O>(mut self, request: TenantRequest<O>) -> Self {
-        let filter = QuerySelection::from(request).into_query().filter;
-        if let Some(criteria) = crate::request_support::criteria_alternatives_excluding_version(filter) {
-            self.query = self.query.and_filter(criteria);
-        }
-        self.__synced()
+    pub fn matching_any_of(mut self, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        let entity = EntityDescriptor::new(selection.query.entity.clone());
+        self.query = self.query.and_filter(Expr::in_subquery("id", entity, selection.query.clone(), "id"));
+        self
     }
 
-    pub fn match_any_of<O>(self, request: TenantRequest<O>) -> Self {
+    pub fn match_any_of(self, request: impl Into<QuerySelection>) -> Self {
         self.matching_any_of(request)
-    }
-
-    pub fn matching_ids_of<O>(mut self, request: TenantRequest<O>) -> Self {
-        let entity = <crate::Tenant as teaql_core::TeaqlEntity>::entity_descriptor();
-        self.query = self.query.and_filter(Expr::in_subquery("id", entity, QuerySelection::from(request).into_query(), "id"));
-        self.__synced()
     }
 
     pub fn enhance_child(mut self, request: impl Into<QuerySelection>) -> Self {
         self.child_enhancements.push(request.into());
-        self.__synced()
+        self
     }
 
     pub fn enhance_children_if_needed(self) -> Self {
@@ -424,7 +343,7 @@ impl<R> TenantRequest<R> {
 
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.query_options.comment = Some(comment.into());
-        self.__synced()
+        self
     }
 
     pub fn raw_sql(self, raw_sql: impl Into<String>) -> Self {
@@ -433,7 +352,7 @@ impl<R> TenantRequest<R> {
 
     pub fn unsafe_raw_sql(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql = Some(raw_sql.into_sql());
-        self.__synced()
+        self
     }
 
     pub fn raw_sql_filter(self, raw_sql: impl Into<String>) -> Self {
@@ -442,7 +361,7 @@ impl<R> TenantRequest<R> {
 
     pub fn unsafe_raw_sql_filter(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql_search_criteria.push(raw_sql.into_sql());
-        self.__synced()
+        self
     }
     pub fn filter_with_json(self, json_expr: impl Into<String>) -> Self {
         self.merge_dynamic_json_expr(json_expr.into())
@@ -488,7 +407,7 @@ impl<R> TenantRequest<R> {
             }
         }
 
-        self.__synced()
+        self
     }
 
     pub(crate) fn apply_dynamic_json_filter(self, field: &str, value: &JsonValue) -> Self {
@@ -497,7 +416,7 @@ impl<R> TenantRequest<R> {
         } else if let Some(storage_field) = Self::dynamic_json_self_field(field) {
             self.and_filter(dynamic_json_filter_expr(storage_field, value))
         } else {
-            self.__synced()
+            self
         }
     }
 
@@ -520,7 +439,7 @@ impl<R> TenantRequest<R> {
             }
             _ => {}
         }
-        self.__synced()
+        self
     }
 
     fn apply_dynamic_json_single_order_by(
@@ -542,7 +461,7 @@ impl<R> TenantRequest<R> {
         } else {
             self.query = self.query.order_desc(storage_field);
         }
-        self.__synced()
+        self
     }
 
     fn dynamic_json_self_field(field: &str) -> Option<&'static str> {
@@ -589,28 +508,28 @@ impl<R> TenantRequest<R> {
         self.query_options
             .dynamic_properties
             .push(RawDynamicProperty::new(property_name, raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn limit(mut self, limit: u64) -> Self {
         self.query = self.query.limit(limit);
-        self.__synced()
+        self
     }
 
     pub fn stream(mut self, chunk_size: usize) -> Self {
         assert!(chunk_size > 0, "stream chunk size must be positive");
         self.query = self.query.stream(chunk_size);
-        self.__synced()
+        self
     }
 
     pub fn stream_default(mut self) -> Self {
         self.query = self.query.stream_default();
-        self.__synced()
+        self
     }
 
     pub fn skip(mut self, offset: u64) -> Self {
         self.query = self.query.offset(offset);
-        self.__synced()
+        self
     }
 
     pub fn offset_only(self, offset: u64) -> Self {
@@ -623,12 +542,12 @@ impl<R> TenantRequest<R> {
 
     pub fn page_offset(mut self, offset: u64, limit: u64) -> Self {
         self.query = self.query.page(offset, limit);
-        self.__synced()
+        self
     }
 
     pub fn optimize_for_continuous_page_fetch(mut self) -> Self {
         self.query = self.query.optimize_for_continuous_page_fetch();
-        self.__synced()
+        self
     }
 
     pub fn optimize_for_continuous_page_fetch_with(
@@ -639,12 +558,12 @@ impl<R> TenantRequest<R> {
         self.query = self
             .query
             .optimize_for_continuous_page_fetch_with(namespace, ttl_seconds);
-        self.__synced()
+        self
     }
 
     pub fn optimize_pagination_with_id_set(mut self) -> Self {
         self.query = self.query.optimize_pagination_with_id_set();
-        self.__synced()
+        self
     }
 
     pub fn optimize_pagination_with_id_set_config(
@@ -656,7 +575,7 @@ impl<R> TenantRequest<R> {
         self.query = self
             .query
             .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
-        self.__synced()
+        self
     }
 
     /// Select bounded indexed probes for a per-parent Top-N relation only
@@ -664,7 +583,7 @@ impl<R> TenantRequest<R> {
     /// Passing zero explicitly selects the provider window plan.
     pub fn top_n_probe_parent_threshold(mut self, threshold: usize) -> Self {
         self.query = self.query.top_n_probe_parent_threshold(threshold);
-        self.__synced()
+        self
     }
 
     pub fn top(self, top_n: u64) -> Self {
@@ -677,7 +596,7 @@ impl<R> TenantRequest<R> {
 
     pub fn unlimited(mut self) -> Self {
         self.query.slice = None;
-        self.__synced()
+        self
     }
 
     pub fn page_number(self, page_number: u64, page_size: u64) -> Self {
@@ -698,15 +617,15 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn select_self(mut self) -> Self {
-        self.query = self.query.project("id");
-        self.query = self.query.project("name");
-        self.query = self.query.project("version");
-        self.__synced()
+        self.query = self.query.project(crate::Tenant::__TEAQL_FIELD_id.query_key);
+        self.query = self.query.project(crate::Tenant::__TEAQL_FIELD_name.query_key);
+        self.query = self.query.project(crate::Tenant::__TEAQL_FIELD_version.query_key);
+        self
     }
 
     pub fn select_dynamic_fields_with(mut self, selection: teaql_core::dynamic_fields::DynamicFieldSelection) -> Self {
         self.query = self.query.select_dynamic_fields(selection);
-        self.__synced()
+        self
     }
 
     pub fn select_self_fields(self) -> Self {
@@ -734,28 +653,7 @@ impl<R> TenantRequest<R> {
 
     pub fn group_by(mut self, field: impl Into<String>) -> Self {
         self.query = self.query.group_by(field);
-        self.__synced()
-    }
-
-    /// Order a selected statistical alias or nested result path, matching Java.
-    pub fn add_order_by_ascending(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_asc(result_key);
-        self.__synced()
-    }
-
-    pub fn add_order_by_descending(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_desc(result_key);
-        self.__synced()
-    }
-
-    pub fn add_order_by_ascending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_gbk_asc(result_key);
-        self.__synced()
-    }
-
-    pub fn add_order_by_descending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_gbk_desc(result_key);
-        self.__synced()
+        self
     }
 
     pub fn count(mut self) -> Self {
@@ -771,27 +669,12 @@ impl<R> TenantRequest<R> {
 
     pub fn aggregate_count(mut self, alias: impl Into<String>) -> Self {
         self.query = self.query.count(alias);
-        self.__synced()
-    }
-    /// Java addAggregate(SimpleNamedExpression): bind a typed aggregate AST.
-    pub fn add_aggregate(mut self, aggregate: teaql_core::NamedExpr) -> Self {
-        self.query = self.query.aggregate_expression(aggregate);
-        self.__synced()
-    }
-
-    /// Filter selected statistical results. Repeated conditions compose with AND.
-    pub fn having(mut self, condition: Expr) -> Self {
-        let condition = match self.query.having.take() {
-            Some(previous) => Expr::and([previous, condition]),
-            None => condition,
-        };
-        self.query = self.query.having(condition);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_count_field(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.count_field(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_with_function(
@@ -801,98 +684,99 @@ impl<R> TenantRequest<R> {
         function: AggregateFunction,
     ) -> Self {
         self.query = self.query.aggregate(Aggregate::new(function, field, alias));
-        self.__synced()
+        self
     }
 
     pub fn aggregate_sum(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.sum(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_avg(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.avg(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_min(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.min(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_max(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.max(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_stddev(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_stddev_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev_pop(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_var_samp(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_samp(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_var_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_pop(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_bit_and(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_and(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_bit_or(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_or(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_bit_xor(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_xor(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn enable_aggregation_cache(mut self) -> Self {
         self.query = self.query.enable_aggregation_cache();
-        self.__synced()
+        self
     }
 
     pub fn enable_aggregation_cache_for(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.enable_aggregation_cache_for(cache_expired_millis);
-        self.__synced()
+        self
     }
 
     pub fn propagate_aggregation_cache(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.propagate_aggregation_cache(cache_expired_millis);
-        self.__synced()
+        self
     }
 
     pub fn group_by_id(self) -> Self {
-        self.group_by("id")
+        self.group_by(crate::Tenant::__TEAQL_FIELD_id.query_key)
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("id"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::Tenant::__TEAQL_FIELD_id.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::Tenant::__TEAQL_FIELD_id.query_key));
+        request
     }
 
     pub fn group_by_id_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("id")]));
-        request.__synced()
+        self.group_by(crate::Tenant::__TEAQL_FIELD_id.query_key)
+            .aggregate_with_function(crate::Tenant::__TEAQL_FIELD_id.query_key, alias, function)
     }
 
     pub fn count_id(self) -> Self {
@@ -900,14 +784,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("id", alias)
-    }
-    pub fn count_distinct_id(self) -> Self {
-        self.count_distinct_id_as("id_distinct_count")
-    }
-
-    pub fn count_distinct_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("id", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::Tenant::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn sum_id(self) -> Self {
@@ -915,7 +792,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn sum_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("id", alias)
+        self.aggregate_sum(crate::Tenant::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn avg_id(self) -> Self {
@@ -923,7 +800,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn avg_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("id", alias)
+        self.aggregate_avg(crate::Tenant::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn min_id(self) -> Self {
@@ -931,7 +808,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn min_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("id", alias)
+        self.aggregate_min(crate::Tenant::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn max_id(self) -> Self {
@@ -939,7 +816,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn max_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("id", alias)
+        self.aggregate_max(crate::Tenant::__TEAQL_FIELD_id.query_key, alias)
     }
 
 
@@ -949,11 +826,11 @@ impl<R> TenantRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "id",
+            crate::Tenant::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_id_criteria(
@@ -961,70 +838,124 @@ impl<R> TenantRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "id",
+            crate::Tenant::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
-    pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", value));
-        self.__synced()
+    pub fn with_id_is(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::eq(crate::Tenant::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
+        self
     }
 
 
 
-    pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", value));
-        self.__synced()
+    pub fn with_id_is_not(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::ne(crate::Tenant::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_greater_than(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::gt(crate::Tenant::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_greater_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::gte(crate::Tenant::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_less_than(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::lt(crate::Tenant::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_less_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::lte(crate::Tenant::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_between(
+        mut self,
+        lower: impl Into<u64>,
+        upper: impl Into<u64>,
+    ) -> Self {
+        self.query = self.query.and_filter(Expr::between(crate::Tenant::__TEAQL_FIELD_id.query_key, Into::<u64>::into(lower), Into::<u64>::into(upper)));
+        self
+    }
+
+    pub fn with_id_between_range<T>(mut self, range: DateRange<T>) -> Self
+    where
+        T: Into<u64>,
+    {
+        self.query = self.query.and_filter(Expr::between(
+            crate::Tenant::__TEAQL_FIELD_id.query_key,
+            Into::<u64>::into(range.start),
+            Into::<u64>::into(range.end),
+        ));
+        self
     }
 
     pub fn with_id_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<u64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "id",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<u64>::into).map(teaql_core::Value::from),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_id_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<u64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "id",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<u64>::into).map(teaql_core::Value::from),
         ));
-        self.__synced()
+        self
     }
 
+    pub fn with_id_is_unknown(mut self) -> Self {
+        self.query = self.query.and_filter(Expr::is_null(crate::Tenant::__TEAQL_FIELD_id.query_key));
+        self
+    }
+
+
+
+    pub fn with_id_is_known(mut self) -> Self {
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Tenant::__TEAQL_FIELD_id.query_key));
+        self
+    }
+
+
     pub fn order_by_id_asc(mut self) -> Self {
-        self.query = self.query.order_asc("id");
-        self.__synced()
+        self.query = self.query.order_asc(crate::Tenant::__TEAQL_FIELD_id.query_key);
+        self
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
-        self.query = self.query.order_desc("id");
-        self.__synced()
+        self.query = self.query.order_desc(crate::Tenant::__TEAQL_FIELD_id.query_key);
+        self
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("id");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::Tenant::__TEAQL_FIELD_id.query_key);
+        self
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("id");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::Tenant::__TEAQL_FIELD_id.query_key);
+        self
     }
 
 
     pub fn select_name(mut self) -> Self {
-        self.query = self.query.project("name");
-        self.__synced()
+        self.query = self.query.project(crate::Tenant::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn project_name(self) -> Self {
@@ -1039,28 +970,29 @@ impl<R> TenantRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("name", raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn group_by_name(self) -> Self {
-        self.group_by("name")
+        self.group_by(crate::Tenant::__TEAQL_FIELD_name.query_key)
     }
 
     pub fn group_by_name_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("name"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::Tenant::__TEAQL_FIELD_name.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::Tenant::__TEAQL_FIELD_name.query_key));
+        request
     }
 
     pub fn group_by_name_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("name")]));
-        request.__synced()
+        self.group_by(crate::Tenant::__TEAQL_FIELD_name.query_key)
+            .aggregate_with_function(crate::Tenant::__TEAQL_FIELD_name.query_key, alias, function)
     }
 
     pub fn count_name(self) -> Self {
@@ -1068,14 +1000,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn count_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("name", alias)
-    }
-    pub fn count_distinct_name(self) -> Self {
-        self.count_distinct_name_as("name_distinct_count")
-    }
-
-    pub fn count_distinct_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("name", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::Tenant::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn sum_name(self) -> Self {
@@ -1083,7 +1008,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn sum_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("name", alias)
+        self.aggregate_sum(crate::Tenant::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn avg_name(self) -> Self {
@@ -1091,7 +1016,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn avg_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("name", alias)
+        self.aggregate_avg(crate::Tenant::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn min_name(self) -> Self {
@@ -1099,7 +1024,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn min_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("name", alias)
+        self.aggregate_min(crate::Tenant::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn max_name(self) -> Self {
@@ -1107,13 +1032,13 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn max_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("name", alias)
+        self.aggregate_max(crate::Tenant::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn unselect_name(mut self) -> Self {
         self.query.projection.retain(|field| field != "name");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "name");
-        self.__synced()
+        self
     }
 
 
@@ -1123,11 +1048,11 @@ impl<R> TenantRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "name",
+            crate::Tenant::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_name_criteria(
@@ -1135,183 +1060,184 @@ impl<R> TenantRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "name",
+            crate::Tenant::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
-    pub fn with_name_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("name", value));
-        self.__synced()
+    pub fn with_name_is(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::eq(crate::Tenant::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
+        self
     }
 
 
 
-    pub fn with_name_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("name", value));
-        self.__synced()
+    pub fn with_name_is_not(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::ne(crate::Tenant::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
+        self
     }
 
-    pub fn with_name_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
-        self.__synced()
+    pub fn with_name_greater_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt(crate::Tenant::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
+        self
     }
 
-    pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("name", value));
-        self.__synced()
+    pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gte(crate::Tenant::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
+        self
     }
 
-    pub fn with_name_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
-        self.__synced()
+    pub fn with_name_less_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt(crate::Tenant::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
+        self
     }
 
-    pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("name", value));
-        self.__synced()
+    pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lte(crate::Tenant::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
+        self
     }
 
     pub fn with_name_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<String>,
+        upper: impl Into<String>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("name", lower, upper));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::between(crate::Tenant::__TEAQL_FIELD_name.query_key, Into::<String>::into(lower), Into::<String>::into(upper)));
+        self
     }
 
     pub fn with_name_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<String>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "name",
-            range.start,
-            range.end,
+            crate::Tenant::__TEAQL_FIELD_name.query_key,
+            Into::<String>::into(range.start),
+            Into::<String>::into(range.end),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_name_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "name",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_name_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "name",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_name_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::contain(crate::Tenant::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::not_contain(crate::Tenant::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::begin_with(crate::Tenant::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("name", value));
-        self.__synced()
+        self
     }
 
     pub fn with_name_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::end_with(crate::Tenant::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("name", value));
-        self.__synced()
+        self
     }
 
-    pub fn with_name_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("name", value));
-        self.__synced()
+    pub fn with_name_sounding_like(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::sound_like(crate::Tenant::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
+        self
     }
-    pub fn with_name_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
-        self.__synced()
+    pub fn with_name_before(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt(crate::Tenant::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
+        self
     }
 
-    pub fn with_name_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
-        self.__synced()
+    pub fn with_name_after(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt(crate::Tenant::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
+        self
     }
 
     pub fn with_name_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("name"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::Tenant::__TEAQL_FIELD_name.query_key));
+        self
     }
 
 
 
     pub fn with_name_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("name"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::Tenant::__TEAQL_FIELD_name.query_key));
+        self
     }
 
 
     pub fn order_by_name_asc(mut self) -> Self {
-        self.query = self.query.order_asc("name");
-        self.__synced()
+        self.query = self.query.order_asc(crate::Tenant::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn order_by_name_desc(mut self) -> Self {
-        self.query = self.query.order_desc("name");
-        self.__synced()
+        self.query = self.query.order_desc(crate::Tenant::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn order_by_name_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("name");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::Tenant::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn order_by_name_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("name");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::Tenant::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn group_by_version(self) -> Self {
-        self.group_by("version")
+        self.group_by(crate::Tenant::__TEAQL_FIELD_version.query_key)
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("version"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::Tenant::__TEAQL_FIELD_version.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::Tenant::__TEAQL_FIELD_version.query_key));
+        request
     }
 
     pub fn group_by_version_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("version")]));
-        request.__synced()
+        self.group_by(crate::Tenant::__TEAQL_FIELD_version.query_key)
+            .aggregate_with_function(crate::Tenant::__TEAQL_FIELD_version.query_key, alias, function)
     }
 
     pub fn count_version(self) -> Self {
@@ -1319,14 +1245,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("version", alias)
-    }
-    pub fn count_distinct_version(self) -> Self {
-        self.count_distinct_version_as("version_distinct_count")
-    }
-
-    pub fn count_distinct_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("version", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::Tenant::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn sum_version(self) -> Self {
@@ -1334,7 +1253,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn sum_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("version", alias)
+        self.aggregate_sum(crate::Tenant::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn avg_version(self) -> Self {
@@ -1342,7 +1261,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn avg_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("version", alias)
+        self.aggregate_avg(crate::Tenant::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn min_version(self) -> Self {
@@ -1350,7 +1269,7 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn min_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("version", alias)
+        self.aggregate_min(crate::Tenant::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn max_version(self) -> Self {
@@ -1358,27 +1277,27 @@ impl<R> TenantRequest<R> {
     }
 
     pub fn max_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("version", alias)
+        self.aggregate_max(crate::Tenant::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn order_by_version_asc(mut self) -> Self {
-        self.query = self.query.order_asc("version");
-        self.__synced()
+        self.query = self.query.order_asc(crate::Tenant::__TEAQL_FIELD_version.query_key);
+        self
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
-        self.query = self.query.order_desc("version");
-        self.__synced()
+        self.query = self.query.order_desc(crate::Tenant::__TEAQL_FIELD_version.query_key);
+        self
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("version");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::Tenant::__TEAQL_FIELD_version.query_key);
+        self
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("version");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::Tenant::__TEAQL_FIELD_version.query_key);
+        self
     }
     pub fn with_name_is_tenant_name(self) -> Self {
         self.with_name_is("Tenant Name")
@@ -1406,11 +1325,11 @@ impl<R> TenantRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "id",
             <crate::PurchaseOrder as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.clone().into_query(),
+            selection.query.clone(),
             "tenant_id",
         ));
         self.relation_filters.push(RelationFilter::new("purchase_order_list", selection));
-        self.__synced()
+        self
     }
 
     pub fn without_purchase_order_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -1418,24 +1337,24 @@ impl<R> TenantRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "id",
             <crate::PurchaseOrder as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.clone().into_query(),
+            selection.query.clone(),
             "tenant_id",
         ));
         self.relation_filters.push(RelationFilter::new("purchase_order_list", selection));
-        self.__synced()
+        self
     }
 
     pub fn select_purchase_order_list(mut self) -> Self {
         self.query.relations.push(teaql_core::RelationLoad::new("purchase_order_list")
             .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_purchase_order_list").with_relation("purchase_order_list")));
-        self.__synced()
+        self
     }
 
     pub fn select_purchase_order_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         self.query.relations.push(teaql_core::RelationLoad::with_query("purchase_order_list", selection.into_query())
             .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_purchase_order_list_with").with_relation("purchase_order_list")));
-        self.__synced()
+        self
 }
 
     pub fn have_order_items(self) -> Self {
@@ -1451,11 +1370,11 @@ impl<R> TenantRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "id",
             <crate::OrderItem as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.clone().into_query(),
+            selection.query.clone(),
             "tenant_id",
         ));
         self.relation_filters.push(RelationFilter::new("order_item_list", selection));
-        self.__synced()
+        self
     }
 
     pub fn without_order_item_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -1463,24 +1382,24 @@ impl<R> TenantRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "id",
             <crate::OrderItem as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.clone().into_query(),
+            selection.query.clone(),
             "tenant_id",
         ));
         self.relation_filters.push(RelationFilter::new("order_item_list", selection));
-        self.__synced()
+        self
     }
 
     pub fn select_order_item_list(mut self) -> Self {
         self.query.relations.push(teaql_core::RelationLoad::new("order_item_list")
             .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_order_item_list").with_relation("order_item_list")));
-        self.__synced()
+        self
     }
 
     pub fn select_order_item_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         self.query.relations.push(teaql_core::RelationLoad::with_query("order_item_list", selection.into_query())
             .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_order_item_list_with").with_relation("order_item_list")));
-        self.__synced()
+        self
 }
     pub fn count_purchase_orders(self) -> Self {
         let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_purchase_orders");
@@ -1507,7 +1426,7 @@ impl<R> TenantRequest<R> {
             selection,
             true,
         ).with_operation(operation.with_relation("purchase_order_list")));
-        self.__synced()
+        self
     }
 
     pub fn stats_from_purchase_orders(self, request: impl Into<QuerySelection>) -> Self {
@@ -1525,7 +1444,7 @@ impl<R> TenantRequest<R> {
             selection,
             false,
         ).with_operation(operation));
-        self.__synced()
+        self
     }
 
     fn scalar_from_purchase_orders_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
@@ -1536,7 +1455,7 @@ impl<R> TenantRequest<R> {
             selection,
             true,
         ).with_operation(operation.with_relation("purchase_order_list")));
-        self.__synced()
+        self
     }
 
     pub fn group_by_purchase_orders_with_details(self, request: impl Into<QuerySelection>) -> Self {
@@ -1614,7 +1533,7 @@ impl<R> TenantRequest<R> {
             selection,
             true,
         ).with_operation(operation.with_relation("order_item_list")));
-        self.__synced()
+        self
     }
 
     pub fn stats_from_order_items(self, request: impl Into<QuerySelection>) -> Self {
@@ -1632,7 +1551,7 @@ impl<R> TenantRequest<R> {
             selection,
             false,
         ).with_operation(operation));
-        self.__synced()
+        self
     }
 
     fn scalar_from_order_items_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
@@ -1643,7 +1562,7 @@ impl<R> TenantRequest<R> {
             selection,
             true,
         ).with_operation(operation.with_relation("order_item_list")));
-        self.__synced()
+        self
     }
 
     pub fn group_by_order_items_with_details(self, request: impl Into<QuerySelection>) -> Self {
@@ -1798,8 +1717,7 @@ impl<R> From< TenantRequest<R> > for SelectQuery {
 }
 
 impl<R> From< TenantRequest<R> > for QuerySelection {
-    fn from(mut request: TenantRequest<R>) -> Self {
-        request.__resolve_roll_ups().expect("invalid roll-up configuration");
+    fn from(request: TenantRequest<R>) -> Self {
         Self {
             query: request.query,
             relation_selections: request.relation_selections,
@@ -1826,22 +1744,20 @@ where C: crate::TeaqlRuntime + ?Sized + 'a
 impl<R: teaql_core::Entity> crate::PurposedQuery<TenantRequest<R>> {
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.inner.query_options.comment = Some(comment.into());
-        self.inner.__publish_roll_up();
         self
     }
 
-    pub fn new_entity<C>(&self, context: &C) -> Result<crate::Tenant, RuntimeError>
+    pub fn new_entity<C>(&self, context: &C) -> crate::Tenant
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
-        // Reserve identity before allocating mutation state. A failed reservation
-        // must not escape as an entity or fall back to a different allocator.
-        let id = context.user_context().next_id(crate::Tenant::ENTITY_NAME)?;
         let mut entity = crate::Tenant::runtime_new(context.user_context().entity_runtime_state());
-        entity.update_id(id);
+        if let Ok(id) = context.user_context().next_id(crate::Tenant::ENTITY_NAME) {
+            entity.update_id(id);
+        }
         teaql_core::Entity::mark_as_new(&mut entity);
-        Ok(entity)
+        entity
     }
 
     fn into_inner_with_trace(mut self) -> TenantRequest<R> {
@@ -1852,7 +1768,6 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<TenantRequest<R>> {
             None,
             self.purpose,
         ));
-        self.inner.__publish_roll_up();
         self.inner
     }
 
@@ -1863,7 +1778,8 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<TenantRequest<R>> {
                 .comment
                 .as_deref()
                 .is_some_and(|comment| !comment.trim().is_empty()),
-            "{}", teaql_core::RequestIntentError {
+            "{}",
+            teaql_core::RequestIntentError {
                 request_kind: teaql_core::RequestKind::Query,
                 field: "comment",
             }

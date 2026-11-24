@@ -225,8 +225,8 @@ where
     log::info!("Generating sample data for School (expected: {})...", fanout);
 
     for i in 0..fanout {
-        let mut entity = Q::schools().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context).map_err(SampleDataError::from_display)?;
-        let mut used_refs = std::collections::HashSet::<u64>::new();
+        let mut entity = Q::schools().comment("what: initialize a sample entity").purpose("why: populate the requested sample dataset").new_entity(context);
+        let mut used_refs = std::collections::HashSet::new();
 
                 if let Some(ref_id) = state.pick_unused_id("Platform", i as usize, &used_refs) {
                     entity.update_platform_id(ref_id);

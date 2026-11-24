@@ -1,10 +1,10 @@
 {
-  "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
-  "generatorJarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
-  "generatorRelease": "unreleased-source-021b1ed8",
-  "manifestSha256": "f97192fdaa951d7fab9fd98d6a0d9e3621ccba78784074948b00284a19900ac7",
-  "previousOrigin": {
-    "commit": "858da6c8233eb96289014002efe60a16e5698020",
-    "path": "examples/expression-profiles/provenance.json"
-  }
+  "producerReportSha256": "e7df6a8e39f59b60f923d4c351e82d3c3da41fac16e6f9dc591cd5ecc36d3d49",
+  "manifestSha256": "b51a9849f501a608323a5caddfa48d7377ad8726076cac608624c44fcd608e31",
+  "producer": {
+    "commit": "83ac20035eda968b5c2dbe57eef3028dc78742a7",
+    "diffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sourceContentsSha256": "c7da4991ccfaa48c8dccd45a964babaf1e65ba2fc9fb79b4bfe4f0061530a0b6"
+  },
+  "fieldDescriptorRefresh": "../field-descriptor-generation.json"
 }

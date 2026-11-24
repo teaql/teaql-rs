@@ -331,6 +331,7 @@ Request JSON is not allowed to replace those trusted capabilities.
 - [Binary object storage and temporary S3 URLs](examples/object-storage/README.md)
 - [Context-owned HTTP with bounded retries and safe diagnostics](examples/http-resilience/README.md)
 - [Trace Chain example](examples/trace-chain/README.md)
+- [Supplier onboarding in 15 locales](examples/supplier-onboarding-i18n/README.md)
 - [Benchmarks and reproduction](https://github.com/teaql/teaql-runtime-benchmark)
 
 ## Safe troubleshooting

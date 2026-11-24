@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use serde_json::Value as JsonValue;
 use teaql_core::{Aggregate, AggregateFunction, EntityDescriptor, Expr, SelectQuery, SmartList};
-use teaql_runtime::RuntimeError;
+use teaql_runtime::{DataServiceError, RuntimeError};
 
 use crate::request_support::*;
 
@@ -26,34 +26,17 @@ pub struct OrderStatusRequest<R = crate::OrderStatus> {
     relation_filters: Vec<RelationFilter>,
     child_enhancements: Vec<QuerySelection>,
     query_options: QueryOptions,
-    roll_up_links: Vec<RollupLink>,
-    roll_up_publication: Option<RollupTarget>,
     marker: PhantomData<R>,
 }
 
 impl<R> Clone for OrderStatusRequest<R> {
     fn clone(&self) -> Self {
-        if !self.roll_up_links.is_empty() {
-            let snapshot = self.__resolved_roll_up_selection().expect("invalid roll-up configuration");
-            return Self {
-                query: snapshot.query,
-                relation_selections: snapshot.relation_selections,
-                relation_filters: snapshot.relation_filters,
-                child_enhancements: snapshot.child_enhancements,
-                query_options: snapshot.query_options,
-                roll_up_links: Vec::new(),
-                roll_up_publication: None,
-                marker: PhantomData,
-            };
-        }
         Self {
             query: self.query.clone(),
             relation_selections: self.relation_selections.clone(),
             relation_filters: self.relation_filters.clone(),
             child_enhancements: self.child_enhancements.clone(),
             query_options: self.query_options.clone(),
-            roll_up_links: Vec::new(),
-            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -63,14 +46,12 @@ impl<R> OrderStatusRequest<R> {
     pub(crate) fn new() -> Self {
         Self {
             query: SelectQuery::new("OrderStatus")
-                .project("id")
-                .project("version"),
+                .project(crate::OrderStatus::__TEAQL_FIELD_id.query_key)
+                .project(crate::OrderStatus::__TEAQL_FIELD_version.query_key),
             relation_selections: Vec::new(),
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
             query_options: QueryOptions::default(),
-            roll_up_links: Vec::new(),
-            roll_up_publication: None,
             marker: PhantomData,
         }
     }
@@ -82,8 +63,6 @@ impl<R> OrderStatusRequest<R> {
             relation_filters: self.relation_filters,
             child_enhancements: self.child_enhancements,
             query_options: self.query_options,
-            roll_up_links: self.roll_up_links,
-            roll_up_publication: self.roll_up_publication,
             marker: PhantomData,
         }
     }
@@ -109,57 +88,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn into_query(self) -> SelectQuery {
-        QuerySelection::from(self).into_query()
-    }
-
-    fn __base_roll_up_selection(&self) -> QuerySelection {
-        QuerySelection {
-            query: self.query.clone(),
-            relation_selections: self.relation_selections.clone(),
-            relation_filters: self.relation_filters.clone(),
-            child_enhancements: self.child_enhancements.clone(),
-            query_options: self.query_options.clone(),
-        }
-    }
-
-    fn __resolved_roll_up_selection(&self) -> Result<QuerySelection, RuntimeError> {
-        resolve_rollup_links(self.__base_roll_up_selection(), &self.roll_up_links)
-    }
-
-    fn __publish_roll_up(&self) {
-        if let Some(target) = &self.roll_up_publication {
-            *target.lock().expect("poisoned roll-up configuration") = RollupState {
-                selection: self.__base_roll_up_selection(),
-                links: self.roll_up_links.clone(),
-            };
-        }
-    }
-
-    fn __synced(self) -> Self {
-        self.__publish_roll_up();
-        self
-    }
-
-    pub(crate) fn __roll_up_target(&mut self) -> RollupTarget {
-        if self.roll_up_publication.is_none() {
-            self.roll_up_publication = Some(std::sync::Arc::new(std::sync::Mutex::new(RollupState {
-                selection: self.__base_roll_up_selection(), links: self.roll_up_links.clone(),
-            })));
-        }
-        self.__publish_roll_up();
-        self.roll_up_publication.as_ref().unwrap().clone()
-    }
-
-    fn __resolve_roll_ups(&mut self) -> Result<(), RuntimeError> {
-        if self.roll_up_links.is_empty() { return Ok(()); }
-        let selection = self.__resolved_roll_up_selection()?;
-        self.query = selection.query;
-        self.relation_selections = selection.relation_selections;
-        self.relation_filters = selection.relation_filters;
-        self.child_enhancements = selection.child_enhancements;
-        self.query_options = selection.query_options;
-        self.roll_up_links.clear();
-        Ok(())
+        self.query
     }
 
 
@@ -168,106 +97,96 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub(crate) async fn _execute_for_list<'a, C>(
-        mut self,
+        self,
         context: &'a C,
-    ) -> Result<SmartList<R>, RuntimeError>
+    ) -> Result<SmartList<R>, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity,
     {
-        self.__resolve_roll_ups()?;
+        let repository = context
+            .order_status_repository()
+            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query_options = self.query_options.clone();
         let relation_aggregates = runtime_relation_aggregates(&query_options);
-        let mut query = authorize_query(apply_runtime_metadata(
+        let query = authorize_query(apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
-        ))?;
-        let requested_count = query.take_requested_list_count(&query_options);
-        let use_id_set = query.as_query().id_set_pagination.is_some();
-        context.user_context().observe_generated_list("OrderStatus", async {
-        let mut total = None;
-        if !use_id_set {
-            if let Some((alias, count_query)) = &requested_count {
-                let count_rows = context.fetch_compact_rows("OrderStatus", count_query).await?;
-                total = Some(exact_list_count(&count_rows, alias)?);
-            }
-        }
-        if !query.as_query().group_by.is_empty() || !query.as_query().object_group_bys.is_empty() {
-            return Err(RuntimeError::Graph("grouped projections require execute_for_rows".into()));
-        }
-        let mut rows = if !query.as_query().aggregates.is_empty() {
-            let records = context.fetch_compact_rows("OrderStatus", &query).await?;
-            let mut rows = SmartList::new(Vec::new());
-            if let Some(record) = records.into_iter().next() { rows.aggregations = record.into_map(); }
-            rows
+        )).map_err(DataServiceError::Runtime)?;
+        let (mut rows, facets) = if query_options.facets.is_empty() {
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates_owned::<R>(
+                query,
+                &relation_aggregates,
+            ).await?;
+            (rows, std::collections::BTreeMap::new())
         } else {
-            context.fetch_entity_smart_list::<R>(
-                "OrderStatus", query.clone(), relation_aggregates,
-            ).await?
+            let rows = repository.fetch_enhanced_entities_with_relation_aggregates::<R>(
+                &query,
+                &relation_aggregates,
+            ).await?;
+            let facets = execute_facets(context, query.as_query(), &query_options)
+                .await
+                .map_err(DataServiceError::Runtime)?;
+            (rows, facets)
         };
-        let facets = if query_options.facets.is_empty() { std::collections::BTreeMap::new() }
-            else { execute_facets(context, query.as_query(), &query_options).await? };
-        if let Some((alias, count_query)) = requested_count {
-            if total.is_none() { total = rows.total_count; }
-            if total.is_none() {
-                let count_rows = context.fetch_compact_rows("OrderStatus", &count_query).await?;
-                total = Some(exact_list_count(&count_rows, &alias)?);
-            }
-            rows.total_count = total;
-            rows.aggregations.insert(alias, teaql_core::Value::U64(total.expect("requested count resolved")));
-        }
         attach_facets(&mut rows, facets);
         Ok(rows)
-        }).await
     }
 
     pub(crate) async fn _execute_for_rows<'a, C>(
-        mut self,
+        self,
         context: &'a C,
-    ) -> Result<SmartList<teaql_core::CompactRow>, RuntimeError>
+    ) -> Result<SmartList<teaql_core::CompactRow>, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
+        C: TeaqlRepositoryProvider + ?Sized,
     {
-        self.__resolve_roll_ups()?;
+        let repository = context
+            .order_status_repository()
+            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query = authorize_query(apply_runtime_metadata(
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?.with_facet_diagnostics(&self.query_options);
-        context.fetch_compact_smart_list("OrderStatus", &query).await
+        )).map_err(DataServiceError::Runtime)?;
+        repository.fetch_smart_list(&query).await
     }
 
     pub(crate) async fn _execute_for_stream<'a, C>(
-        mut self,
+        self,
         context: &'a C,
-    ) -> Result<TeaqlEntityStream<'a, R, RuntimeError>, RuntimeError>
+    ) -> Result<TeaqlEntityStream<'a, R, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity + 'a,
     {
-        self.__resolve_roll_ups()?;
-        let query = authorize_query(apply_runtime_metadata(
-            self.query,
-            &self.query_options,
-            &self.child_enhancements,
-        ))?;
-        let shape = query.as_query();
-        if !shape.aggregates.is_empty() || !shape.group_by.is_empty() || !shape.object_group_bys.is_empty() {
-            return Err(RuntimeError::Graph("Entity streams require entity rows; use a record or aggregation query".to_owned()));
-        }
-        Ok(context.user_context().observe_generated_stream(
-            "OrderStatus", context.fetch_entity_stream("OrderStatus", query),
-        ))
+        Ok(Box::pin(async_stream::try_stream! {
+            use futures_util::StreamExt;
+            let repository = context
+                .order_status_repository()
+                .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
+            let query_options = self.query_options.clone();
+            let query = authorize_query(apply_runtime_metadata(
+                self.query,
+                &query_options,
+                &self.child_enhancements,
+            )).map_err(DataServiceError::Runtime)?;
+            let mut chunks = repository.fetch_stream(&query).await?;
+            while let Some(chunk) = chunks.next().await {
+                for row in chunk?.rows {
+                    yield R::from_compact_row(row).map_err(DataServiceError::Entity)?;
+                }
+            }
+        }))
     }
 
     pub(crate) async fn _execute_for_first<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<Option<R>, RuntimeError>
+    ) -> Result<Option<R>, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity,
     {
         let rows = self.limit(1)._execute_for_list(context).await?;
         Ok(rows.into_iter().next())
@@ -276,78 +195,107 @@ impl<R> OrderStatusRequest<R> {
     pub(crate) async fn _execute_for_one<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<Option<R>, RuntimeError>
+    ) -> Result<Option<R>, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity,
     {
         self._execute_for_first(context).await
     }
 
 
-    pub(crate) async fn _execute_for_count<'a, C>(
-        mut self,
+    pub(crate) async fn _execute_for_page<'a, C>(
+        self,
         context: &'a C,
-    ) -> Result<u64, RuntimeError>
+        offset: u64,
+        limit: u64,
+    ) -> Result<SmartList<R>, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
+        C: TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity,
     {
-        self.__resolve_roll_ups()?;
+        if self.query.id_set_pagination.is_some() {
+            let mut rows = self
+                .clone()
+                .page_offset(offset, limit)
+                ._execute_for_list(context)
+                .await?;
+            if rows.total_count.is_none() {
+                rows.total_count = Some(self._execute_for_count(context).await?);
+            }
+            return Ok(rows);
+        }
+        let total_count = self.clone()._execute_for_count(context).await?;
+        let mut rows = self.page_offset(offset, limit)._execute_for_list(context).await?;
+        rows.total_count = Some(total_count);
+        Ok(rows)
+    }
+
+    pub(crate) async fn _execute_for_count<'a, C>(
+        self,
+        context: &'a C,
+    ) -> Result<u64, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
+    where
+        C: TeaqlRepositoryProvider + ?Sized,
+    {
+        let repository = context
+            .order_status_repository()
+            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
         let query_options = self.query_options.clone();
-        let query = apply_runtime_metadata(
+        let mut query = apply_runtime_metadata(
             self.query,
             &query_options,
             &self.child_enhancements,
         );
-        let operation = query_options.page_count_operation.clone().unwrap_or_else(||
-            QueryOperation::new(QueryOperationKind::NamedCount, "execute_for_count"));
-        let alias = operation.alias().unwrap_or(COUNT_ALIAS).to_owned();
-        let query = authorize_query(query)?.with_facet_diagnostics(&query_options)
-            .for_exact_count_with_operation(&alias, operation);
-        let rows = context.fetch_compact_rows("OrderStatus", &query).await?;
+        query.projection.clear();
+        query.expr_projection.clear();
+        query.order_by.clear();
+        query.slice = None;
+        query.relations.clear();
+        query = query.count(COUNT_ALIAS);
+        let query = authorize_query(query).map_err(DataServiceError::Runtime)?;
+        let rows = repository.fetch_all(&query).await?;
         rows.first()
-            .and_then(|row| row.get(&alias))
+            .and_then(|row| row.get(COUNT_ALIAS))
             .and_then(teaql_core::Value::try_u64)
-            .ok_or_else(|| RuntimeError::Graph(format!("count result for OrderStatus is missing or not numeric")))
+            .ok_or_else(|| DataServiceError::Runtime(RuntimeError::Graph(format!("count result for OrderStatus is missing or not numeric"))))
     }
 
     pub(crate) async fn _execute_for_exists<'a, C>(
-        mut self,
+        self,
         context: &'a C,
-    ) -> Result<bool, RuntimeError>
+    ) -> Result<bool, TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: TeaqlRuntime + ?Sized,
+        C: TeaqlRepositoryProvider + ?Sized,
     {
-        self.__resolve_roll_ups()?;
-        let mut query = apply_runtime_metadata(
-            self.query,
-            &self.query_options,
-            &self.child_enhancements,
-        ).limit(1);
+        let repository = context
+            .order_status_repository()
+            .map_err(|err| DataServiceError::Runtime(RuntimeError::Graph(err.to_string())))?;
+        let mut query = self.query.limit(1);
         query.relations.clear();
-        let query = authorize_query(query)?.with_facet_diagnostics(&self.query_options);
-        let rows = context.fetch_compact_rows("OrderStatus", &query).await?;
+        let query = authorize_query(query).map_err(DataServiceError::Runtime)?;
+        let rows = repository.fetch_all(&query).await?;
         Ok(!rows.is_empty())
     }
 
     pub fn search_with_text(mut self, text: impl Into<String>) -> Self {
         self.query = self.query.search_with_text(text);
-        self.__synced()
+        self
     }
 
     pub fn filter(mut self, filter: Expr) -> Self {
         self.query = self.query.filter(filter);
-        self.__synced()
+        self
     }
 
     pub fn and_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.and_filter(filter);
-        self.__synced()
+        self
     }
 
     pub fn or_filter(mut self, filter: Expr) -> Self {
         self.query = self.query.or_filter(filter);
-        self.__synced()
+        self
     }
 
     pub fn append_search_criteria(self, criteria: Expr) -> Self {
@@ -365,18 +313,18 @@ impl<R> OrderStatusRequest<R> {
             operator,
             property2.as_ref(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_deleted_rows(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self.__synced()
+        self
     }
 
     pub fn deleted_rows_only(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self.query = self.query.and_filter(Expr::lte("version", 0_i64));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderStatus::__TEAQL_FIELD_version.query_key, 0_i64));
+        self
     }
 
     pub fn match_types(
@@ -384,36 +332,29 @@ impl<R> OrderStatusRequest<R> {
         types: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(TYPE_FIELD, types.into_iter().map(Into::into)));
-        self.__synced()
+        self
     }
 
 
     pub fn with_type_group(mut self) -> Self {
         self.query = self.query.project(TYPE_GROUP_FIELD);
-        self.__synced()
+        self
     }
 
-    pub fn matching_any_of<O>(mut self, request: OrderStatusRequest<O>) -> Self {
-        let filter = QuerySelection::from(request).into_query().filter;
-        if let Some(criteria) = crate::request_support::criteria_alternatives_excluding_version(filter) {
-            self.query = self.query.and_filter(criteria);
-        }
-        self.__synced()
+    pub fn matching_any_of(mut self, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        let entity = EntityDescriptor::new(selection.query.entity.clone());
+        self.query = self.query.and_filter(Expr::in_subquery("id", entity, selection.query.clone(), "id"));
+        self
     }
 
-    pub fn match_any_of<O>(self, request: OrderStatusRequest<O>) -> Self {
+    pub fn match_any_of(self, request: impl Into<QuerySelection>) -> Self {
         self.matching_any_of(request)
-    }
-
-    pub fn matching_ids_of<O>(mut self, request: OrderStatusRequest<O>) -> Self {
-        let entity = <crate::OrderStatus as teaql_core::TeaqlEntity>::entity_descriptor();
-        self.query = self.query.and_filter(Expr::in_subquery("id", entity, QuerySelection::from(request).into_query(), "id"));
-        self.__synced()
     }
 
     pub fn enhance_child(mut self, request: impl Into<QuerySelection>) -> Self {
         self.child_enhancements.push(request.into());
-        self.__synced()
+        self
     }
 
     pub fn enhance_children_if_needed(self) -> Self {
@@ -424,7 +365,7 @@ impl<R> OrderStatusRequest<R> {
 
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.query_options.comment = Some(comment.into());
-        self.__synced()
+        self
     }
 
     pub fn raw_sql(self, raw_sql: impl Into<String>) -> Self {
@@ -433,7 +374,7 @@ impl<R> OrderStatusRequest<R> {
 
     pub fn unsafe_raw_sql(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql = Some(raw_sql.into_sql());
-        self.__synced()
+        self
     }
 
     pub fn raw_sql_filter(self, raw_sql: impl Into<String>) -> Self {
@@ -442,7 +383,7 @@ impl<R> OrderStatusRequest<R> {
 
     pub fn unsafe_raw_sql_filter(mut self, raw_sql: UnsafeRawSqlSegment) -> Self {
         self.query_options.raw_sql_search_criteria.push(raw_sql.into_sql());
-        self.__synced()
+        self
     }
     pub fn filter_with_json(self, json_expr: impl Into<String>) -> Self {
         self.merge_dynamic_json_expr(json_expr.into())
@@ -488,7 +429,7 @@ impl<R> OrderStatusRequest<R> {
             }
         }
 
-        self.__synced()
+        self
     }
 
     pub(crate) fn apply_dynamic_json_filter(self, field: &str, value: &JsonValue) -> Self {
@@ -497,7 +438,7 @@ impl<R> OrderStatusRequest<R> {
         } else if let Some(storage_field) = Self::dynamic_json_self_field(field) {
             self.and_filter(dynamic_json_filter_expr(storage_field, value))
         } else {
-            self.__synced()
+            self
         }
     }
 
@@ -520,7 +461,7 @@ impl<R> OrderStatusRequest<R> {
             }
             _ => {}
         }
-        self.__synced()
+        self
     }
 
     fn apply_dynamic_json_single_order_by(
@@ -542,7 +483,7 @@ impl<R> OrderStatusRequest<R> {
         } else {
             self.query = self.query.order_desc(storage_field);
         }
-        self.__synced()
+        self
     }
 
     fn dynamic_json_self_field(field: &str) -> Option<&'static str> {
@@ -593,28 +534,28 @@ impl<R> OrderStatusRequest<R> {
         self.query_options
             .dynamic_properties
             .push(RawDynamicProperty::new(property_name, raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn limit(mut self, limit: u64) -> Self {
         self.query = self.query.limit(limit);
-        self.__synced()
+        self
     }
 
     pub fn stream(mut self, chunk_size: usize) -> Self {
         assert!(chunk_size > 0, "stream chunk size must be positive");
         self.query = self.query.stream(chunk_size);
-        self.__synced()
+        self
     }
 
     pub fn stream_default(mut self) -> Self {
         self.query = self.query.stream_default();
-        self.__synced()
+        self
     }
 
     pub fn skip(mut self, offset: u64) -> Self {
         self.query = self.query.offset(offset);
-        self.__synced()
+        self
     }
 
     pub fn offset_only(self, offset: u64) -> Self {
@@ -627,12 +568,12 @@ impl<R> OrderStatusRequest<R> {
 
     pub fn page_offset(mut self, offset: u64, limit: u64) -> Self {
         self.query = self.query.page(offset, limit);
-        self.__synced()
+        self
     }
 
     pub fn optimize_for_continuous_page_fetch(mut self) -> Self {
         self.query = self.query.optimize_for_continuous_page_fetch();
-        self.__synced()
+        self
     }
 
     pub fn optimize_for_continuous_page_fetch_with(
@@ -643,12 +584,12 @@ impl<R> OrderStatusRequest<R> {
         self.query = self
             .query
             .optimize_for_continuous_page_fetch_with(namespace, ttl_seconds);
-        self.__synced()
+        self
     }
 
     pub fn optimize_pagination_with_id_set(mut self) -> Self {
         self.query = self.query.optimize_pagination_with_id_set();
-        self.__synced()
+        self
     }
 
     pub fn optimize_pagination_with_id_set_config(
@@ -660,7 +601,7 @@ impl<R> OrderStatusRequest<R> {
         self.query = self
             .query
             .optimize_pagination_with_id_set_config(namespace, ttl_seconds, max_ids);
-        self.__synced()
+        self
     }
 
     /// Select bounded indexed probes for a per-parent Top-N relation only
@@ -668,7 +609,7 @@ impl<R> OrderStatusRequest<R> {
     /// Passing zero explicitly selects the provider window plan.
     pub fn top_n_probe_parent_threshold(mut self, threshold: usize) -> Self {
         self.query = self.query.top_n_probe_parent_threshold(threshold);
-        self.__synced()
+        self
     }
 
     pub fn top(self, top_n: u64) -> Self {
@@ -681,7 +622,7 @@ impl<R> OrderStatusRequest<R> {
 
     pub fn unlimited(mut self) -> Self {
         self.query.slice = None;
-        self.__synced()
+        self
     }
 
     pub fn page_number(self, page_number: u64, page_size: u64) -> Self {
@@ -702,19 +643,14 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn select_self(mut self) -> Self {
-        self.query = self.query.project("id");
-        self.query = self.query.project("name");
-        self.query = self.query.project("code");
-        self.query = self.query.project("color");
-        self.query = self.query.project("display_order");
-        self.query = self.query.project("version");
-        self.query = self.query.project("commerce_platform_id");
-        self.__synced()
-    }
-
-    pub fn select_dynamic_fields_with(mut self, selection: teaql_core::dynamic_fields::DynamicFieldSelection) -> Self {
-        self.query = self.query.select_dynamic_fields(selection);
-        self.__synced()
+        self.query = self.query.project(crate::OrderStatus::__TEAQL_FIELD_id.query_key);
+        self.query = self.query.project(crate::OrderStatus::__TEAQL_FIELD_name.query_key);
+        self.query = self.query.project(crate::OrderStatus::__TEAQL_FIELD_code.query_key);
+        self.query = self.query.project(crate::OrderStatus::__TEAQL_FIELD_color.query_key);
+        self.query = self.query.project(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key);
+        self.query = self.query.project(crate::OrderStatus::__TEAQL_FIELD_version.query_key);
+        self.query = self.query.project(crate::OrderStatus::__TEAQL_FIELD_commerce_platform.query_key);
+        self
     }
 
     pub fn select_self_fields(self) -> Self {
@@ -743,64 +679,25 @@ impl<R> OrderStatusRequest<R> {
 
     pub fn group_by(mut self, field: impl Into<String>) -> Self {
         self.query = self.query.group_by(field);
-        self.__synced()
+        self
     }
 
-    /// Order a selected statistical alias or nested result path, matching Java.
-    pub fn add_order_by_ascending(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_asc(result_key);
-        self.__synced()
+    pub fn count(self) -> Self {
+        self.count_as("count")
     }
 
-    pub fn add_order_by_descending(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_desc(result_key);
-        self.__synced()
-    }
-
-    pub fn add_order_by_ascending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_gbk_asc(result_key);
-        self.__synced()
-    }
-
-    pub fn add_order_by_descending_using_gbk(mut self, result_key: impl Into<String>) -> Self {
-        self.query = self.query.order_gbk_desc(result_key);
-        self.__synced()
-    }
-
-    pub fn count(mut self) -> Self {
-        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count"));
-        self.aggregate_count("count")
-    }
-
-    pub fn count_as(mut self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        self.query_options.page_count_operation = Some(QueryOperation::new(QueryOperationKind::NamedCount, "count_as").with_alias(&alias));
+    pub fn count_as(self, alias: impl Into<String>) -> Self {
         self.aggregate_count(alias)
     }
 
     pub fn aggregate_count(mut self, alias: impl Into<String>) -> Self {
         self.query = self.query.count(alias);
-        self.__synced()
-    }
-    /// Java addAggregate(SimpleNamedExpression): bind a typed aggregate AST.
-    pub fn add_aggregate(mut self, aggregate: teaql_core::NamedExpr) -> Self {
-        self.query = self.query.aggregate_expression(aggregate);
-        self.__synced()
-    }
-
-    /// Filter selected statistical results. Repeated conditions compose with AND.
-    pub fn having(mut self, condition: Expr) -> Self {
-        let condition = match self.query.having.take() {
-            Some(previous) => Expr::and([previous, condition]),
-            None => condition,
-        };
-        self.query = self.query.having(condition);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_count_field(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.count_field(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_with_function(
@@ -810,98 +707,99 @@ impl<R> OrderStatusRequest<R> {
         function: AggregateFunction,
     ) -> Self {
         self.query = self.query.aggregate(Aggregate::new(function, field, alias));
-        self.__synced()
+        self
     }
 
     pub fn aggregate_sum(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.sum(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_avg(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.avg(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_min(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.min(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_max(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.max(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_stddev(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_stddev_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.stddev_pop(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_var_samp(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_samp(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_var_pop(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.var_pop(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_bit_and(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_and(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_bit_or(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_or(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn aggregate_bit_xor(mut self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.query = self.query.bit_xor(field, alias);
-        self.__synced()
+        self
     }
 
     pub fn enable_aggregation_cache(mut self) -> Self {
         self.query = self.query.enable_aggregation_cache();
-        self.__synced()
+        self
     }
 
     pub fn enable_aggregation_cache_for(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.enable_aggregation_cache_for(cache_expired_millis);
-        self.__synced()
+        self
     }
 
     pub fn propagate_aggregation_cache(mut self, cache_expired_millis: u64) -> Self {
         self.query = self.query.propagate_aggregation_cache(cache_expired_millis);
-        self.__synced()
+        self
     }
 
     pub fn group_by_id(self) -> Self {
-        self.group_by("id")
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_id.query_key)
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("id"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderStatus::__TEAQL_FIELD_id.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderStatus::__TEAQL_FIELD_id.query_key));
+        request
     }
 
     pub fn group_by_id_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("id")]));
-        request.__synced()
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_id.query_key)
+            .aggregate_with_function(crate::OrderStatus::__TEAQL_FIELD_id.query_key, alias, function)
     }
 
     pub fn count_id(self) -> Self {
@@ -909,14 +807,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("id", alias)
-    }
-    pub fn count_distinct_id(self) -> Self {
-        self.count_distinct_id_as("id_distinct_count")
-    }
-
-    pub fn count_distinct_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("id", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderStatus::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn sum_id(self) -> Self {
@@ -924,7 +815,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn sum_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("id", alias)
+        self.aggregate_sum(crate::OrderStatus::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn avg_id(self) -> Self {
@@ -932,7 +823,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn avg_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("id", alias)
+        self.aggregate_avg(crate::OrderStatus::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn min_id(self) -> Self {
@@ -940,7 +831,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn min_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("id", alias)
+        self.aggregate_min(crate::OrderStatus::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn max_id(self) -> Self {
@@ -948,7 +839,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn max_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("id", alias)
+        self.aggregate_max(crate::OrderStatus::__TEAQL_FIELD_id.query_key, alias)
     }
 
 
@@ -958,11 +849,11 @@ impl<R> OrderStatusRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "id",
+            crate::OrderStatus::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_id_criteria(
@@ -970,22 +861,22 @@ impl<R> OrderStatusRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "id",
+            crate::OrderStatus::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderStatus::__TEAQL_FIELD_id.query_key, value));
+        self
     }
 
 
 
     pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderStatus::__TEAQL_FIELD_id.query_key, value));
+        self
     }
 
     pub fn with_id_in(
@@ -996,7 +887,7 @@ impl<R> OrderStatusRequest<R> {
             "id",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_id_not_in(
@@ -1007,33 +898,33 @@ impl<R> OrderStatusRequest<R> {
             "id",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn order_by_id_asc(mut self) -> Self {
-        self.query = self.query.order_asc("id");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderStatus::__TEAQL_FIELD_id.query_key);
+        self
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
-        self.query = self.query.order_desc("id");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderStatus::__TEAQL_FIELD_id.query_key);
+        self
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("id");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderStatus::__TEAQL_FIELD_id.query_key);
+        self
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("id");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderStatus::__TEAQL_FIELD_id.query_key);
+        self
     }
 
 
     pub fn select_name(mut self) -> Self {
-        self.query = self.query.project("name");
-        self.__synced()
+        self.query = self.query.project(crate::OrderStatus::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn project_name(self) -> Self {
@@ -1048,28 +939,29 @@ impl<R> OrderStatusRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("name", raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn group_by_name(self) -> Self {
-        self.group_by("name")
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_name.query_key)
     }
 
     pub fn group_by_name_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("name"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderStatus::__TEAQL_FIELD_name.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderStatus::__TEAQL_FIELD_name.query_key));
+        request
     }
 
     pub fn group_by_name_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("name")]));
-        request.__synced()
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_name.query_key)
+            .aggregate_with_function(crate::OrderStatus::__TEAQL_FIELD_name.query_key, alias, function)
     }
 
     pub fn count_name(self) -> Self {
@@ -1077,14 +969,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn count_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("name", alias)
-    }
-    pub fn count_distinct_name(self) -> Self {
-        self.count_distinct_name_as("name_distinct_count")
-    }
-
-    pub fn count_distinct_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("name", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderStatus::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn sum_name(self) -> Self {
@@ -1092,7 +977,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn sum_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("name", alias)
+        self.aggregate_sum(crate::OrderStatus::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn avg_name(self) -> Self {
@@ -1100,7 +985,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn avg_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("name", alias)
+        self.aggregate_avg(crate::OrderStatus::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn min_name(self) -> Self {
@@ -1108,7 +993,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn min_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("name", alias)
+        self.aggregate_min(crate::OrderStatus::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn max_name(self) -> Self {
@@ -1116,13 +1001,13 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn max_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("name", alias)
+        self.aggregate_max(crate::OrderStatus::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn unselect_name(mut self) -> Self {
         self.query.projection.retain(|field| field != "name");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "name");
-        self.__synced()
+        self
     }
 
 
@@ -1132,11 +1017,11 @@ impl<R> OrderStatusRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "name",
+            crate::OrderStatus::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_name_criteria(
@@ -1144,42 +1029,42 @@ impl<R> OrderStatusRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "name",
+            crate::OrderStatus::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_name_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
 
 
     pub fn with_name_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gte(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_between(
@@ -1187,8 +1072,8 @@ impl<R> OrderStatusRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("name", lower, upper));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::between(crate::OrderStatus::__TEAQL_FIELD_name.query_key, lower, upper));
+        self
     }
 
     pub fn with_name_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1196,11 +1081,11 @@ impl<R> OrderStatusRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "name",
+            crate::OrderStatus::__TEAQL_FIELD_name.query_key,
             range.start,
             range.end,
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_name_in(
@@ -1211,7 +1096,7 @@ impl<R> OrderStatusRequest<R> {
             "name",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_name_not_in(
@@ -1222,90 +1107,90 @@ impl<R> OrderStatusRequest<R> {
             "name",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_name_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::contain(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::not_contain(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::begin_with(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("name", value));
-        self.__synced()
+        self
     }
 
     pub fn with_name_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::end_with(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("name", value));
-        self.__synced()
+        self
     }
 
     pub fn with_name_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::sound_like(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
     pub fn with_name_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderStatus::__TEAQL_FIELD_name.query_key, value));
+        self
     }
 
     pub fn with_name_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("name"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderStatus::__TEAQL_FIELD_name.query_key));
+        self
     }
 
 
 
     pub fn with_name_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("name"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderStatus::__TEAQL_FIELD_name.query_key));
+        self
     }
 
 
     pub fn order_by_name_asc(mut self) -> Self {
-        self.query = self.query.order_asc("name");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderStatus::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn order_by_name_desc(mut self) -> Self {
-        self.query = self.query.order_desc("name");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderStatus::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn order_by_name_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("name");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderStatus::__TEAQL_FIELD_name.query_key);
+        self
     }
 
     pub fn order_by_name_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("name");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderStatus::__TEAQL_FIELD_name.query_key);
+        self
     }
 
 
     pub fn select_code(mut self) -> Self {
-        self.query = self.query.project("code");
-        self.__synced()
+        self.query = self.query.project(crate::OrderStatus::__TEAQL_FIELD_code.query_key);
+        self
     }
 
     pub fn project_code(self) -> Self {
@@ -1320,28 +1205,29 @@ impl<R> OrderStatusRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("code", raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn group_by_code(self) -> Self {
-        self.group_by("code")
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_code.query_key)
     }
 
     pub fn group_by_code_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("code"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderStatus::__TEAQL_FIELD_code.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderStatus::__TEAQL_FIELD_code.query_key));
+        request
     }
 
     pub fn group_by_code_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("code")]));
-        request.__synced()
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_code.query_key)
+            .aggregate_with_function(crate::OrderStatus::__TEAQL_FIELD_code.query_key, alias, function)
     }
 
     pub fn count_code(self) -> Self {
@@ -1349,14 +1235,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn count_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("code", alias)
-    }
-    pub fn count_distinct_code(self) -> Self {
-        self.count_distinct_code_as("code_distinct_count")
-    }
-
-    pub fn count_distinct_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("code", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderStatus::__TEAQL_FIELD_code.query_key, alias)
     }
 
     pub fn sum_code(self) -> Self {
@@ -1364,7 +1243,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn sum_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("code", alias)
+        self.aggregate_sum(crate::OrderStatus::__TEAQL_FIELD_code.query_key, alias)
     }
 
     pub fn avg_code(self) -> Self {
@@ -1372,7 +1251,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn avg_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("code", alias)
+        self.aggregate_avg(crate::OrderStatus::__TEAQL_FIELD_code.query_key, alias)
     }
 
     pub fn min_code(self) -> Self {
@@ -1380,7 +1259,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn min_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("code", alias)
+        self.aggregate_min(crate::OrderStatus::__TEAQL_FIELD_code.query_key, alias)
     }
 
     pub fn max_code(self) -> Self {
@@ -1388,13 +1267,13 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn max_code_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("code", alias)
+        self.aggregate_max(crate::OrderStatus::__TEAQL_FIELD_code.query_key, alias)
     }
 
     pub fn unselect_code(mut self) -> Self {
         self.query.projection.retain(|field| field != "code");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "code");
-        self.__synced()
+        self
     }
 
 
@@ -1404,11 +1283,11 @@ impl<R> OrderStatusRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "code",
+            crate::OrderStatus::__TEAQL_FIELD_code.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_code_criteria(
@@ -1416,42 +1295,42 @@ impl<R> OrderStatusRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "code",
+            crate::OrderStatus::__TEAQL_FIELD_code.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_code_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
 
 
     pub fn with_code_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
     pub fn with_code_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
     pub fn with_code_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gte(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
     pub fn with_code_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
     pub fn with_code_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
     pub fn with_code_between(
@@ -1459,8 +1338,8 @@ impl<R> OrderStatusRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("code", lower, upper));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::between(crate::OrderStatus::__TEAQL_FIELD_code.query_key, lower, upper));
+        self
     }
 
     pub fn with_code_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1468,11 +1347,11 @@ impl<R> OrderStatusRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "code",
+            crate::OrderStatus::__TEAQL_FIELD_code.query_key,
             range.start,
             range.end,
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_code_in(
@@ -1483,7 +1362,7 @@ impl<R> OrderStatusRequest<R> {
             "code",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_code_not_in(
@@ -1494,90 +1373,90 @@ impl<R> OrderStatusRequest<R> {
             "code",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_code_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::contain(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
     pub fn with_code_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::not_contain(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
     pub fn with_code_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::begin_with(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
     pub fn with_code_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("code", value));
-        self.__synced()
+        self
     }
 
     pub fn with_code_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::end_with(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
     pub fn with_code_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("code", value));
-        self.__synced()
+        self
     }
 
     pub fn with_code_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::sound_like(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
     pub fn with_code_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
     pub fn with_code_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("code", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderStatus::__TEAQL_FIELD_code.query_key, value));
+        self
     }
 
     pub fn with_code_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("code"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderStatus::__TEAQL_FIELD_code.query_key));
+        self
     }
 
 
 
     pub fn with_code_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("code"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderStatus::__TEAQL_FIELD_code.query_key));
+        self
     }
 
 
     pub fn order_by_code_asc(mut self) -> Self {
-        self.query = self.query.order_asc("code");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderStatus::__TEAQL_FIELD_code.query_key);
+        self
     }
 
     pub fn order_by_code_desc(mut self) -> Self {
-        self.query = self.query.order_desc("code");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderStatus::__TEAQL_FIELD_code.query_key);
+        self
     }
 
     pub fn order_by_code_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("code");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderStatus::__TEAQL_FIELD_code.query_key);
+        self
     }
 
     pub fn order_by_code_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("code");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderStatus::__TEAQL_FIELD_code.query_key);
+        self
     }
 
 
     pub fn select_color(mut self) -> Self {
-        self.query = self.query.project("color");
-        self.__synced()
+        self.query = self.query.project(crate::OrderStatus::__TEAQL_FIELD_color.query_key);
+        self
     }
 
     pub fn project_color(self) -> Self {
@@ -1592,28 +1471,29 @@ impl<R> OrderStatusRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("color", raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn group_by_color(self) -> Self {
-        self.group_by("color")
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_color.query_key)
     }
 
     pub fn group_by_color_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("color"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderStatus::__TEAQL_FIELD_color.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderStatus::__TEAQL_FIELD_color.query_key));
+        request
     }
 
     pub fn group_by_color_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("color")]));
-        request.__synced()
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_color.query_key)
+            .aggregate_with_function(crate::OrderStatus::__TEAQL_FIELD_color.query_key, alias, function)
     }
 
     pub fn count_color(self) -> Self {
@@ -1621,14 +1501,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn count_color_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("color", alias)
-    }
-    pub fn count_distinct_color(self) -> Self {
-        self.count_distinct_color_as("color_distinct_count")
-    }
-
-    pub fn count_distinct_color_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("color", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderStatus::__TEAQL_FIELD_color.query_key, alias)
     }
 
     pub fn sum_color(self) -> Self {
@@ -1636,7 +1509,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn sum_color_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("color", alias)
+        self.aggregate_sum(crate::OrderStatus::__TEAQL_FIELD_color.query_key, alias)
     }
 
     pub fn avg_color(self) -> Self {
@@ -1644,7 +1517,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn avg_color_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("color", alias)
+        self.aggregate_avg(crate::OrderStatus::__TEAQL_FIELD_color.query_key, alias)
     }
 
     pub fn min_color(self) -> Self {
@@ -1652,7 +1525,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn min_color_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("color", alias)
+        self.aggregate_min(crate::OrderStatus::__TEAQL_FIELD_color.query_key, alias)
     }
 
     pub fn max_color(self) -> Self {
@@ -1660,13 +1533,13 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn max_color_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("color", alias)
+        self.aggregate_max(crate::OrderStatus::__TEAQL_FIELD_color.query_key, alias)
     }
 
     pub fn unselect_color(mut self) -> Self {
         self.query.projection.retain(|field| field != "color");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "color");
-        self.__synced()
+        self
     }
 
 
@@ -1676,11 +1549,11 @@ impl<R> OrderStatusRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "color",
+            crate::OrderStatus::__TEAQL_FIELD_color.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_color_criteria(
@@ -1688,42 +1561,42 @@ impl<R> OrderStatusRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "color",
+            crate::OrderStatus::__TEAQL_FIELD_color.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_color_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
 
 
     pub fn with_color_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
     pub fn with_color_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
     pub fn with_color_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gte(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
     pub fn with_color_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
     pub fn with_color_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
     pub fn with_color_between(
@@ -1731,8 +1604,8 @@ impl<R> OrderStatusRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("color", lower, upper));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::between(crate::OrderStatus::__TEAQL_FIELD_color.query_key, lower, upper));
+        self
     }
 
     pub fn with_color_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -1740,11 +1613,11 @@ impl<R> OrderStatusRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "color",
+            crate::OrderStatus::__TEAQL_FIELD_color.query_key,
             range.start,
             range.end,
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_color_in(
@@ -1755,7 +1628,7 @@ impl<R> OrderStatusRequest<R> {
             "color",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_color_not_in(
@@ -1766,90 +1639,90 @@ impl<R> OrderStatusRequest<R> {
             "color",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_color_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::contain(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
     pub fn with_color_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::not_contain(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
     pub fn with_color_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::begin_with(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
     pub fn with_color_not_starting_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_begin_with("color", value));
-        self.__synced()
+        self
     }
 
     pub fn with_color_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::end_with(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
     pub fn with_color_not_ending_with(mut self, value: impl Into<String>) -> Self {
         self.query = self.query.and_filter(Expr::not_end_with("color", value));
-        self.__synced()
+        self
     }
 
     pub fn with_color_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::sound_like(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
     pub fn with_color_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
     pub fn with_color_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("color", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderStatus::__TEAQL_FIELD_color.query_key, value));
+        self
     }
 
     pub fn with_color_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("color"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderStatus::__TEAQL_FIELD_color.query_key));
+        self
     }
 
 
 
     pub fn with_color_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("color"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderStatus::__TEAQL_FIELD_color.query_key));
+        self
     }
 
 
     pub fn order_by_color_asc(mut self) -> Self {
-        self.query = self.query.order_asc("color");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderStatus::__TEAQL_FIELD_color.query_key);
+        self
     }
 
     pub fn order_by_color_desc(mut self) -> Self {
-        self.query = self.query.order_desc("color");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderStatus::__TEAQL_FIELD_color.query_key);
+        self
     }
 
     pub fn order_by_color_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("color");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderStatus::__TEAQL_FIELD_color.query_key);
+        self
     }
 
     pub fn order_by_color_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("color");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderStatus::__TEAQL_FIELD_color.query_key);
+        self
     }
 
 
     pub fn select_display_order(mut self) -> Self {
-        self.query = self.query.project("display_order");
-        self.__synced()
+        self.query = self.query.project(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key);
+        self
     }
 
     pub fn project_display_order(self) -> Self {
@@ -1864,7 +1737,7 @@ impl<R> OrderStatusRequest<R> {
         self.query_options
             .raw_projections
             .push(RawProjection::new("display_order", raw_sql_segment));
-        self.__synced()
+        self
     }
 
     pub fn select_display_order_with_function(self, function: AggregateFunction) -> Self {
@@ -1876,28 +1749,29 @@ impl<R> OrderStatusRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.aggregate_with_function("display_order", alias, function)
+        self.aggregate_with_function(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, alias, function)
     }
 
     pub fn group_by_display_order(self) -> Self {
-        self.group_by("display_order")
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key)
     }
 
     pub fn group_by_display_order_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("display_order"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key));
+        request
     }
 
     pub fn group_by_display_order_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("display_order")]));
-        request.__synced()
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key)
+            .aggregate_with_function(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, alias, function)
     }
 
     pub fn count_display_order(self) -> Self {
@@ -1905,14 +1779,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn count_display_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("display_order", alias)
-    }
-    pub fn count_distinct_display_order(self) -> Self {
-        self.count_distinct_display_order_as("display_order_distinct_count")
-    }
-
-    pub fn count_distinct_display_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("display_order", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, alias)
     }
 
     pub fn sum_display_order(self) -> Self {
@@ -1920,7 +1787,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn sum_display_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("display_order", alias)
+        self.aggregate_sum(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, alias)
     }
 
     pub fn avg_display_order(self) -> Self {
@@ -1928,7 +1795,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn avg_display_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("display_order", alias)
+        self.aggregate_avg(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, alias)
     }
 
     pub fn min_display_order(self) -> Self {
@@ -1936,7 +1803,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn min_display_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("display_order", alias)
+        self.aggregate_min(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, alias)
     }
 
     pub fn max_display_order(self) -> Self {
@@ -1944,7 +1811,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn max_display_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("display_order", alias)
+        self.aggregate_max(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, alias)
     }
 
     pub fn standard_deviation_display_order(self) -> Self {
@@ -1952,7 +1819,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn standard_deviation_display_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_stddev("display_order", alias)
+        self.aggregate_stddev(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, alias)
     }
 
     pub fn square_root_of_population_standard_deviation_display_order(self) -> Self {
@@ -1960,7 +1827,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn square_root_of_population_standard_deviation_display_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_stddev_pop("display_order", alias)
+        self.aggregate_stddev_pop(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, alias)
     }
 
     pub fn sample_variance_display_order(self) -> Self {
@@ -1968,7 +1835,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn sample_variance_display_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_var_samp("display_order", alias)
+        self.aggregate_var_samp(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, alias)
     }
 
     pub fn sample_population_variance_display_order(self) -> Self {
@@ -1976,13 +1843,13 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn sample_population_variance_display_order_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_var_pop("display_order", alias)
+        self.aggregate_var_pop(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, alias)
     }
 
     pub fn unselect_display_order(mut self) -> Self {
         self.query.projection.retain(|field| field != "display_order");
         self.query_options.raw_projections.retain(|projection| projection.property_name != "display_order");
-        self.__synced()
+        self
     }
 
 
@@ -1992,11 +1859,11 @@ impl<R> OrderStatusRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "display_order",
+            crate::OrderStatus::__TEAQL_FIELD_display_order.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
-        self.__synced()
+        self
     }
 
     pub fn create_display_order_criteria(
@@ -2004,42 +1871,42 @@ impl<R> OrderStatusRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "display_order",
+            crate::OrderStatus::__TEAQL_FIELD_display_order.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
     pub fn with_display_order_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("display_order", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, value));
+        self
     }
 
 
 
     pub fn with_display_order_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("display_order", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::ne(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, value));
+        self
     }
 
     pub fn with_display_order_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("display_order", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, value));
+        self
     }
 
     pub fn with_display_order_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("display_order", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gte(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, value));
+        self
     }
 
     pub fn with_display_order_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("display_order", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, value));
+        self
     }
 
     pub fn with_display_order_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("display_order", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lte(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, value));
+        self
     }
 
     pub fn with_display_order_between(
@@ -2047,8 +1914,8 @@ impl<R> OrderStatusRequest<R> {
         lower: impl Into<teaql_core::Value>,
         upper: impl Into<teaql_core::Value>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("display_order", lower, upper));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::between(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, lower, upper));
+        self
     }
 
     pub fn with_display_order_between_range<T>(mut self, range: DateRange<T>) -> Self
@@ -2056,11 +1923,11 @@ impl<R> OrderStatusRequest<R> {
         T: Into<teaql_core::Value>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "display_order",
+            crate::OrderStatus::__TEAQL_FIELD_display_order.query_key,
             range.start,
             range.end,
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_display_order_in(
@@ -2071,7 +1938,7 @@ impl<R> OrderStatusRequest<R> {
             "display_order",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_display_order_not_in(
@@ -2082,71 +1949,72 @@ impl<R> OrderStatusRequest<R> {
             "display_order",
             values.into_iter().map(Into::into),
         ));
-        self.__synced()
+        self
     }
 
     pub fn with_display_order_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("display_order", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::lt(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, value));
+        self
     }
 
     pub fn with_display_order_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("display_order", value));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::gt(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key, value));
+        self
     }
 
     pub fn with_display_order_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("display_order"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key));
+        self
     }
 
 
 
     pub fn with_display_order_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("display_order"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key));
+        self
     }
 
 
     pub fn order_by_display_order_asc(mut self) -> Self {
-        self.query = self.query.order_asc("display_order");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key);
+        self
     }
 
     pub fn order_by_display_order_desc(mut self) -> Self {
-        self.query = self.query.order_desc("display_order");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key);
+        self
     }
 
     pub fn order_by_display_order_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("display_order");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key);
+        self
     }
 
     pub fn order_by_display_order_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("display_order");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderStatus::__TEAQL_FIELD_display_order.query_key);
+        self
     }
 
     pub fn group_by_version(self) -> Self {
-        self.group_by("version")
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_version.query_key)
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("version"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderStatus::__TEAQL_FIELD_version.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderStatus::__TEAQL_FIELD_version.query_key));
+        request
     }
 
     pub fn group_by_version_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("version")]));
-        request.__synced()
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_version.query_key)
+            .aggregate_with_function(crate::OrderStatus::__TEAQL_FIELD_version.query_key, alias, function)
     }
 
     pub fn count_version(self) -> Self {
@@ -2154,14 +2022,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("version", alias)
-    }
-    pub fn count_distinct_version(self) -> Self {
-        self.count_distinct_version_as("version_distinct_count")
-    }
-
-    pub fn count_distinct_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("version", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderStatus::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn sum_version(self) -> Self {
@@ -2169,7 +2030,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn sum_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("version", alias)
+        self.aggregate_sum(crate::OrderStatus::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn avg_version(self) -> Self {
@@ -2177,7 +2038,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn avg_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("version", alias)
+        self.aggregate_avg(crate::OrderStatus::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn min_version(self) -> Self {
@@ -2185,7 +2046,7 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn min_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("version", alias)
+        self.aggregate_min(crate::OrderStatus::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn max_version(self) -> Self {
@@ -2193,27 +2054,27 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn max_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("version", alias)
+        self.aggregate_max(crate::OrderStatus::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn order_by_version_asc(mut self) -> Self {
-        self.query = self.query.order_asc("version");
-        self.__synced()
+        self.query = self.query.order_asc(crate::OrderStatus::__TEAQL_FIELD_version.query_key);
+        self
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
-        self.query = self.query.order_desc("version");
-        self.__synced()
+        self.query = self.query.order_desc(crate::OrderStatus::__TEAQL_FIELD_version.query_key);
+        self
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("version");
-        self.__synced()
+        self.query = self.query.order_gbk_asc(crate::OrderStatus::__TEAQL_FIELD_version.query_key);
+        self
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("version");
-        self.__synced()
+        self.query = self.query.order_gbk_desc(crate::OrderStatus::__TEAQL_FIELD_version.query_key);
+        self
     }
     pub fn with_id_is_value_1001(self) -> Self {
         self.with_id_is("1001")
@@ -2332,8 +2193,8 @@ impl<R> OrderStatusRequest<R> {
 
 
     pub fn filter_by_commerce_platform(mut self, value: impl EntityReference) -> Self {
-        self.query = self.query.and_filter(Expr::eq("commerce_platform_id", value.entity_id_value()));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::eq(crate::OrderStatus::__TEAQL_FIELD_commerce_platform.query_key, value.entity_id_value()));
+        self
     }
 
     pub fn with_commerce_platform_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -2341,11 +2202,11 @@ impl<R> OrderStatusRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "commerce_platform_id",
             <crate::CommercePlatform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.clone().into_query(),
+            selection.query.clone(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("commerce_platform", selection));
-        self.__synced()
+        self
     }
 
 
@@ -2354,114 +2215,74 @@ impl<R> OrderStatusRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "commerce_platform_id",
             <crate::CommercePlatform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.clone().into_query(),
+            selection.query.clone(),
             "id",
         ));
         self.relation_filters.push(RelationFilter::new("commerce_platform", selection));
-        self.__synced()
+        self
     }
 
 
     pub fn have_commerce_platform(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("commerce_platform_id"));
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_not_null(crate::OrderStatus::__TEAQL_FIELD_commerce_platform.query_key));
+        self
     }
 
     pub fn have_no_commerce_platform(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("commerce_platform_id"));
-        self.__synced()
-    }
-
-    pub fn order_by_commerce_platform_asc(mut self) -> Self {
-        self.query = self.query.order_asc("commerce_platform_id");
-        self.__synced()
-    }
-
-    pub fn order_by_commerce_platform_desc(mut self) -> Self {
-        self.query = self.query.order_desc("commerce_platform_id");
-        self.__synced()
+        self.query = self.query.and_filter(Expr::is_null(crate::OrderStatus::__TEAQL_FIELD_commerce_platform.query_key));
+        self
     }
 
 
     pub fn group_by_commerce_platform(self) -> Self {
-        self.group_by("commerce_platform_id")
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_commerce_platform.query_key)
     }
 
     pub fn group_by_commerce_platform_as(self, alias: impl Into<String>) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias, Expr::column("commerce_platform_id"));
-        request.__synced()
+        let alias = alias.into();
+        let mut request = self.group_by(crate::OrderStatus::__TEAQL_FIELD_commerce_platform.query_key);
+        request.query = request
+            .query
+            .project_expr(alias, Expr::column(crate::OrderStatus::__TEAQL_FIELD_commerce_platform.query_key));
+        request
     }
 
     pub fn group_by_commerce_platform_with_function(
         self,
         alias: impl Into<String>,
-        function: teaql_core::ExprFunction,
+        function: AggregateFunction,
     ) -> Self {
-        let mut request = self;
-        request.query = request.query.group_by_expr(alias,
-            Expr::function(function, vec![Expr::column("commerce_platform_id")]));
-        request.__synced()
+        self.group_by(crate::OrderStatus::__TEAQL_FIELD_commerce_platform.query_key)
+            .aggregate_with_function(crate::OrderStatus::__TEAQL_FIELD_commerce_platform.query_key, alias, function)
     }
 
     pub fn group_by_commerce_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
-        self.__group_by_commerce_platform_with_operation(request, "group_by_commerce_platform_with")
-    }
-
-    fn __group_by_commerce_platform_with_operation(mut self, request: impl Into<QuerySelection>, method: &str) -> Self {
-        self.query = self.query.group_by("commerce_platform_id");
+        self.query = self.query.group_by(crate::OrderStatus::__TEAQL_FIELD_commerce_platform.query_key);
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "commerce_platform",
             "commerce_platform_id",
             request,
-        ).with_operation(
-            QueryOperation::new(QueryOperationKind::Aggregate, method)
-                .with_relation("commerce_platform")));
-        self.__synced()
+        ));
+        self
     }
 
     pub fn group_by_commerce_platform_with_details(self) -> Self {
-        self.__group_by_commerce_platform_with_operation(crate::Q::commerce_platforms().unlimited(), "group_by_commerce_platform_with_details")
+        self.group_by_commerce_platform_with_details_from(crate::Q::commerce_platforms().unlimited())
     }
 
     pub fn group_by_commerce_platform_with_details_from(self, request: impl Into<QuerySelection>) -> Self {
-        self.__group_by_commerce_platform_with_operation(request, "group_by_commerce_platform_with_details_from")
+        self.group_by_commerce_platform_with(request)
     }
 
 
-    pub fn roll_up_to_commerce_platform(&mut self) -> crate::CommercePlatformRequest {
-        self.__bind_roll_up_to_commerce_platform(crate::Q::commerce_platforms().unlimited(),
-            QueryOperation::new(QueryOperationKind::Aggregate, "roll_up_to_commerce_platform")
-                .with_relation("commerce_platform"))
+    pub fn roll_up_to_commerce_platform(self) -> Self {
+        self.roll_up_to_commerce_platform_with(crate::Q::commerce_platforms().unlimited())
     }
 
-    pub fn roll_up_to_commerce_platform_with<T>(&mut self, request: crate::CommercePlatformRequest<T>) -> crate::CommercePlatformRequest<T> {
-        self.__bind_roll_up_to_commerce_platform(request,
-            QueryOperation::new(QueryOperationKind::Aggregate, "roll_up_to_commerce_platform_with")
-                .with_relation("commerce_platform"))
-    }
-
-    fn __bind_roll_up_to_commerce_platform<T>(&mut self, mut request: crate::CommercePlatformRequest<T>, operation: QueryOperation) -> crate::CommercePlatformRequest<T> {
-        let target = request.__roll_up_target();
-        if let Some(source) = &self.roll_up_publication {
-            assert!(!crate::rollup_support::reaches(&target, source).expect("invalid roll-up configuration"),
-                "cyclic roll-up configuration");
-        }
-        teaql_core::request::clear_rollup_navigation(&mut self.query,
-            "commerce_platform", "id").expect("invalid roll-up configuration");
-        self.roll_up_links.retain(|link| link.property != "commerce_platform");
-        self.roll_up_links.push(RollupLink {
-            property: "commerce_platform".into(),
-            storage: "commerce_platform_id".into(),
-            descriptor: <crate::CommercePlatform as teaql_core::TeaqlEntity>::entity_descriptor(),
-            operation,
-            target,
-        });
-        if !self.query.group_by.iter().any(|field| field == "commerce_platform_id") {
-            self.query.group_by.push("commerce_platform_id".into());
-        }
-        self.__publish_roll_up();
-        request
+    pub fn roll_up_to_commerce_platform_with(self, request: impl Into<QuerySelection>) -> Self {
+        let selection = request.into();
+        self.with_commerce_platform_matching(selection.clone())
+            .group_by_commerce_platform_with(selection)
     }
 
     pub fn count_commerce_platform(self) -> Self {
@@ -2469,58 +2290,42 @@ impl<R> OrderStatusRequest<R> {
     }
 
     pub fn count_commerce_platform_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("commerce_platform_id", alias)
-    }
-    pub fn count_distinct_commerce_platform(self) -> Self {
-        self.count_distinct_commerce_platform_as("commerce_platform_distinct_count")
-    }
-
-    pub fn count_distinct_commerce_platform_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_with_function("commerce_platform_id", alias, AggregateFunction::CountDistinct)
+        self.aggregate_count_field(crate::OrderStatus::__TEAQL_FIELD_commerce_platform.query_key, alias)
     }
 
     pub fn unselect_commerce_platform(mut self) -> Self {
         self.query.projection.retain(|field| field != "commerce_platform_id");
         self.query.relations.retain(|relation| relation.name != "commerce_platform");
-        self.__synced()
+        self
     }
     pub fn select_commerce_platform(mut self) -> Self {
-        self.query.relations.push(teaql_core::RelationLoad::new("commerce_platform")
-            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_commerce_platform").with_relation("commerce_platform")));
-        self.__synced()
+        self.query = self.query.relation("commerce_platform");
+        self
     }
 
     pub fn select_commerce_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query.relations.push(teaql_core::RelationLoad::with_query("commerce_platform", selection.into_query())
-            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_commerce_platform_with").with_relation("commerce_platform")));
-        self.__synced()
+        self.query = self.query.relation_query("commerce_platform", selection.into_query());
+        self
 }
 
     pub fn facet_by_commerce_platform_as(self, facet_name: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        self.facet_by_commerce_platform_internal(facet_name, request, true, "facet_by_commerce_platform_as")
+        self.facet_by_commerce_platform_as_with_options(facet_name, request, true)
     }
 
     pub fn facet_by_commerce_platform_as_with_options(
-        self,
+        mut self,
         facet_name: impl Into<String>,
         request: impl Into<QuerySelection>,
         include_all_facets: bool,
     ) -> Self {
-        self.facet_by_commerce_platform_internal(facet_name, request, include_all_facets, "facet_by_commerce_platform_as_with_options")
-    }
-
-    fn facet_by_commerce_platform_internal(mut self, facet_name: impl Into<String>, request: impl Into<QuerySelection>, include_all_facets: bool, method: &'static str) -> Self {
-        let facet_name = facet_name.into();
-        let operation = QueryOperation::new(QueryOperationKind::Facet, method)
-            .with_alias(&facet_name).with_relation("commerce_platform");
         self.query_options.facets.push(FacetRequest::new(
             facet_name,
             "commerce_platform",
             request,
             include_all_facets,
-        ).with_operation(operation));
-        self.__synced()
+        ));
+        self
     }
     pub fn have_customer_orders(self) -> Self {
         self.with_customer_order_list_matching(crate::Q::customer_orders_minimal())
@@ -2535,11 +2340,11 @@ impl<R> OrderStatusRequest<R> {
         self.query = self.query.and_filter(Expr::in_subquery(
             "id",
             <crate::CustomerOrder as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.clone().into_query(),
+            selection.query.clone(),
             "status_id",
         ));
         self.relation_filters.push(RelationFilter::new("customer_order_list", selection));
-        self.__synced()
+        self
     }
 
     pub fn without_customer_order_list_matching(mut self, request: impl Into<QuerySelection>) -> Self {
@@ -2547,51 +2352,40 @@ impl<R> OrderStatusRequest<R> {
         self.query = self.query.and_filter(Expr::not_in_subquery(
             "id",
             <crate::CustomerOrder as teaql_core::TeaqlEntity>::entity_descriptor(),
-            selection.clone().into_query(),
+            selection.query.clone(),
             "status_id",
         ));
         self.relation_filters.push(RelationFilter::new("customer_order_list", selection));
-        self.__synced()
+        self
     }
 
     pub fn select_customer_order_list(mut self) -> Self {
-        self.query.relations.push(teaql_core::RelationLoad::new("customer_order_list")
-            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_customer_order_list").with_relation("customer_order_list")));
-        self.__synced()
+        self.query = self.query.relation("customer_order_list");
+        self
     }
 
     pub fn select_customer_order_list_with(mut self, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        self.query.relations.push(teaql_core::RelationLoad::with_query("customer_order_list", selection.into_query())
-            .with_operation(QueryOperation::new(QueryOperationKind::RelationSelect, "select_customer_order_list_with").with_relation("customer_order_list")));
-        self.__synced()
+        self.query = self.query.relation_query("customer_order_list", selection.into_query());
+        self
 }
     pub fn count_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_customer_orders");
-        self.count_customer_orders_internal("count_customer_orders".to_owned(), crate::Q::customer_orders().unlimited(), operation)
+        self.count_customer_orders_as("count_customer_orders")
     }
 
     pub fn count_customer_orders_as(self, alias: impl Into<String>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_customer_orders_as").with_alias(&alias);
-        self.count_customer_orders_internal(alias, crate::Q::customer_orders().unlimited(), operation)
+        self.count_customer_orders_with(alias, crate::Q::customer_orders().unlimited())
     }
 
-    pub fn count_customer_orders_with(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::RelationCount, "count_customer_orders_with").with_alias(&alias);
-        self.count_customer_orders_internal(alias, request, operation)
-    }
-
-    fn count_customer_orders_internal(mut self, alias: String, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
+    pub fn count_customer_orders_with(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "customer_order_list",
             alias,
             selection,
             true,
-        ).with_operation(operation.with_relation("customer_order_list")));
-        self.__synced()
+        ));
+        self
     }
 
     pub fn stats_from_customer_orders(self, request: impl Into<QuerySelection>) -> Self {
@@ -2600,27 +2394,24 @@ impl<R> OrderStatusRequest<R> {
 
     pub fn stats_from_customer_orders_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "stats_from_customer_orders_as")
-            .with_alias(&alias).with_relation("customer_order_list");
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "customer_order_list",
             alias,
             selection,
             false,
-        ).with_operation(operation));
-        self.__synced()
+        ));
+        self
     }
 
-    fn scalar_from_customer_orders_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>, operation: QueryOperation) -> Self {
+    fn scalar_from_customer_orders_as(mut self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
         let selection = request.into();
         self.query_options.relation_aggregates.push(RelationAggregate::new(
             "customer_order_list",
             alias,
             selection,
             true,
-        ).with_operation(operation.with_relation("customer_order_list")));
-        self.__synced()
+        ));
+        self
     }
 
     pub fn group_by_customer_orders_with_details(self, request: impl Into<QuerySelection>) -> Self {
@@ -2629,158 +2420,102 @@ impl<R> OrderStatusRequest<R> {
 
 
     pub fn min_order_date_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_order_date_of_customer_orders");
-        self.scalar_from_customer_orders_as("min_order_date_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().min("order_date", "min_order_date_of_customer_orders"), operation)
+        self.min_order_date_of_customer_orders_as("min_order_date_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn min_order_date_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_order_date_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().min("order_date", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().min("order_date", "min_order_date"))
     }
     pub fn max_order_date_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_order_date_of_customer_orders");
-        self.scalar_from_customer_orders_as("max_order_date_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().max("order_date", "max_order_date_of_customer_orders"), operation)
+        self.max_order_date_of_customer_orders_as("max_order_date_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn max_order_date_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_order_date_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().max("order_date", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().max("order_date", "max_order_date"))
     }
     pub fn sum_total_amount_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_total_amount_of_customer_orders");
-        self.scalar_from_customer_orders_as("sum_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().sum("total_amount", "sum_total_amount_of_customer_orders"), operation)
+        self.sum_total_amount_of_customer_orders_as("sum_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn sum_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sum_total_amount_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().sum("total_amount", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().sum("total_amount", "sum_total_amount"))
     }
     pub fn min_total_amount_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_total_amount_of_customer_orders");
-        self.scalar_from_customer_orders_as("min_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().min("total_amount", "min_total_amount_of_customer_orders"), operation)
+        self.min_total_amount_of_customer_orders_as("min_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn min_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_total_amount_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().min("total_amount", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().min("total_amount", "min_total_amount"))
     }
     pub fn max_total_amount_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_total_amount_of_customer_orders");
-        self.scalar_from_customer_orders_as("max_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().max("total_amount", "max_total_amount_of_customer_orders"), operation)
+        self.max_total_amount_of_customer_orders_as("max_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn max_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_total_amount_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().max("total_amount", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().max("total_amount", "max_total_amount"))
     }
     pub fn avg_total_amount_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_total_amount_of_customer_orders");
-        self.scalar_from_customer_orders_as("avg_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().avg("total_amount", "avg_total_amount_of_customer_orders"), operation)
+        self.avg_total_amount_of_customer_orders_as("avg_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn avg_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "avg_total_amount_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().avg("total_amount", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().avg("total_amount", "avg_total_amount"))
     }
     pub fn standard_deviation_total_amount_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_total_amount_of_customer_orders");
-        self.scalar_from_customer_orders_as("standard_deviation_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().stddev("total_amount", "standard_deviation_total_amount_of_customer_orders"), operation)
+        self.standard_deviation_total_amount_of_customer_orders_as("standard_deviation_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn standard_deviation_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "standard_deviation_total_amount_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().stddev("total_amount", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().stddev("total_amount", "stdDev_total_amount"))
     }
     pub fn square_root_of_population_standard_deviation_total_amount_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_total_amount_of_customer_orders");
-        self.scalar_from_customer_orders_as("square_root_of_population_standard_deviation_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().stddev_pop("total_amount", "square_root_of_population_standard_deviation_total_amount_of_customer_orders"), operation)
+        self.square_root_of_population_standard_deviation_total_amount_of_customer_orders_as("square_root_of_population_standard_deviation_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn square_root_of_population_standard_deviation_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "square_root_of_population_standard_deviation_total_amount_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().stddev_pop("total_amount", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().stddev_pop("total_amount", "stdDevPop_total_amount"))
     }
     pub fn sample_variance_total_amount_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_total_amount_of_customer_orders");
-        self.scalar_from_customer_orders_as("sample_variance_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().var_samp("total_amount", "sample_variance_total_amount_of_customer_orders"), operation)
+        self.sample_variance_total_amount_of_customer_orders_as("sample_variance_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn sample_variance_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_variance_total_amount_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().var_samp("total_amount", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().var_samp("total_amount", "varSamp_total_amount"))
     }
     pub fn sample_population_variance_total_amount_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_total_amount_of_customer_orders");
-        self.scalar_from_customer_orders_as("sample_population_variance_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().var_pop("total_amount", "sample_population_variance_total_amount_of_customer_orders"), operation)
+        self.sample_population_variance_total_amount_of_customer_orders_as("sample_population_variance_total_amount_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn sample_population_variance_total_amount_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "sample_population_variance_total_amount_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().var_pop("total_amount", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().var_pop("total_amount", "varPop_total_amount"))
     }
     pub fn min_create_time_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_create_time_of_customer_orders");
-        self.scalar_from_customer_orders_as("min_create_time_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().min("create_time", "min_create_time_of_customer_orders"), operation)
+        self.min_create_time_of_customer_orders_as("min_create_time_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn min_create_time_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_create_time_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().min("create_time", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().min("create_time", "min_create_time"))
     }
     pub fn max_create_time_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_create_time_of_customer_orders");
-        self.scalar_from_customer_orders_as("max_create_time_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().max("create_time", "max_create_time_of_customer_orders"), operation)
+        self.max_create_time_of_customer_orders_as("max_create_time_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn max_create_time_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_create_time_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().max("create_time", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().max("create_time", "max_create_time"))
     }
     pub fn min_update_time_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_update_time_of_customer_orders");
-        self.scalar_from_customer_orders_as("min_update_time_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().min("update_time", "min_update_time_of_customer_orders"), operation)
+        self.min_update_time_of_customer_orders_as("min_update_time_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn min_update_time_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "min_update_time_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().min("update_time", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().min("update_time", "min_update_time"))
     }
     pub fn max_update_time_of_customer_orders(self) -> Self {
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_update_time_of_customer_orders");
-        self.scalar_from_customer_orders_as("max_update_time_of_customer_orders", crate::Q::customer_orders().unlimited().into_query().max("update_time", "max_update_time_of_customer_orders"), operation)
+        self.max_update_time_of_customer_orders_as("max_update_time_of_customer_orders", crate::Q::customer_orders().unlimited())
     }
 
     pub fn max_update_time_of_customer_orders_as(self, alias: impl Into<String>, request: impl Into<QuerySelection>) -> Self {
-        let alias = alias.into();
-        let operation = QueryOperation::new(QueryOperationKind::Aggregate, "max_update_time_of_customer_orders_as").with_alias(&alias);
-        let selection = request.into().into_query().max("update_time", alias.clone());
-        self.scalar_from_customer_orders_as(alias, selection, operation)
+        self.scalar_from_customer_orders_as(alias, request.into().into_query().max("update_time", "max_update_time"))
     }
 }
 
@@ -2797,8 +2532,7 @@ impl<R> From< OrderStatusRequest<R> > for SelectQuery {
 }
 
 impl<R> From< OrderStatusRequest<R> > for QuerySelection {
-    fn from(mut request: OrderStatusRequest<R>) -> Self {
-        request.__resolve_roll_ups().expect("invalid roll-up configuration");
+    fn from(request: OrderStatusRequest<R>) -> Self {
         Self {
             query: request.query,
             relation_selections: request.relation_selections,
@@ -2811,13 +2545,15 @@ impl<R> From< OrderStatusRequest<R> > for QuerySelection {
 
 
 impl<'a, C> crate::request_support::AuditedSave<'a, C> for teaql_core::Audited<crate::OrderStatus> 
-where C: crate::TeaqlRuntime + ?Sized + 'a
+where C: crate::request_support::TeaqlRepositoryProvider + ?Sized + 'a
 {
-    type Error = teaql_runtime::RuntimeError;
+    type Error = crate::TeaqlDataServiceError<C::OrderStatusRepository<'a>>;
     type Entity = crate::OrderStatus;
-    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + Send + '_>> {
+    fn save(self, context: &'a C) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Entity, Self::Error>> + '_>> {
         Box::pin(async move {
-            context.save_audited_entity(self).await
+            teaql_runtime::save_audited_ledger_entity(self, context.user_context())
+                .await
+                .map_err(DataServiceError::Runtime)
         })
     }
 }
@@ -2825,33 +2561,29 @@ where C: crate::TeaqlRuntime + ?Sized + 'a
 impl<R: teaql_core::Entity> crate::PurposedQuery<OrderStatusRequest<R>> {
     pub fn comment(mut self, comment: impl Into<String>) -> Self {
         self.inner.query_options.comment = Some(comment.into());
-        self.inner.__publish_roll_up();
         self
     }
 
-    pub fn new_entity<C>(&self, context: &C) -> Result<crate::OrderStatus, RuntimeError>
+    pub fn new_entity<C>(&self, context: &C) -> crate::OrderStatus
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
-        // Reserve identity before allocating mutation state. A failed reservation
-        // must not escape as an entity or fall back to a different allocator.
-        let id = context.user_context().next_id(crate::OrderStatus::ENTITY_NAME)?;
         let mut entity = crate::OrderStatus::runtime_new(context.user_context().entity_runtime_state());
-        entity.update_id(id);
+        if let Ok(id) = context.user_context().next_id(crate::OrderStatus::ENTITY_NAME) {
+            entity.update_id(id);
+        }
         teaql_core::Entity::mark_as_new(&mut entity);
-        Ok(entity)
+        entity
     }
 
     fn into_inner_with_trace(mut self) -> OrderStatusRequest<R> {
         self.require_comment();
-        self.inner.query.trace_chain.push(teaql_core::TraceNode::typed(
-            teaql_core::TraceKind::Purpose,
+        self.inner.query.trace_chain.push(teaql_core::TraceNode::new(
             self.inner.query.entity.clone(),
             None,
             self.purpose,
         ));
-        self.inner.__publish_roll_up();
         self.inner
     }
 
@@ -2862,68 +2594,74 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<OrderStatusRequest<R>> {
                 .comment
                 .as_deref()
                 .is_some_and(|comment| !comment.trim().is_empty()),
-            "{}", teaql_core::RequestIntentError {
-                request_kind: teaql_core::RequestKind::Query,
-                field: "comment",
-            }
+            "query comment must not be empty"
         );
+    }
+
+    pub async fn execute_for_page<'a, C>(
+        self,
+        context: &'a C,
+        offset: u64,
+        limit: u64,
+    ) -> Result<teaql_core::SmartList<R>, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
+    where
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+    {
+        self.into_inner_with_trace()._execute_for_page(context, offset, limit).await
     }
 
     pub async fn execute_for_exists<'a, C>(
         self,
         context: &'a C,
-    ) -> Result<bool, teaql_runtime::RuntimeError>
+    ) -> Result<bool, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_exists(context).await
     }
 
-    pub async fn execute_for_list<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<R>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_list<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<R>, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_list(context).await
     }
 
-    pub async fn execute_for_rows<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::CompactRow>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_rows<'a, C>(self, context: &'a C) -> Result<teaql_core::SmartList<teaql_core::CompactRow>, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_rows(context).await
     }
 
     /// Execute query as a lazy entity stream without materializing the result set.
     /// Set chunk size via .stream(chunk_size) or .stream_default() on the query.
-    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<crate::request_support::TeaqlEntityStream<'a, R, teaql_runtime::RuntimeError>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_stream<'a, C>(self, context: &'a C) -> Result<crate::request_support::TeaqlEntityStream<'a, R, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
+        R: teaql_core::Entity + 'a,
     {
         self.into_inner_with_trace()._execute_for_stream(context).await
     }
 
-    pub async fn execute_for_first<'a, C>(self, context: &'a C) -> Result<Option<R>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_first<'a, C>(self, context: &'a C) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_first(context).await
     }
 
-    pub async fn execute_for_one<'a, C>(self, context: &'a C) -> Result<Option<R>, teaql_runtime::RuntimeError>
+    pub async fn execute_for_one<'a, C>(self, context: &'a C) -> Result<Option<R>, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
-        R: teaql_core::Entity + Send + 'a,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_one(context).await
     }
 
 
-    pub async fn execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, teaql_runtime::RuntimeError>
+    pub async fn execute_for_count<'a, C>(self, context: &'a C) -> Result<u64, crate::request_support::TeaqlDataServiceError<C::OrderStatusRepository<'a>>>
     where
-        C: crate::TeaqlRuntime + ?Sized,
+        C: crate::request_support::TeaqlRepositoryProvider + ?Sized,
     {
         self.into_inner_with_trace()._execute_for_count(context).await
     }

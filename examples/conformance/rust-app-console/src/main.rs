@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let request = Q::work_items()
         .comment("Construct an invalid work item")
         .purpose(PURPOSE);
-    let mut invalid = request.new_entity(&context)?;
+    let mut invalid = request.new_entity(&context);
     invalid.update_platform_id(platform.id());
     let invalid_error = invalid
         .audit_as("Reject a missing required title")
@@ -66,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let request = Q::work_items()
         .comment("Construct the conformance work item")
         .purpose(PURPOSE);
-    let mut work_item = request.new_entity(&context)?;
+    let mut work_item = request.new_entity(&context);
     work_item
         .update_title("Initial title")
         .update_platform_id(platform.id());

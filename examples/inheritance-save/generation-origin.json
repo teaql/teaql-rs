@@ -1,49 +1,28 @@
 {
-  "applicationSource": "generator/src/test/resources/rust-grouped-mapping/inheritance_natural_parent_probe.rs",
-  "applicationSourceSha256": "639d6d093286bf58c50d170bdd73e0c3a1e3827387e03b177d3853e11ac9bec0",
+  "schema": "teaql.generated-inheritance-example/v1",
+  "generatorCommit": "77081b0935ab49c90b15f345c29a7724c407b3dd",
+  "sourceReceipt": "teaql-conformance/evidence/2026-11-14-release246-rust800-generation-fourth/receipt.json",
+  "sourceReceiptSha256": "b0730a661bcff52dd4acfa7853fbffbf40f4e0a68b79c23b31e94e1df7ac2eb4",
+  "generatedManifestSha256": "c5e3593f03131549d614e8fbb247bf08fb354b848a709522537268b2a690ff05",
   "assistSourceReceipt": "teaql-conformance/evidence/2026-11-14-recovery-assist-generation-rust/receipt.json",
   "assistSourceReceiptSha256": "49ff34d328d53fdba6a60c1d0ed65cb64d3bbdd9699771fb48c65dbdbfe8f23d",
-  "descriptorMetadataOverrides": [
-    {
-      "attribute": "column",
-      "entity": "academy",
-      "field": "campus_code",
-      "value": "Legacy Campus Code"
-    }
-  ],
-  "generatedManifestSha256": "1878a1dd83a87c1d6594d3688a161bd04c8ceccef4a04f2e71cd7b1788236729",
-  "generationKind": "retained named source fixture with explicit descriptor metadata",
-  "generator": {
-    "artifactKind": "new source build; not the historical v4.2.0 release artifact",
-    "baseRelease": "v4.2.0",
-    "jarSHA256": "34dd804dccf05470dad46d086d58412e4a9dfcd0a1c6ed34f8f90c55ff478220",
-    "qualificationReceiptSHA256": "5119b9f3a5c95fb84f527885fdd5bac0fe79a56352a55b8acf116f67fd12787d",
-    "sourceCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
-    "tag": "unreleased-source-021b1ed8"
-  },
-  "generatorCommit": "021b1ed8bee5db7eef38a6b1e3a3ef2e7ac69daa",
-  "note": "Exact output from the qualified unreleased generator source candidate. Local runtime source acceptance is recorded separately; this is not a public generator release claim.",
+  "applicationSource": "generator/src/test/resources/rust-grouped-mapping/inheritance_natural_parent_probe.rs",
+  "applicationSourceSha256": "639d6d093286bf58c50d170bdd73e0c3a1e3827387e03b177d3853e11ac9bec0",
+  "runtimeDependencies": "local repository source via Cargo patches; origin verified at execution",
+  "note": "Regenerated for explicitly selected Rust 8.0.0. Producer receipt source hashes identify uncommitted generator adaptations; generated Rust implementation is byte-identical to the preceding qualified fixture.",
   "previousGeneration": {
-    "applicationSource": "generator/src/test/resources/rust-grouped-mapping/inheritance_natural_parent_probe.rs",
-    "applicationSourceSha256": "639d6d093286bf58c50d170bdd73e0c3a1e3827387e03b177d3853e11ac9bec0",
+    "schema": "teaql.generated-inheritance-example/v1",
+    "generatorCommit": "77081b0935ab49c90b15f345c29a7724c407b3dd",
+    "sourceReceipt": "teaql-conformance/evidence/2026-11-14-rust-subtype-static-sqlite/receipt.json",
+    "sourceReceiptSha256": "9cd6c7542b7f574ced31325a22ce049caa777c13a41a79c5ac3fb06b7696c3d9",
+    "generatedManifestSha256": "2340cf17ac4a4c14a30d687b33c5eb023c209219fd6c8a65caf2d5a01bee9a3a",
     "assistSourceReceipt": "teaql-conformance/evidence/2026-11-14-recovery-assist-generation-rust/receipt.json",
     "assistSourceReceiptSha256": "49ff34d328d53fdba6a60c1d0ed65cb64d3bbdd9699771fb48c65dbdbfe8f23d",
-    "generatedManifestSha256": "2340cf17ac4a4c14a30d687b33c5eb023c209219fd6c8a65caf2d5a01bee9a3a",
-    "generatorCommit": "77081b0935ab49c90b15f345c29a7724c407b3dd",
-    "note": "Candidate generation includes uncommitted source changes; the receipt source hashes, not the base commit alone, identify the implementation. Application-owned code extends the referenced lifecycle probe with generic saving, recovery and controlled rollback tests. Fresh targeted Assist and original generated-library bytes are retained separately.",
+    "applicationSource": "generator/src/test/resources/rust-grouped-mapping/inheritance_natural_parent_probe.rs",
+    "applicationSourceSha256": "639d6d093286bf58c50d170bdd73e0c3a1e3827387e03b177d3853e11ac9bec0",
     "runtimeDependencies": "local repository source via Cargo patches; origin verified at execution",
-    "schema": "teaql.generated-inheritance-example/v1",
-    "sourceReceipt": "teaql-conformance/evidence/2026-11-14-rust-subtype-static-sqlite/receipt.json",
-    "sourceReceiptSha256": "9cd6c7542b7f574ced31325a22ce049caa777c13a41a79c5ac3fb06b7696c3d9"
+    "note": "Candidate generation includes uncommitted source changes; the receipt source hashes, not the base commit alone, identify the implementation. Application-owned code extends the referenced lifecycle probe with generic saving, recovery and controlled rollback tests. Fresh targeted Assist and original generated-library bytes are retained separately."
   },
-  "previousOrigin": {
-    "commit": "858da6c8233eb96289014002efe60a16e5698020",
-    "path": "examples/inheritance-save/generation-origin.json",
-    "sha256": "6764f6a07cd564fc77ee7781f3f77341967b073c9d3bd34042b806839182874e"
-  },
-  "qualifiedJarExecuted": false,
-  "runtimeDependencies": "local repository source via Cargo patches; origin verified at execution",
-  "schema": "teaql.generated-inheritance-example/v1",
-  "sourceReceipt": "teaql-conformance/evidence/2026-11-19-runtime-examples-refresh/generation-rust-inheritance-intent-source/rust/inheritance-save/model/receipt.json",
-  "sourceReceiptSha256": "0e6118abd77d61612e2a8fd1f11f4e81572e3c1fec56ea66b905ef0f74712e25"
+  "previousGeneratedManifestSha256": "7a87ce4f483855d8733212e1285669ffc40ab7fbba104d12b5f9c418d50a7a73",
+  "fieldDescriptorRefresh": "../field-descriptor-generation.json"
 }

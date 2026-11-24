@@ -27,10 +27,16 @@ pub(crate) fn storage_values_from_ledger(
     descriptor: &EntityDescriptor,
     record: &MutationValues,
 ) -> Result<EntityValues, RuntimeError> {
-    let mut storage_values = EntityValues::new();
-    for (field, value) in record.iter() {
+    let mut storage_values = descriptor
+        .symbols
+        .or(record.symbols())
+        .map(|symbols| {
+            EntityValues::from(MutationValues::indexed_with_capacity(symbols, record.len()))
+        })
+        .unwrap_or_default();
+    for (field, value) in record.named_entries() {
         let storage_field = if descriptor.property_by_name(field).is_some() {
-            field.as_str()
+            field
         } else if let Some(relation) = descriptor.relation_by_name(field) {
             writable_forward_relation(descriptor, relation)?
         } else {
@@ -40,7 +46,7 @@ pub(crate) fn storage_values_from_ledger(
             )));
         };
         if storage_values
-            .insert(storage_field.to_owned(), value.clone())
+            .insert_named(storage_field, value.clone())
             .is_some()
         {
             return Err(RuntimeError::Graph(format!(

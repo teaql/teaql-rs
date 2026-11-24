@@ -2,8 +2,6 @@
 use teaql_runtime::{CheckObjectStatus, CheckResults, ObjectLocation, TypedChecker, UserContext};
 
 pub trait ScalarTypeProbeCheckerLogic: Send + Sync {
-    /// Trusted application-owned declarations, never accepted from mutation JSON.
-    fn custom_context_fields(&self) -> &'static [&'static str] { &[] }
     fn check_and_fix_scalar_type_probe(
         &self,
         _context: &UserContext,
@@ -13,20 +11,6 @@ pub trait ScalarTypeProbeCheckerLogic: Send + Sync {
         _results: &mut CheckResults,
     ) {
     }
-
-    /// Context/state defaults run only for create or an independent business mutation.
-    fn fix_scalar_type_probe(
-        &self, context: &UserContext, entity: &mut crate::ScalarTypeProbe,
-        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults,
-    ) {
-        self.check_and_fix_scalar_type_probe(context, entity, status, location, results);
-    }
-
-    /// Readonly validation is independent of automatic Context eligibility.
-    fn check_scalar_type_probe(
-        &self, _context: &UserContext, _entity: &crate::ScalarTypeProbe,
-        _status: CheckObjectStatus, _location: &ObjectLocation, _results: &mut CheckResults,
-    ) {}
 
     fn required(
         &self,
@@ -130,15 +114,7 @@ impl<L> TypedChecker<crate::ScalarTypeProbe> for ScalarTypeProbeChecker<L>
 where
     L: ScalarTypeProbeCheckerLogic,
 {
-    fn separate_fix_and_check(&self) -> bool { true }
-
-    fn managed_context_fields(&self) -> &'static [&'static str] {
-        &["create_time", "update_time", ]
-    }
-
-    fn custom_context_fields(&self) -> &'static [&'static str] { self.logic.custom_context_fields() }
-
-    fn fix_typed(
+    fn check_and_fix_typed(
         &self,
         context: &UserContext,
         entity: &mut crate::ScalarTypeProbe,
@@ -147,40 +123,20 @@ where
         results: &mut CheckResults,
     ) {
         if status.is_create() {
-            if let Some(value) = context.context_fix_value::<teaql_core::time::Timestamp>(
-                "ScalarTypeProbe", "create_time", "now",
-                &[], status, location, results) {
-                entity.update_create_time(value);
-                context.record_fix_evidence(teaql_runtime::FixEvidence::new("ScalarTypeProbe", "create_time", teaql_runtime::FixEvidenceSource::Clock, "contextFix:now"));
-            }
+            entity.update_create_time(context.fix_time());
+            context.record_fix_evidence(teaql_runtime::FixEvidence::new("ScalarTypeProbe", "create_time", teaql_runtime::FixEvidenceSource::Clock, "graphClock"));
         }
 
         if status.is_create() {
-            if let Some(value) = context.context_fix_value::<teaql_core::time::Timestamp>(
-                "ScalarTypeProbe", "update_time", "now",
-                &[], status, location, results) {
-                entity.update_update_time(value);
-                context.record_fix_evidence(teaql_runtime::FixEvidence::new("ScalarTypeProbe", "update_time", teaql_runtime::FixEvidenceSource::Clock, "contextFix:now"));
-            }
+            entity.update_update_time(context.fix_time());
+            context.record_fix_evidence(teaql_runtime::FixEvidence::new("ScalarTypeProbe", "update_time", teaql_runtime::FixEvidenceSource::Clock, "graphClock"));
         }
-        if status.is_update() {
-            if let Some(value) = context.context_fix_value::<teaql_core::time::Timestamp>(
-                "ScalarTypeProbe", "update_time", "now",
-                &[], status, location, results) {
-                entity.update_update_time(value);
-                context.record_fix_evidence(teaql_runtime::FixEvidence::new("ScalarTypeProbe", "update_time", teaql_runtime::FixEvidenceSource::Clock, "contextFix:now"));
-            }
+        if status.is_create() || status.is_update() {
+            entity.update_update_time(context.fix_time());
+            context.record_fix_evidence(teaql_runtime::FixEvidence::new("ScalarTypeProbe", "update_time", teaql_runtime::FixEvidenceSource::Clock, "graphClock"));
         }
 
 
-        self.logic.fix_scalar_type_probe(context, entity, status, location, results);
-    }
-
-    fn check_typed(
-        &self, context: &UserContext, entity: &crate::ScalarTypeProbe,
-        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults, has_mutation: bool,
-    ) {
-        if has_mutation {
         if status.is_update() && !entity.is_loaded("id") {
             results.push(
                 teaql_runtime::CheckResult::new(
@@ -441,19 +397,8 @@ where
             );
         }
 
-        }
-        self.logic.check_scalar_type_probe(context, entity, status, location, results);
-    }
-
-    fn check_and_fix_typed(
-        &self, context: &UserContext, entity: &mut crate::ScalarTypeProbe,
-        status: CheckObjectStatus, location: &ObjectLocation, results: &mut CheckResults,
-    ) {
-        let eligible = status.is_create() || teaql_core::Entity::dirty_fields(entity).is_some_and(|fields|
-            fields.iter().any(|field| !field.starts_with('_') && field != "id" && field != "version"
-                && !self.managed_context_fields().contains(&field.as_str())));
-        if eligible { self.fix_typed(context, entity, status, location, results); }
-        self.check_typed(context, entity, status, location, results, eligible);
+        self.logic
+            .check_and_fix_scalar_type_probe(context, entity, status, location, results);
     }
 
     fn check_fixed_values(
