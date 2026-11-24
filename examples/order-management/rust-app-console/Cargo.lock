@@ -1411,6 +1411,7 @@ dependencies = [
  "futures-util",
  "hkdf",
  "hmac",
+ "libc",
  "num-bigint",
  "num-traits",
  "rust_decimal",

@@ -14,6 +14,43 @@ use teaql_runtime::{
 };
 use url::Url;
 
+#[test]
+fn sensitive_profile_attestation_accepts_tls_or_literal_loopback_only() {
+    let profiles = [
+        ("tls", "https://replica.example.test/api/"),
+        ("ipv4", "http://127.0.0.1:8080/api/"),
+        ("ipv6", "http://[::1]:8080/api/"),
+        ("remote_http", "http://replica.example.test/api/"),
+        ("named_local", "http://localhost:8080/api/"),
+    ]
+    .into_iter()
+    .map(|(alias, url)| HttpServiceProfile::new(alias, Url::parse(url).unwrap()).unwrap())
+    .collect();
+    let service = ReqwestHttpRequestService::new(profiles).unwrap();
+    for alias in ["tls", "ipv4", "ipv6"] {
+        assert!(service.profile_is_encrypted_or_loopback(alias));
+    }
+    for alias in ["remote_http", "named_local", "missing"] {
+        assert!(!service.profile_is_encrypted_or_loopback(alias));
+    }
+}
+
+#[test]
+fn profile_trust_root_is_https_only_and_rejects_malformed_pem() {
+    let http =
+        HttpServiceProfile::new("vault", Url::parse("http://127.0.0.1:8080/").unwrap()).unwrap();
+    assert!(matches!(
+        http.trusted_root_pem(b"not a certificate"),
+        Err(HttpFailure::InvalidInput)
+    ));
+    let https =
+        HttpServiceProfile::new("vault", Url::parse("https://127.0.0.1/").unwrap()).unwrap();
+    assert!(matches!(
+        https.trusted_root_pem(b"not a certificate"),
+        Err(HttpFailure::InvalidInput)
+    ));
+}
+
 struct Fixture {
     port: u16,
     inner: Arc<Inner>,
