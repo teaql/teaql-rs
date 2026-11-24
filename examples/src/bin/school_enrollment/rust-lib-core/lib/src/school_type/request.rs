@@ -2072,18 +2072,20 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolTypeRequest<R>> {
         self
     }
 
-    pub fn new_entity<C>(&self, context: &C) -> Result<crate::SchoolType, RuntimeError>
+    pub fn new_entity<C>(&self, context: &C) -> crate::SchoolType
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
-        // Reserve identity before allocating mutation state. A failed reservation
-        // must not escape as an entity or fall back to a different allocator.
-        let id = context.user_context().next_id(crate::SchoolType::ENTITY_NAME)?;
+        let id = context.user_context().next_id(crate::SchoolType::ENTITY_NAME)
+            .unwrap_or_else(|_| panic!(
+                "ENTITY_ID_RESERVATION_FAILED: cannot reserve identity for {}",
+                crate::SchoolType::ENTITY_NAME,
+            ));
         let mut entity = crate::SchoolType::runtime_new(context.user_context().entity_runtime_state());
         entity.update_id(id);
         teaql_core::Entity::mark_as_new(&mut entity);
-        Ok(entity)
+        entity
     }
 
     fn into_inner_with_trace(mut self) -> SchoolTypeRequest<R> {
@@ -2105,10 +2107,7 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolTypeRequest<R>> {
                 .comment
                 .as_deref()
                 .is_some_and(|comment| !comment.trim().is_empty()),
-            "{}", teaql_core::RequestIntentError {
-                request_kind: teaql_core::RequestKind::Query,
-                field: "comment",
-            }
+            "query comment must not be empty"
         );
     }
 

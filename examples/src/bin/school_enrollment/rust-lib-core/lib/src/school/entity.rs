@@ -48,21 +48,96 @@ pub struct School {
 impl School {
     pub const ENTITY_NAME: &'static str = "School";
 
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_id: crate::GeneratedField = crate::GeneratedField {
+        model_key: "id",
+        query_key: "id",
+        member_name: "id",
+        column_name: "id",
+        load_index: 0,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_platform: crate::GeneratedField = crate::GeneratedField {
+        model_key: "platform",
+        query_key: "platform_id",
+        member_name: "platform_id",
+        column_name: "platform",
+        load_index: 1,
+        reference: true,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_school_type: crate::GeneratedField = crate::GeneratedField {
+        model_key: "school_type",
+        query_key: "school_type_id",
+        member_name: "school_type_id",
+        column_name: "school_type",
+        load_index: 2,
+        reference: true,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_name: crate::GeneratedField = crate::GeneratedField {
+        model_key: "name",
+        query_key: "name",
+        member_name: "name",
+        column_name: "name",
+        load_index: 3,
+        reference: false,
+    };
+    #[allow(non_upper_case_globals)]
+    pub(crate) const __TEAQL_FIELD_version: crate::GeneratedField = crate::GeneratedField {
+        model_key: "version",
+        query_key: "version",
+        member_name: "version",
+        column_name: "version",
+        load_index: 4,
+        reference: false,
+    };
+
+    fn set_generated_field(&mut self, field: crate::GeneratedField, value: teaql_core::Value) {
+        self.__teaql_runtime_state().set(self.entity_key(), field.mutation_key(), value);
+        self.__load_state.mark_loaded(field.query_key).expect("generated field layout");
+    }
+
+    fn generated_change(&self, field: crate::GeneratedField) -> Option<teaql_core::Value> {
+        self.__teaql_runtime_state().get(&self.entity_key(), field.mutation_key())
+    }
+
     // Framework metadata: complete fixed layout, including overflow slots.
     pub const __TEAQL_FIELD_LAYOUT_REVISION: &'static str = "9167879f54eada8cbbfb0b214ececb43684322215f1753c513c68948e3543355";
     pub const __TEAQL_FIXED_FIELD_INDEXES: &'static [(&'static str, usize)] = &[
-        ("id", 0),
-        ("platform", 1),
-        ("school_type", 2),
-        ("name", 3),
-        ("version", 4),
+        (Self::__TEAQL_FIELD_id.model_key, Self::__TEAQL_FIELD_id.load_index),
+        (Self::__TEAQL_FIELD_platform.model_key, Self::__TEAQL_FIELD_platform.load_index),
+        (Self::__TEAQL_FIELD_school_type.model_key, Self::__TEAQL_FIELD_school_type.load_index),
+        (Self::__TEAQL_FIELD_name.model_key, Self::__TEAQL_FIELD_name.load_index),
+        (Self::__TEAQL_FIELD_version.model_key, Self::__TEAQL_FIELD_version.load_index),
     ];
     pub const __TEAQL_FIXED_FIELD_MAPPINGS: &'static [(&'static str, &'static str, &'static str)] = &[
-        ("id", "id", "id"),
-        ("platform", "platform_id", "platform"),
-        ("school_type", "school_type_id", "school_type"),
-        ("name", "name", "name"),
-        ("version", "version", "version"),
+        (
+            Self::__TEAQL_FIELD_id.model_key,
+            Self::__TEAQL_FIELD_id.member_name,
+            Self::__TEAQL_FIELD_id.column_name,
+        ),
+        (
+            Self::__TEAQL_FIELD_platform.model_key,
+            Self::__TEAQL_FIELD_platform.member_name,
+            Self::__TEAQL_FIELD_platform.column_name,
+        ),
+        (
+            Self::__TEAQL_FIELD_school_type.model_key,
+            Self::__TEAQL_FIELD_school_type.member_name,
+            Self::__TEAQL_FIELD_school_type.column_name,
+        ),
+        (
+            Self::__TEAQL_FIELD_name.model_key,
+            Self::__TEAQL_FIELD_name.member_name,
+            Self::__TEAQL_FIELD_name.column_name,
+        ),
+        (
+            Self::__TEAQL_FIELD_version.model_key,
+            Self::__TEAQL_FIELD_version.member_name,
+            Self::__TEAQL_FIELD_version.column_name,
+        ),
     ];
 
     pub fn with_id(id: u64) -> teaql_core::Value {
@@ -114,18 +189,17 @@ impl School {
     pub fn update_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.id = value.try_u64().unwrap_or(self.id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "id", value);
-        self.__load_state.mark_loaded("id").expect("generated field layout");
+        self.set_generated_field(Self::__TEAQL_FIELD_id, value);
         self
     }
 
     pub fn changed_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "id")
+        self.generated_change(Self::__TEAQL_FIELD_id)
     }
 
     pub fn eval_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("id") {
-                    teaql_core::eval::EvalResult::NotLoaded { failed_node: "id".to_string(), attempted_path: "id".to_string() }
+        if !self.is_loaded(Self::__TEAQL_FIELD_id.query_key) {
+                    teaql_core::eval::EvalResult::NotLoaded { failed_node: Self::__TEAQL_FIELD_id.query_key.to_string(), attempted_path: Self::__TEAQL_FIELD_id.query_key.to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.id())
                 }}
@@ -138,18 +212,17 @@ impl School {
     pub fn update_name(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.name = value.try_text().map(|value| value.trim().to_owned()).unwrap_or_else(|| self.name.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "name", value);
-        self.__load_state.mark_loaded("name").expect("generated field layout");
+        self.set_generated_field(Self::__TEAQL_FIELD_name, value);
         self
     }
 
     pub fn changed_name(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "name")
+        self.generated_change(Self::__TEAQL_FIELD_name)
     }
 
     pub fn eval_name(&self) -> teaql_core::eval::EvalResult<String> {
-        if !self.is_loaded("name") {
-                    teaql_core::eval::EvalResult::NotLoaded { failed_node: "name".to_string(), attempted_path: "name".to_string() }
+        if !self.is_loaded(Self::__TEAQL_FIELD_name.query_key) {
+                    teaql_core::eval::EvalResult::NotLoaded { failed_node: Self::__TEAQL_FIELD_name.query_key.to_string(), attempted_path: Self::__TEAQL_FIELD_name.query_key.to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.name())
                 }}
@@ -162,18 +235,17 @@ impl School {
     pub fn update_version(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.version = value.try_i64().unwrap_or(self.version.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "version", value);
-        self.__load_state.mark_loaded("version").expect("generated field layout");
+        self.set_generated_field(Self::__TEAQL_FIELD_version, value);
         self
     }
 
     pub fn changed_version(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "version")
+        self.generated_change(Self::__TEAQL_FIELD_version)
     }
 
     pub fn eval_version(&self) -> teaql_core::eval::EvalResult<i64> {
-        if !self.is_loaded("version") {
-                    teaql_core::eval::EvalResult::NotLoaded { failed_node: "version".to_string(), attempted_path: "version".to_string() }
+        if !self.is_loaded(Self::__TEAQL_FIELD_version.query_key) {
+                    teaql_core::eval::EvalResult::NotLoaded { failed_node: Self::__TEAQL_FIELD_version.query_key.to_string(), attempted_path: Self::__TEAQL_FIELD_version.query_key.to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.version())
                 }}
@@ -185,18 +257,17 @@ impl School {
     pub fn update_platform_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.platform_id = value.try_u64().unwrap_or(self.platform_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "platform", value);
-        self.__load_state.mark_loaded("platform_id").expect("generated field layout");
+        self.set_generated_field(Self::__TEAQL_FIELD_platform, value);
         self
     }
 
     pub fn changed_platform_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "platform")
+        self.generated_change(Self::__TEAQL_FIELD_platform)
     }
 
     pub fn eval_platform_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("platform_id") {
-                    teaql_core::eval::EvalResult::NotLoaded { failed_node: "platform_id".to_string(), attempted_path: "platform_id".to_string() }
+        if !self.is_loaded(Self::__TEAQL_FIELD_platform.query_key) {
+                    teaql_core::eval::EvalResult::NotLoaded { failed_node: Self::__TEAQL_FIELD_platform.query_key.to_string(), attempted_path: Self::__TEAQL_FIELD_platform.query_key.to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.platform_id())
                 }}
@@ -208,18 +279,17 @@ impl School {
     pub(crate) fn update_school_type_id(&mut self, value: impl Into<teaql_core::Value>) -> &mut Self {
         let value = value.into();
         self.school_type_id = value.try_u64().unwrap_or(self.school_type_id.clone());
-        self.__teaql_runtime_state().set(self.entity_key(), "school_type", value);
-        self.__load_state.mark_loaded("school_type_id").expect("generated field layout");
+        self.set_generated_field(Self::__TEAQL_FIELD_school_type, value);
         self
     }
 
     pub fn changed_school_type_id(&self) -> Option<teaql_core::Value> {
-        self.__teaql_runtime_state().get(&self.entity_key(), "school_type")
+        self.generated_change(Self::__TEAQL_FIELD_school_type)
     }
 
     pub fn eval_school_type_id(&self) -> teaql_core::eval::EvalResult<u64> {
-        if !self.is_loaded("school_type_id") {
-                    teaql_core::eval::EvalResult::NotLoaded { failed_node: "school_type_id".to_string(), attempted_path: "school_type_id".to_string() }
+        if !self.is_loaded(Self::__TEAQL_FIELD_school_type.query_key) {
+                    teaql_core::eval::EvalResult::NotLoaded { failed_node: Self::__TEAQL_FIELD_school_type.query_key.to_string(), attempted_path: Self::__TEAQL_FIELD_school_type.query_key.to_string() }
                 } else {
                     teaql_core::eval::EvalResult::Value(self.school_type_id())
                 }}
