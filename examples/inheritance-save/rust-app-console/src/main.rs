@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut academy = Q::academies()
         .comment("Create one inherited object without a manual parent")
         .purpose("Verify the natural inheritance lifecycle before declaring query parity")
-        .new_entity(&context)?;
+        .new_entity(&context);
     academy.update_platform_id(1_u64);
     academy.update_school_type_to_primary();
     academy.update_name("Natural inheritance academy");
