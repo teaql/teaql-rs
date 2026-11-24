@@ -1,0 +1,801 @@
+use super::*;
+use crate::diagnostic_execution::{FailureJournal, StatementDiagnostic};
+use teaql_data_service::{ExecutionObserver, SqlExecutionOutcome, SqlIntentRedactions};
+
+/// A native batch has intent but no entity identity of its own. Keep its
+/// validated ancestry outside Context and materialize typed nodes only when
+/// the physical item's entity is known. Explicit graph frames remain intact.
+struct BatchIntentScope {
+    parent: Option<Arc<BatchIntentScope>>,
+    intent: teaql_core::MutationIntent,
+}
+
+#[derive(Clone)]
+struct MutationExecutionScope {
+    root_intent: teaql_core::MutationIntent,
+    batch: Option<Arc<BatchIntentScope>>,
+    redactions: Option<Arc<SqlIntentRedactions>>,
+    observer: Option<ExecutionObserver<'static>>,
+    write_guard: Option<Arc<Expr>>,
+    readback_guard: Option<Arc<Expr>>,
+}
+
+fn statement_trace(
+    request: &MutationRequest,
+    scope: Option<&Arc<BatchIntentScope>>,
+) -> Vec<teaql_core::TraceNode> {
+    use teaql_core::{TraceKind, TraceNode};
+    let mut trace = request.execution_trace_chain();
+    let Some(scope) = scope else { return trace };
+    let mut scopes = Vec::new();
+    let mut current = Some(scope.as_ref());
+    while let Some(node) = current {
+        scopes.push(node);
+        current = node.parent.as_deref();
+    }
+    scopes.reverse();
+    let source = trace
+        .iter()
+        .find(|node| node.kind == TraceKind::AuditReason)
+        .expect("validated mutation owns an audit reason");
+    let mut prefix = scopes
+        .iter()
+        .map(|scope| {
+            TraceNode::typed(
+                TraceKind::AuditReason,
+                &source.entity_type,
+                None,
+                scope.intent.comment(),
+            )
+        })
+        .collect::<Vec<_>>();
+    // The existing first graph reason and its request intent are one slot, not
+    // a second child reason. Retain its identity when the batch repeats it.
+    let repeated = if source.comment == prefix[0].comment {
+        Some(0)
+    } else if source.comment == prefix.last().unwrap().comment {
+        Some(prefix.len() - 1)
+    } else {
+        None
+    };
+    if let Some(repeated) = repeated {
+        let index = trace
+            .iter()
+            .position(|node| node.kind == TraceKind::AuditReason)
+            .unwrap();
+        prefix[repeated] = trace.remove(index);
+    }
+    prefix.extend(trace);
+    prefix
+}
+
+/// Collect privacy provenance, not SQL or validation results. A statement can
+/// mention a future sibling in its inherited root intent; compile/transport
+/// failure must still occur in the original execution order. Existing field
+/// classification is authoritative, including old values and credential keys.
+fn batch_intent_redactions<F>(request: &MutationRequest, lookup: &F) -> SqlIntentRedactions
+where
+    F: Fn(&str) -> Option<Arc<EntityDescriptor>>,
+{
+    use teaql_data_service::MutationCommand;
+    use teaql_data_service::{SqlLogContext, SqlParameterLogPolicy};
+    fn capture_values<'a>(
+        redactions: &mut SqlIntentRedactions,
+        entity: Option<&EntityDescriptor>,
+        values: impl Iterator<Item = (&'a String, &'a Value)>,
+    ) {
+        let (params, policies): (Vec<_>, Vec<_>) = values
+            .map(|(field, value)| {
+                (
+                    value.clone(),
+                    entity
+                        .map(|entity| crate::bindings::field_policy(entity, field))
+                        .unwrap_or(SqlParameterLogPolicy::Unknown),
+                )
+            })
+            .unzip();
+        redactions.extend(&SqlIntentRedactions::from_bindings(
+            &SqlLogContext {
+                generated_sql: true,
+                parameter_policies: policies,
+                ..Default::default()
+            },
+            &params,
+            "",
+        ));
+    }
+    let mut redactions = request.diagnostic_redactions().cloned().unwrap_or_default();
+    let single_entity = match &request.command {
+        MutationCommand::Insert(command) => Some(command.entity.as_str()),
+        MutationCommand::Update(command) => Some(command.entity.as_str()),
+        MutationCommand::Delete(command) => Some(command.entity.as_str()),
+        MutationCommand::Recover(command) => Some(command.entity.as_str()),
+        MutationCommand::Batch(_) => None,
+    };
+    if !matches!(request.command, MutationCommand::Batch(_))
+        && !single_entity
+            .and_then(lookup)
+            .is_some_and(|entity| entity.joined_parent.is_some())
+    {
+        return redactions;
+    }
+    let mut pending = vec![request];
+    while let Some(request) = pending.pop() {
+        if let Some(source) = request.diagnostic_redactions() {
+            redactions.extend(source);
+        }
+        match &request.command {
+            MutationCommand::Batch(children) => pending.extend(children),
+            MutationCommand::Insert(command) => {
+                let entity = lookup(&command.entity);
+                capture_values(&mut redactions, entity.as_deref(), command.values.iter());
+                if let Some(id) = command.values.get("id") {
+                    redactions.capture_target_id(id);
+                }
+            }
+            MutationCommand::Update(command) => {
+                let entity = lookup(&command.entity);
+                capture_values(
+                    &mut redactions,
+                    entity.as_deref(),
+                    command
+                        .values
+                        .iter()
+                        .chain(command.old_values.iter().flat_map(|values| values.iter())),
+                );
+                redactions.capture_target_id(&command.id);
+            }
+            MutationCommand::Delete(command) => redactions.capture_target_id(&command.id),
+            MutationCommand::Recover(command) => {
+                let entity = lookup(&command.entity);
+                capture_values(&mut redactions, entity.as_deref(), command.values.iter());
+                redactions.capture_target_id(&command.id);
+            }
+        }
+    }
+    redactions
+}
+
+/// No context/global mutable state: one adapter and one fallback journal per call.
+struct ObservedTransport<'a, T> {
+    inner: &'a T,
+    backend: String,
+    operation: DataServiceOperation,
+    trace: Vec<teaql_core::TraceNode>,
+    comment: String,
+    observer: Option<ExecutionObserver<'static>>,
+    intent_redactions: std::sync::Mutex<SqlIntentRedactions>,
+    inherited_redactions: Option<Arc<SqlIntentRedactions>>,
+    target_id: Option<teaql_core::Value>,
+    successful_readbacks: std::sync::Mutex<Vec<ExecutionMetadata>>,
+    successful_write: std::sync::Mutex<Option<ExecutionMetadata>>,
+}
+impl<T> ObservedTransport<'_, T> {
+    fn metadata(
+        &self,
+        compiled: &CompiledQuery,
+        operation: DataServiceOperation,
+    ) -> ExecutionMetadata {
+        let now = SystemTime::now();
+        let mut sql_log = compiled.log_context.clone();
+        if operation == DataServiceOperation::Query {
+            sql_log.intent_redactions = self
+                .intent_redactions
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+        }
+        if let Some(id) = &self.target_id {
+            sql_log.intent_redactions.capture_target_id(id);
+        }
+        if let Some(inherited) = &self.inherited_redactions {
+            sql_log.intent_redactions.extend(inherited);
+        }
+        ExecutionMetadata {
+            statements: vec![],
+            sql_log,
+            backend: self.backend.clone(),
+            operation,
+            started_at: now,
+            ended_at: now,
+            affected_rows: None,
+            result_count: None,
+            trace_chain: if operation == DataServiceOperation::Query {
+                // Readback is derived work, not a fresh caller operation.
+                let root = self
+                    .trace
+                    .first()
+                    .map(|node| node.entity_type.as_str())
+                    .unwrap_or("unknown");
+                let mut trace = vec![
+                    teaql_core::TraceNode::typed(
+                        teaql_core::TraceKind::Comment,
+                        root,
+                        None,
+                        &self.comment,
+                    ),
+                    teaql_core::TraceNode::typed(
+                        teaql_core::TraceKind::Purpose,
+                        root,
+                        None,
+                        "verify the persisted mutation result",
+                    ),
+                ];
+                trace.extend(
+                    self.trace
+                        .iter()
+                        .filter(|node| {
+                            !matches!(
+                                node.kind,
+                                teaql_core::TraceKind::Comment | teaql_core::TraceKind::Purpose
+                            )
+                        })
+                        .cloned(),
+                );
+                trace
+            } else {
+                self.trace.clone()
+            },
+            comment: Some(self.comment.clone()),
+            backend_request_id: None,
+            parameterized_query: Some(compiled.sql.clone()),
+            params: compiled.params.clone(),
+            debug_query: None,
+        }
+    }
+    fn emit(&self, metadata: ExecutionMetadata) {
+        if let Some(observer) = &self.observer {
+            observer(metadata);
+        }
+    }
+
+    fn retain_successful_readbacks(&self, metadata: &mut ExecutionMetadata) {
+        let write = self
+            .successful_write
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        let readbacks = std::mem::take(
+            &mut *self
+                .successful_readbacks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+        );
+        if !readbacks.is_empty() {
+            // Keep the logical mutation summary. Physical children carry the
+            // write followed by its actual SELECT; runtime sinks traverse
+            // children without logging the summary again. Native batch item
+            // grouping remains intact.
+            metadata.statements = vec![write.unwrap_or_else(|| metadata.clone())];
+            metadata.statements.extend(readbacks);
+        } else if let Some(write) = write {
+            *metadata = write;
+        }
+    }
+}
+impl<T: SqlTransport> SqlTransport for ObservedTransport<'_, T> {
+    type Error = T::Error;
+    async fn fetch_all_compact_sql(
+        &self,
+        query: &CompiledQuery,
+    ) -> Result<Vec<CompactRow>, Self::Error> {
+        let mut diagnostic = StatementDiagnostic::new(
+            Some(self.metadata(query, DataServiceOperation::Query)),
+            self.observer.clone(),
+        );
+        let result = diagnostic
+            .run(self.inner.fetch_all_compact_sql(query))
+            .await;
+        let rows = result.inspect_err(|_| {
+            diagnostic.fail();
+        })?;
+        let mut metadata = diagnostic.success().expect("observed readback");
+        metadata.result_count = Some(rows.len());
+        self.successful_readbacks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(metadata.clone());
+        self.emit(metadata);
+        Ok(rows)
+    }
+    async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
+        *self
+            .intent_redactions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) =
+            SqlIntentRedactions::from_bindings(&query.log_context, &query.params, &query.sql);
+        if self.observer.is_none() {
+            return self.inner.execute_sql(query).await;
+        }
+        let mut diagnostic = StatementDiagnostic::new(
+            Some(self.metadata(query, self.operation)),
+            self.observer.clone(),
+        );
+        let result = diagnostic.run(self.inner.execute_sql(query)).await;
+        let affected = result.inspect_err(|_| {
+            diagnostic.fail();
+        })?;
+        let mut metadata = diagnostic.success().expect("observed mutation");
+        metadata.affected_rows = Some(affected);
+        *self
+            .successful_write
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(metadata.clone());
+        self.emit(metadata);
+        Ok(affected)
+    }
+}
+
+pub(super) async fn execute<D, T, F>(
+    dialect: &D,
+    transport: &T,
+    lookup: &F,
+    cache: &RwLock<Vec<CachedSelectPlan>>,
+    request: MutationRequest,
+    readback: bool,
+    observer: Option<ExecutionObserver<'_>>,
+) -> Result<MutationResult, SqlExecutorError<T::Error>>
+where
+    D: SqlDialect + Sync,
+    T: SqlTransport,
+    F: Fn(&str) -> Option<Arc<EntityDescriptor>> + Sync,
+{
+    let mut journal = FailureJournal::new(observer);
+    let scope = MutationExecutionScope {
+        root_intent: request.intent().clone(),
+        batch: None,
+        redactions: Some(Arc::new(batch_intent_redactions(&request, lookup))),
+        observer: journal.recorder(),
+        write_guard: None,
+        readback_guard: None,
+    };
+    let result = execute_tree(dialect, transport, lookup, cache, request, readback, scope).await;
+    if result.is_ok() {
+        journal.disarm();
+    }
+    result
+}
+
+async fn execute_tree<D, T, F>(
+    dialect: &D,
+    transport: &T,
+    lookup: &F,
+    cache: &RwLock<Vec<CachedSelectPlan>>,
+    request: MutationRequest,
+    readback: bool,
+    mut scope: MutationExecutionScope,
+) -> Result<MutationResult, SqlExecutorError<T::Error>>
+where
+    D: SqlDialect + Sync,
+    T: SqlTransport,
+    F: Fn(&str) -> Option<Arc<EntityDescriptor>> + Sync,
+{
+    let entity_name = match &request.command {
+        teaql_data_service::MutationCommand::Insert(cmd) => &cmd.entity,
+        teaql_data_service::MutationCommand::Update(cmd) => &cmd.entity,
+        teaql_data_service::MutationCommand::Delete(cmd) => &cmd.entity,
+        teaql_data_service::MutationCommand::Recover(cmd) => &cmd.entity,
+        teaql_data_service::MutationCommand::Batch(mutations) => {
+            scope.batch = match scope.batch {
+                Some(parent) if parent.intent.comment() == request.comment() => Some(parent),
+                parent => Some(Arc::new(BatchIntentScope {
+                    parent,
+                    intent: request.intent().clone(),
+                })),
+            };
+            let start = SystemTime::now();
+            let mut statements = Vec::new();
+            let mut total = 0;
+            let mut sql = Vec::new();
+            let mut params = Vec::new();
+            for child in mutations {
+                let result = Box::pin(execute_tree(
+                    dialect,
+                    transport,
+                    lookup,
+                    cache,
+                    child.clone(),
+                    readback,
+                    scope.clone(),
+                ))
+                .await?;
+                total += result.affected_rows;
+                if let Some(text) = &result.metadata.parameterized_query {
+                    sql.push(text.clone());
+                }
+                params.extend(result.metadata.params.clone());
+                statements.push(result.metadata);
+            }
+            return Ok(MutationResult {
+                affected_rows: total,
+                generated_values: GeneratedValues::default(),
+                persisted_snapshot: None,
+                metadata: ExecutionMetadata {
+                    statements,
+                    sql_log: Default::default(),
+                    backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
+                    operation: DataServiceOperation::Batch,
+                    started_at: start,
+                    ended_at: SystemTime::now(),
+                    affected_rows: Some(total),
+                    result_count: None,
+                    trace_chain: vec![],
+                    comment: Some(scope.root_intent.comment().to_owned()),
+                    backend_request_id: None,
+                    parameterized_query: (!sql.is_empty()).then(|| sql.join("; ")),
+                    params,
+                    debug_query: None,
+                },
+            });
+        }
+    };
+    let entity = lookup(entity_name).ok_or_else(|| {
+        SqlExecutorError::Compile(SqlCompileError::UnknownEntity(entity_name.clone()))
+    })?;
+    if entity.joined_parent.is_some() {
+        if !readback {
+            // Multi-table writes require the transaction-owned executor. Do not
+            // start a sequence of autocommit statements and hope it succeeds.
+            return Err(SqlExecutorError::PersistedRecord(
+                "joined inheritance mutations require an explicit transaction".into(),
+            ));
+        }
+        return execute_inherited(dialect, transport, cache, request, &entity, scope).await;
+    }
+    execute_one(
+        dialect, transport, cache, request, &entity, &entity, readback, scope,
+    )
+    .await
+}
+
+async fn execute_inherited<D: SqlDialect + Sync, T: SqlTransport>(
+    dialect: &D,
+    transport: &T,
+    cache: &RwLock<Vec<CachedSelectPlan>>,
+    request: MutationRequest,
+    entity: &EntityDescriptor,
+    scope: MutationExecutionScope,
+) -> Result<MutationResult, SqlExecutorError<T::Error>> {
+    use teaql_data_service::MutationCommand;
+    let chain = crate::inheritance::hierarchy(entity).map_err(SqlExecutorError::Compile)?;
+    let expected_version = match &request.command {
+        MutationCommand::Update(command) => command.expected_version,
+        MutationCommand::Delete(command) => command.expected_version,
+        MutationCommand::Recover(command) => Some(command.expected_version),
+        MutationCommand::Insert(_) => Some(1),
+        MutationCommand::Batch(_) => unreachable!(),
+    };
+    if expected_version.is_none() {
+        return Err(SqlExecutorError::PersistedRecord(
+            "joined inheritance mutations require an optimistic version".into(),
+        ));
+    }
+    let mut physical = Vec::new();
+    if let MutationCommand::Recover(command) = &request.command {
+        for field in command.values.keys() {
+            let property = entity.property_by_name(field).ok_or_else(|| {
+                SqlExecutorError::Compile(SqlCompileError::UnknownField(field.clone()))
+            })?;
+            if property.is_id || property.is_version {
+                return Err(SqlExecutorError::Compile(
+                    SqlCompileError::InvalidFunctionArguments(
+                        "recovery cannot change identity or supply its successor version".into(),
+                    ),
+                ));
+            }
+        }
+    }
+    for (index, descriptor) in chain.iter().enumerate() {
+        let mut storage = descriptor.storage_descriptor();
+        // Table ownership must not relax the logical subtype's disclosure
+        // policy. Unknown policy is fail-closed for the physical statement;
+        // complete generated policies preserve exact per-field masking.
+        storage.audit_mask_fields.clear();
+        storage.audit_mask_fields_declared = true;
+        let storage_data: &mut teaql_core::EntityDescriptorData = &mut storage;
+        for property in &storage_data.properties {
+            use teaql_data_service::SqlParameterLogPolicy as Policy;
+            match SqlIntentRedactions::field_policy(entity, &property.name) {
+                Policy::Unknown => storage_data.audit_mask_fields_declared = false,
+                Policy::Masked | Policy::Credential => {
+                    storage_data.audit_mask_fields.push(property.name.clone())
+                }
+                Policy::Plain => {}
+            }
+        }
+        let mut part = request.clone();
+        match &mut part.command {
+            MutationCommand::Insert(command) => {
+                command
+                    .values
+                    .retain(|field, _| storage.property_by_name(field).is_some());
+            }
+            MutationCommand::Update(command) => {
+                command
+                    .values
+                    .retain(|field, _| storage.property_by_name(field).is_some());
+                if index != 0 {
+                    command.expected_version = None;
+                    if command.values.is_empty() {
+                        continue;
+                    }
+                }
+            }
+            MutationCommand::Delete(command) => {
+                if command.soft_delete && index != 0 {
+                    continue;
+                }
+                if index != 0 {
+                    command.expected_version = None;
+                }
+            }
+            MutationCommand::Recover(command) => {
+                command
+                    .values
+                    .retain(|field, _| storage.property_by_name(field).is_some());
+                if index != 0 {
+                    if command.values.is_empty() {
+                        continue;
+                    }
+                    let mut update =
+                        teaql_core::UpdateCommand::new(&command.entity, command.id.clone());
+                    update.values = command.values.clone();
+                    update.trace_chain = command.trace_chain.clone();
+                    part.command = MutationCommand::Update(update);
+                }
+            }
+            MutationCommand::Batch(_) => unreachable!("batch expanded before inheritance"),
+        }
+        physical.push((storage, part));
+    }
+    if matches!(&request.command, MutationCommand::Delete(command) if !command.soft_delete) {
+        physical.reverse();
+    }
+    let mut statements = Vec::new();
+    let mut last = None;
+    let count = physical.len();
+    for (index, (storage, part)) in physical.into_iter().enumerate() {
+        let mut statement_scope = scope.clone();
+        if index != 0 {
+            statement_scope.write_guard = None;
+        }
+        let result = execute_one(
+            dialect,
+            transport,
+            cache,
+            part,
+            &storage,
+            entity,
+            index + 1 == count,
+            statement_scope,
+        )
+        .await?;
+        if index == 0 && scope.write_guard.is_some() && result.affected_rows == 0 {
+            // The atomic guard rejected the first write, so no descendant or
+            // ancestor has been modified. Preserve ordinary guard semantics.
+            return Ok(result);
+        }
+        if result.affected_rows != 1 {
+            return Err(SqlExecutorError::PersistedRecord(format!(
+                "joined {} mutation rejected: missing row or optimistic-version conflict at {}",
+                entity.name, storage.table_name,
+            )));
+        }
+        statements.push(result.metadata.clone());
+        last = Some(result);
+    }
+    let mut result = last.expect("validated inheritance has a root table");
+    result.affected_rows = 1;
+    result.metadata.affected_rows = Some(1);
+    result.metadata.statements = statements;
+    if matches!(&request.command, MutationCommand::Recover(_)) {
+        result.metadata.operation = DataServiceOperation::Recover;
+    }
+    Ok(result)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Execution keeps physical storage, typed readback and per-mutation scope separate"
+)]
+async fn execute_one<D: SqlDialect + Sync, T: SqlTransport>(
+    dialect: &D,
+    transport: &T,
+    cache: &RwLock<Vec<CachedSelectPlan>>,
+    request: MutationRequest,
+    entity: &EntityDescriptor,
+    readback_entity: &EntityDescriptor,
+    readback: bool,
+    scope: MutationExecutionScope,
+) -> Result<MutationResult, SqlExecutorError<T::Error>> {
+    let entity_name = &readback_entity.name;
+    let (compiled, operation, persisted_id) = match &request.command {
+        teaql_data_service::MutationCommand::Insert(cmd) => (
+            dialect.compile_insert(entity, cmd),
+            DataServiceOperation::Insert,
+            cmd.values.get("id").cloned(),
+        ),
+        teaql_data_service::MutationCommand::Update(cmd) => (
+            match &scope.write_guard {
+                Some(guard) => dialect.compile_guarded_update(entity, cmd, guard),
+                None => dialect.compile_update(entity, cmd),
+            },
+            DataServiceOperation::Update,
+            Some(cmd.id.clone()),
+        ),
+        teaql_data_service::MutationCommand::Delete(cmd) => (
+            match &scope.write_guard {
+                Some(guard) => dialect.compile_guarded_delete(entity, cmd, guard),
+                None => dialect.compile_delete(entity, cmd),
+            },
+            DataServiceOperation::Delete,
+            cmd.soft_delete.then(|| cmd.id.clone()),
+        ),
+        teaql_data_service::MutationCommand::Recover(cmd) => (
+            match &scope.write_guard {
+                Some(guard) => dialect.compile_guarded_recover(entity, cmd, guard),
+                None => dialect.compile_recover(entity, cmd),
+            },
+            DataServiceOperation::Recover,
+            Some(cmd.id.clone()),
+        ),
+        teaql_data_service::MutationCommand::Batch(_) => unreachable!(),
+    };
+    let compiled = compiled.map_err(SqlExecutorError::Compile)?;
+    let target_id = match &request.command {
+        teaql_data_service::MutationCommand::Insert(cmd) => cmd.values.get("id").cloned(),
+        teaql_data_service::MutationCommand::Update(cmd) => Some(cmd.id.clone()),
+        teaql_data_service::MutationCommand::Delete(cmd) => Some(cmd.id.clone()),
+        teaql_data_service::MutationCommand::Recover(cmd) => Some(cmd.id.clone()),
+        teaql_data_service::MutationCommand::Batch(_) => None,
+    };
+    let observed = ObservedTransport {
+        inner: transport,
+        backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
+        operation,
+        trace: statement_trace(&request, scope.batch.as_ref()),
+        comment: scope.root_intent.comment().to_owned(),
+        observer: scope.observer,
+        intent_redactions: Default::default(),
+        inherited_redactions: scope.redactions,
+        target_id,
+        successful_readbacks: Default::default(),
+        successful_write: Default::default(),
+    };
+    let mut metadata = observed.metadata(&compiled, operation);
+    let affected_rows = observed
+        .execute_sql(&compiled)
+        .await
+        .map_err(SqlExecutorError::Transport)?;
+    metadata.ended_at = SystemTime::now();
+    metadata.affected_rows = Some(affected_rows);
+    metadata.sql_log.execution_outcome = Some(SqlExecutionOutcome::Success);
+    let persisted_snapshot = if readback && affected_rows == 1 {
+        if let Some(id) = persisted_id {
+            let target = Expr::eq("id", id);
+            let target = match &scope.readback_guard {
+                Some(guard) => Expr::and([target, (**guard).clone()]),
+                None => target,
+            };
+            let query = SelectQuery::new(entity_name.clone()).filter(target);
+            let compiled_readback =
+                compile_select_with_cache(dialect, cache, readback_entity, &query)
+                    .map_err(SqlExecutorError::Compile)?;
+            let mut rows = observed
+                .fetch_all_compact_sql(&compiled_readback)
+                .await
+                .map_err(SqlExecutorError::Transport)?;
+            if rows.len() != 1 {
+                return Err(SqlExecutorError::PersistedRecord(format!(
+                    "persisted {entity_name} record could not be read back"
+                )));
+            }
+            rows.pop().map(|row| EntitySnapshot::from(row.into_map()))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    observed.retain_successful_readbacks(&mut metadata);
+    Ok(MutationResult {
+        affected_rows,
+        generated_values: GeneratedValues::default(),
+        persisted_snapshot,
+        metadata,
+    })
+}
+
+pub(super) async fn guarded<D: SqlDialect + Sync, T: SqlTransport>(
+    dialect: &D,
+    transport: &T,
+    entity: &EntityDescriptor,
+    cache: &RwLock<Vec<CachedSelectPlan>>,
+    request: GuardedMutationRequest,
+    transactional: bool,
+    observer: Option<ExecutionObserver<'_>>,
+) -> Result<MutationResult, SqlExecutorError<T::Error>> {
+    if entity.joined_parent.is_some() {
+        if !transactional {
+            return Err(SqlExecutorError::PersistedRecord(
+                "joined inheritance mutations require an explicit transaction".into(),
+            ));
+        }
+        let chain = crate::inheritance::hierarchy(entity).map_err(SqlExecutorError::Compile)?;
+        let id = chain[0].id_property().expect("validated identity");
+        let version = chain[0].version_property().expect("validated version");
+        let expected = match &request.mutation.command {
+            teaql_data_service::MutationCommand::Update(command) => command.expected_version,
+            teaql_data_service::MutationCommand::Delete(command) => command.expected_version,
+            teaql_data_service::MutationCommand::Recover(command) => Some(command.expected_version),
+            _ => unreachable!("guarded mutation kind validated"),
+        }
+        .ok_or_else(|| {
+            SqlExecutorError::PersistedRecord(
+                "joined inheritance mutations require an optimistic version".into(),
+            )
+        })?;
+        // Authorization is part of the FIRST physical mutation, not a separate
+        // read-before-write check. Hard deletes run leaf-first; their final root
+        // version check detects any concurrent parent change and forces rollback.
+        let guarded_population =
+            SelectQuery::new(&entity.name)
+                .project(&id.name)
+                .filter(Expr::and([
+                    request.guard.clone(),
+                    Expr::eq(&version.name, expected),
+                ]));
+        let write_guard = Expr::in_subquery(&id.name, entity.clone(), guarded_population, &id.name);
+        let mut journal = FailureJournal::new(observer);
+        let scope = MutationExecutionScope {
+            root_intent: request.mutation.intent().clone(),
+            batch: None,
+            redactions: Some(Arc::new(batch_intent_redactions(
+                &request.mutation,
+                &|name| (name == entity.name).then(|| Arc::new(entity.clone())),
+            ))),
+            observer: journal.recorder(),
+            write_guard: Some(Arc::new(write_guard)),
+            readback_guard: Some(Arc::new(request.guard)),
+        };
+        let result =
+            execute_inherited(dialect, transport, cache, request.mutation, entity, scope).await;
+        if result.is_ok() {
+            journal.disarm();
+        }
+        return result;
+    }
+    let operation = match &request.mutation.command {
+        teaql_data_service::MutationCommand::Update(_) => DataServiceOperation::Update,
+        teaql_data_service::MutationCommand::Delete(_) => DataServiceOperation::Delete,
+        teaql_data_service::MutationCommand::Recover(_) => DataServiceOperation::Recover,
+        _ => unreachable!("validated guarded request"),
+    };
+    let mut journal = FailureJournal::new(observer);
+    let observed = ObservedTransport {
+        inner: transport,
+        backend: format!("{:?}", dialect.kind()).to_ascii_lowercase(),
+        operation,
+        trace: request.mutation.execution_trace_chain(),
+        comment: request.mutation.comment().to_owned(),
+        observer: journal.recorder(),
+        intent_redactions: Default::default(),
+        inherited_redactions: None,
+        target_id: match &request.mutation.command {
+            teaql_data_service::MutationCommand::Update(cmd) => Some(cmd.id.clone()),
+            teaql_data_service::MutationCommand::Delete(cmd) => Some(cmd.id.clone()),
+            teaql_data_service::MutationCommand::Recover(cmd) => Some(cmd.id.clone()),
+            _ => None,
+        },
+        successful_readbacks: Default::default(),
+        successful_write: Default::default(),
+    };
+    let mut result = execute_guarded_mutation(dialect, &observed, entity, cache, request).await;
+    if let Ok(result) = &mut result {
+        result.metadata.sql_log.execution_outcome = Some(SqlExecutionOutcome::Success);
+        result.metadata.trace_chain = observed.trace.clone();
+        observed.retain_successful_readbacks(&mut result.metadata);
+        journal.disarm();
+    }
+    result
+}

@@ -1,6 +1,6 @@
 [package]
 name = "teaql-cloud-starter"
-version.workspace = true
+version = "5.0.7"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -9,9 +9,9 @@ repository.workspace = true
 readme = "README.md"
 
 [dependencies]
-teaql-cloud-core = { path = "../teaql-cloud-core", version = "5.0.1" }
-teaql-cloud-actuator = { path = "../teaql-cloud-actuator", version = "5.0.1" }
-teaql-cloud-nacos = { path = "../teaql-cloud-nacos", version = "5.0.1" }
-teaql-cloud-consul = { path = "../teaql-cloud-consul", version = "5.0.1" }
+teaql-cloud-core = { path = "../teaql-cloud-core", version = "5.0.4" }
+teaql-cloud-actuator = { path = "../teaql-cloud-actuator", version = "5.0.4" }
+teaql-cloud-nacos = { path = "../teaql-cloud-nacos", version = "5.0.4" }
+teaql-cloud-consul = { path = "../teaql-cloud-consul", version = "5.0.4" }
 axum = { version = "0.8" }
 tokio = { version = "1", features = ["full"] }

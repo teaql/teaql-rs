@@ -1,0 +1,47 @@
+{
+  "schema": "teaql.generated-example-fixture/v2",
+  "language": "rust",
+  "modelSha256": "a2cf4c907cb084cb0946e993eeba586c8c0701a89fdc4a849808aa743be033b7",
+  "producerSource": {
+    "directory": "/home/philip/workspace/teaql-core-p0-p1/generator-creation-api",
+    "commit": "c9dc4b7eb8487839aafee76f3ba516994f60415a",
+    "contentsSha256": "14ab673e329d1e32c69cd1c9f865771dd374dbd4fd64c89af8095beb8f76f29c"
+  },
+  "producerRun": {
+    "repository": "teaql-conformance",
+    "evidence": "evidence/2026-10-25-core-p0-p1/rust-creation-api-source-v1/report.json",
+    "sha256": "80f5bc34a6285765877b28c4667957d8362fc263ec1a3fb6ec1d3f0b28658a0c"
+  },
+  "previousFixtureManifestSha256": "9a748b8571877c1744b0b71b4d9ea8a17dad9393763870e1f28dff8d311779b2",
+  "evaluatedScope": "rust-lib-core",
+  "evaluationErrors": 0,
+  "dependencyAdaptation": "Reversed only the six local TeaQL path overrides to the byte-identical emitted public dependency manifest; all domain source bytes are copied unchanged from the generated source gate.",
+  "files": {
+    "lib/Cargo.toml": "12a13b3d1ca91af2646a3375fbbddaab3a4ad7943e50e96c986ebbd4b8f04171",
+    "lib/src/e.rs": "f5c150d8e4304461fdf8bfb826d4d4687b34ab8cb51a5a6b4606ac2128d206f9",
+    "lib/src/lib.rs": "e8829d9d82653d27aebb39c64f2dd7fa030f581e38fd14860129430ac6658b3e",
+    "lib/src/order_item/behavior.rs": "e750698e7c96fa25a927a7f9245ee0a9cd870be35194bed86c82c05d7257460f",
+    "lib/src/order_item/checker.rs": "a93214eb7a417e473d168086049609540a1c1b2a294d72d4022b99d38b941d1a",
+    "lib/src/order_item/entity.rs": "1f10635fc14e29561bf6dad1fec898c54b6c554988af06fd05f70d0bd1f161f8",
+    "lib/src/order_item/expression.rs": "6b48a41fc4827231a43e9efee00c69e5aac2cd9691824f54c34f64e442f2a482",
+    "lib/src/order_item/mod.rs": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7",
+    "lib/src/order_item/request.rs": "c88cf55dd2aaff3182d2711406d09bc75ad5b99d3b790a5c4ac1f84c1737152b",
+    "lib/src/purchase_order/behavior.rs": "588fae66f9613f98240c9dfffa3008c219e3060c596da16c752081cc838deebe",
+    "lib/src/purchase_order/checker.rs": "96613377115e91c925bdedeac31f66f9eba16d7f06ef53ca0491d19e81a51f57",
+    "lib/src/purchase_order/entity.rs": "2b556664f02e5b5254f8f8dc2549357a7123b59d63a28516d0101220409620ea",
+    "lib/src/purchase_order/expression.rs": "2576bfa8765556bd3add3f708eb699c0a7698c6e395500430d66cf40e2b2d3f1",
+    "lib/src/purchase_order/mod.rs": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7",
+    "lib/src/purchase_order/request.rs": "8f8dfd6101b7034018fe99ed91ef81e3cdeedaf0c3e1e4a455f9f181f85913ab",
+    "lib/src/q.rs": "e96c997709aedc072a23afe1786bf3dac1a56ab19096a1e38dac4252d1f69f52",
+    "lib/src/request_support.rs": "a4c87d8b8d45b808994b2d45d54c4abe19454e243bb3e9455e63e05a63870532",
+    "lib/src/runtime.rs": "72e189a8325b8accf3cb6336897687a58b3f3fc9029a3ba299c2e0e8294154fd",
+    "lib/src/sample_data.rs": "e74b8813a083ccc68683970759ca5cd1f4abff971a676e5fa9bb43a08b5b59b0",
+    "lib/src/tenant/behavior.rs": "adce6aacbb905b10543b94863a14be531feb88b7e78109d5d7b73e5f87932229",
+    "lib/src/tenant/checker.rs": "ecba909ed5d0052e4020ac5cf62c7fccae177e0aa3226ec2247104eede2307a5",
+    "lib/src/tenant/entity.rs": "8a8bfae38d53fdcb71e3eecfc7f35cce9882ebba1458ef79168de385824c28a0",
+    "lib/src/tenant/expression.rs": "b37e9f24486fb501ae5de1c1505616db18cc55ac560633512d1a3c9b13830785",
+    "lib/src/tenant/mod.rs": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7",
+    "lib/src/tenant/request.rs": "2267b370004fa4d581230d6d867c46858dbe059aebfdbc1fce1b0990994c4b78"
+  },
+  "fieldDescriptorRefresh": "../field-descriptor-generation.json"
+}

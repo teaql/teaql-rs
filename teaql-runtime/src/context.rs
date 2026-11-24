@@ -1,5 +1,5 @@
 use std::any::{Any, TypeId};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 
 use std::pin::Pin;
@@ -7,17 +7,40 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
 use crate::EntityRuntimeState;
-use crate::{
-    CheckObjectStatus, CheckResult, CheckResults, CheckerRegistry, ContextError,
-    EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry, EntityGraphBuilder,
-    EntityRegistry, GraphNode, InMemoryEntityGraphDecoderRegistry, InternalIdGenerator, Language,
-    MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink, RequestPolicy, RuntimeError,
-    local_id_generator,
+use crate::business_id::{
+    BusinessClock, BusinessDate, BusinessIdSchemaService, SystemBusinessClock,
 };
+use crate::document_round_trip::{
+    AcceptedContextualDocument, ContextBoundDocumentService, ContextBoundDocumentServiceResource,
+    ContextualDocument, DocumentAcceptRequest, DocumentOpenRequest, DocumentRoundTripError,
+    DocumentSnapshot, VerifiedDocumentSnapshot,
+};
+use crate::entity_reference::{
+    EntityReferenceClaims, EntityReferenceCodec, EntityReferenceCodecResource,
+    EntityReferenceTokenError,
+};
+use crate::http::{HttpFailure, HttpRequestService, HttpRequestServiceResource};
+use crate::round_trip_reference::{
+    ContextBoundReferenceRuntime, ContextBoundReferenceRuntimeResource, ExternalEntityReference,
+    ReferenceDocumentScope, ReferenceIdentity, ReferenceMode, ReferenceStartupNotice,
+    ReferenceWireCodec, ResolvedEntityReference, RoundTripReferenceError,
+    TrustedReferencePrincipal, TrustedReferencePrincipalResource,
+};
+use crate::{
+    BusinessIdSchemaContributor, BusinessIdService, CheckObjectStatus, CheckResult, CheckResults,
+    CheckerRegistry, ContextError, EntityDataServiceBehavior, EntityDataServiceBehaviorRegistry,
+    EntityGraphBuilder, EntityRegistry, GraphNode, InMemoryEntityGraphDecoderRegistry,
+    InternalIdGenerator, Language, MetadataStore, ObjectLocation, RawAuditEvent, RawAuditEventSink,
+    RequestPolicy, RuntimeError, local_id_generator,
+};
+use teaql_core::business_id::BusinessIdAllocator;
 use teaql_core::{EntityDescriptor, Value};
 
+mod boolean_validation;
+mod json;
 mod locking;
 mod logging;
+mod numeric_validation;
 mod pagination;
 mod transaction;
 pub use locking::RemoteLockProvider;
@@ -160,14 +183,22 @@ pub struct UserContext {
     pub(crate) entity_data_service_behavior_registry:
         Option<Box<dyn EntityDataServiceBehaviorRegistry>>,
     pub(crate) request_policy: Option<Box<dyn RequestPolicy>>,
+    pub(crate) mutation_policy_registry: Arc<dyn crate::MutationPolicyRegistry>,
+    pub(crate) mutation_policy_approval_provider: Arc<dyn crate::MutationPolicyApprovalProvider>,
+    pub(crate) mutation_governance_sink: Arc<dyn crate::MutationGovernanceSink>,
+    pub(crate) emitted_mutation_governance_warnings: Mutex<BTreeSet<String>>,
     pub(crate) checker_registry: Option<Box<dyn CheckerRegistry>>,
     pub(crate) event_sink: Option<Box<dyn RawAuditEventSink>>,
     pub(crate) custom_event_sink: Option<Box<dyn crate::SafeAuditEventSink>>,
     pub(crate) internal_id_generator: Option<Box<dyn InternalIdGenerator>>,
+    business_clock: Box<dyn BusinessClock>,
     schema_provider: Option<Box<dyn SchemaProvider>>,
     generated_schema_bootstraps: Vec<GeneratedSchemaBootstrap>,
     language: Language,
-    i18n_catalog: Arc<crate::I18nCatalog>,
+    pub(crate) i18n_catalog: Arc<crate::I18nCatalog>,
+    pub(crate) checker_message_catalog: Arc<crate::checker_messages::CheckerMessageCatalog>,
+    pub(crate) checker_presentation_model: Arc<crate::checker_messages::CheckerPresentationModel>,
+    pub(crate) checker_message_renderer: Arc<dyn crate::checker_messages::CheckerMessageRenderer>,
     typed_resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     named_resources: BTreeMap<String, Box<dyn Any + Send + Sync>>,
     locals: BTreeMap<String, Value>,
@@ -186,11 +217,20 @@ pub struct UserContext {
     local_lock_owner: u64,
     remote_lock_owner: String,
     runtime_telemetry: Arc<dyn crate::RuntimeTelemetry>,
+    pub(crate) runtime_logger: Arc<crate::RuntimeLogger>,
     last_fix_evidence: Mutex<Vec<FixEvidence>>,
 }
 
 impl Default for UserContext {
     fn default() -> Self {
+        Self::new_with_logger(crate::RuntimeLogger::default_logger())
+    }
+}
+
+impl UserContext {
+    /// Compose the application destination before creating request contexts.
+    pub fn new_with_logger(runtime_logger: Arc<crate::RuntimeLogger>) -> Self {
+        crate::checker_messages::prepare();
         let pid = std::process::id();
         let thread_id_str = format!("{:?}", std::thread::current().id());
         let numeric_thread_id = thread_id_str
@@ -209,13 +249,25 @@ impl Default for UserContext {
             entity_graph_decoders: InMemoryEntityGraphDecoderRegistry::default(),
             entity_data_service_behavior_registry: None,
             request_policy: None,
+            mutation_policy_registry: Arc::new(crate::EmptyMutationPolicyRegistry),
+            mutation_policy_approval_provider: Arc::new(crate::NoMutationPolicyApprovalProvider),
+            mutation_governance_sink: Arc::new(crate::DefaultMutationGovernanceSink),
+            emitted_mutation_governance_warnings: Mutex::new(BTreeSet::new()),
             checker_registry: None,
             event_sink: None,
             custom_event_sink: None,
             internal_id_generator: None,
+            business_clock: Box::new(SystemBusinessClock),
             schema_provider: None,
             language: Language::default(),
             i18n_catalog: crate::I18nCatalog::builtin().clone(),
+            checker_message_catalog: crate::checker_messages::CheckerMessageCatalog::builtin()
+                .clone(),
+            checker_presentation_model: crate::checker_messages::CheckerPresentationModel::empty()
+                .clone(),
+            checker_message_renderer: Arc::new(
+                crate::checker_messages::StandardCheckerMessageRenderer,
+            ),
             typed_resources: HashMap::new(),
             named_resources: BTreeMap::new(),
             locals: BTreeMap::new(),
@@ -251,7 +303,8 @@ impl Default for UserContext {
                     .unwrap_or_default()
                     .as_nanos()
             ),
-            runtime_telemetry: Arc::new(crate::NoopRuntimeTelemetry),
+            runtime_telemetry: crate::telemetry_startup::standard_runtime_telemetry(),
+            runtime_logger,
             last_fix_evidence: Mutex::new(Vec::new()),
         }
     }
@@ -371,7 +424,20 @@ impl UserContext {
         &self.runtime_telemetry
     }
 
+    pub fn runtime_propagation_carrier(&self) -> BTreeMap<String, String> {
+        let mut carrier = BTreeMap::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.runtime_telemetry.inject_context(&mut carrier);
+        }));
+        if result.is_err() {
+            carrier.clear();
+        }
+        carrier
+    }
+
     pub(crate) fn runtime_telemetry_is_noop(&self) -> bool {
+        // This describes only the SDK adapter. Local operation logging is
+        // independent; stream wrappers retain their existing identity rules.
         self.runtime_telemetry.is_noop()
     }
 
@@ -379,7 +445,13 @@ impl UserContext {
         &self,
         operation: crate::RuntimeOperation,
     ) -> crate::FailOpenRuntimeTelemetryScope {
-        crate::start_runtime_operation(&self.runtime_telemetry, operation)
+        let telemetry: Arc<dyn crate::RuntimeTelemetry> =
+            Arc::new(crate::runtime_logging::LocalLogTelemetry {
+                delegate: self.runtime_telemetry.clone(),
+                logger: self.runtime_logger.clone(),
+                error_category: None,
+            });
+        crate::start_runtime_operation(&telemetry, operation)
     }
 
     pub fn user_identifier(&self) -> Option<&str> {
@@ -486,6 +558,13 @@ impl UserContext {
         self.entity_graph_decoders.contains(entity)
     }
 
+    pub(crate) fn json_graph_capability(
+        &self,
+        descriptor: &EntityDescriptor,
+    ) -> Result<bool, teaql_core::EntityError> {
+        self.entity_graph_decoders.json_capability(descriptor)
+    }
+
     pub(crate) fn decode_compact_entity_into_graph(
         &self,
         entity: &str,
@@ -528,6 +607,28 @@ impl UserContext {
     ) -> Result<(), teaql_core::EntityError> {
         self.entity_graph_decoders
             .decode_compact_batch(entity, rows, root, graph)
+    }
+
+    #[allow(clippy::too_many_arguments)] // Same native decoder boundary, retaining list metadata.
+    pub(crate) fn decode_compact_smart_list_into_graph(
+        &self,
+        entity: &str,
+        rows: teaql_core::SmartList<teaql_core::CompactRow>,
+        root: &EntityRuntimeState,
+        graph: &mut EntityGraphBuilder,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+    ) -> Result<(), teaql_core::EntityError> {
+        self.entity_graph_decoders.decode_compact_smart_list(
+            entity,
+            rows,
+            root,
+            graph,
+            owner_entity,
+            owner_id,
+            relation,
+        )
     }
 
     #[allow(clippy::too_many_arguments)] // Mirrors the generated decoder contract.
@@ -623,6 +724,26 @@ impl UserContext {
         self.internal_id_generator = Some(Box::new(generator));
     }
 
+    pub fn with_business_clock(mut self, clock: impl BusinessClock + 'static) -> Self {
+        self.business_clock = Box::new(clock);
+        self
+    }
+
+    pub fn set_business_clock(&mut self, clock: impl BusinessClock + 'static) {
+        self.business_clock = Box::new(clock);
+    }
+
+    pub fn business_time(&self) -> chrono::DateTime<chrono::Utc> {
+        self.business_clock.business_time()
+    }
+
+    pub fn business_date(&self) -> chrono::NaiveDate {
+        self.get_resource::<BusinessDate>()
+            .copied()
+            .map(|date| date.0)
+            .unwrap_or_else(|| self.business_clock.business_date())
+    }
+
     pub fn with_schema_provider(mut self, provider: impl SchemaProvider + 'static) -> Self {
         self.schema_provider = Some(Box::new(provider));
         self
@@ -639,6 +760,14 @@ impl UserContext {
             .ok_or_else(|| RuntimeError::Schema("missing schema provider".to_owned()))?;
         let invocation = SchemaInvocation { _context_owned: () };
         provider.ensure_schema(self, &invocation).await?;
+        self.ensure_dynamic_fields_schema()
+            .await
+            .map_err(RuntimeError::DynamicField)?;
+        if let Some(business_ids) = self.get_resource::<BusinessIdSchemaService>() {
+            business_ids
+                .ensure_schema(self)
+                .map_err(|error| RuntimeError::Schema(error.to_string()))?;
+        }
         GENERATED_SCHEMA_BOOTSTRAP_MODE
             .scope((), async {
                 for bootstrap in &self.generated_schema_bootstraps {
@@ -673,7 +802,11 @@ impl UserContext {
         let generator = self.internal_id_generator.as_ref().ok_or_else(|| {
             RuntimeError::IdGeneration("missing internal ID generator".to_owned())
         })?;
-        generator.ensure_floor(entity_name, fixed_id)?;
+        let id_space = self
+            .entity(entity_name)
+            .map(|descriptor| descriptor.inheritance_root().name.as_str())
+            .unwrap_or(entity_name);
+        generator.ensure_floor(id_space, fixed_id)?;
         entity.mark_as_new();
         Ok(())
     }
@@ -696,6 +829,35 @@ impl UserContext {
         self.i18n_catalog = catalog;
     }
 
+    pub fn set_checker_message_catalog(
+        &mut self,
+        catalog: Arc<crate::checker_messages::CheckerMessageCatalog>,
+    ) {
+        self.checker_message_catalog = catalog;
+    }
+
+    /// Validation and compilation precede replacement; a bad resource cannot
+    /// leave a partially installed catalog in this Context.
+    pub fn install_checker_message_catalog(&mut self, source: &str) -> Result<(), RuntimeError> {
+        let catalog = crate::checker_messages::CheckerMessageCatalog::from_json(source)?;
+        self.checker_message_catalog = Arc::new(catalog);
+        Ok(())
+    }
+
+    pub fn set_checker_presentation_model(
+        &mut self,
+        model: Arc<crate::checker_messages::CheckerPresentationModel>,
+    ) {
+        self.checker_presentation_model = model;
+    }
+
+    pub fn set_checker_message_renderer(
+        &mut self,
+        renderer: Arc<dyn crate::checker_messages::CheckerMessageRenderer>,
+    ) {
+        self.checker_message_renderer = renderer;
+    }
+
     pub fn language(&self) -> Language {
         self.language
     }
@@ -713,6 +875,10 @@ impl UserContext {
     }
 
     pub fn generate_id(&self, entity: &str) -> Result<Option<u64>, RuntimeError> {
+        let entity = self
+            .entity(entity)
+            .map(|descriptor| descriptor.inheritance_root().name.as_str())
+            .unwrap_or(entity);
         self.internal_id_generator
             .as_ref()
             .map(|generator| generator.generate_id(entity))
@@ -720,10 +886,16 @@ impl UserContext {
     }
 
     pub fn next_id(&self, entity: &str) -> Result<u64, RuntimeError> {
-        match self.generate_id(entity)? {
-            Some(id) => Ok(id),
-            None => local_id_generator().generate_id(entity),
+        let id = match self.generate_id(entity)? {
+            Some(id) => id,
+            None => local_id_generator().generate_id(entity)?,
+        };
+        if id == 0 {
+            return Err(RuntimeError::IdGeneration(format!(
+                "ID generator returned reserved zero ID for {entity}"
+            )));
         }
+        Ok(id)
     }
 
     pub fn entity(&self, name: &str) -> Option<&EntityDescriptor> {
@@ -739,6 +911,31 @@ impl UserContext {
             .unwrap_or_default()
     }
 
+    pub fn require_entity_symbols(
+        &self,
+        symbols: &'static teaql_core::EntitySymbols,
+    ) -> Result<&EntityDescriptor, RuntimeError> {
+        self.metadata
+            .as_ref()
+            .and_then(|metadata| metadata.entity_by_symbols(symbols))
+            .ok_or_else(|| {
+                RuntimeError::Graph(format!(
+                    "generated symbol model is not registered for {}",
+                    symbols.name().unwrap_or("<invalid entity ID>")
+                ))
+            })
+    }
+
+    pub(crate) fn require_entity_key(
+        &self,
+        key: &crate::EntityKey,
+    ) -> Result<&EntityDescriptor, RuntimeError> {
+        match key.symbols() {
+            Some(symbols) => self.require_entity_symbols(symbols),
+            None => self.require_entity(&key.entity),
+        }
+    }
+
     pub fn require_entity(&self, name: &str) -> Result<&EntityDescriptor, RuntimeError> {
         self.entity(name)
             .ok_or_else(|| RuntimeError::MissingEntity(name.to_owned()))
@@ -750,6 +947,257 @@ impl UserContext {
     {
         self.typed_resources
             .insert(TypeId::of::<T>(), Box::new(resource));
+    }
+
+    pub fn with_http_request_service(mut self, service: Arc<dyn HttpRequestService>) -> Self {
+        self.set_http_request_service(service);
+        self
+    }
+
+    pub fn set_http_request_service(&mut self, service: Arc<dyn HttpRequestService>) {
+        self.insert_resource(HttpRequestServiceResource(service));
+    }
+
+    pub fn http_requests(&self) -> Result<&Arc<dyn HttpRequestService>, HttpFailure> {
+        self.get_resource::<HttpRequestServiceResource>()
+            .map(|resource| &resource.0)
+            .ok_or(HttpFailure::ProfileNotConfigured)
+    }
+
+    pub fn with_entity_reference_codec(mut self, codec: Arc<dyn EntityReferenceCodec>) -> Self {
+        self.set_entity_reference_codec(codec);
+        self
+    }
+
+    pub fn set_entity_reference_codec(&mut self, codec: Arc<dyn EntityReferenceCodec>) {
+        self.insert_resource(EntityReferenceCodecResource(codec));
+    }
+
+    pub fn encode_entity_reference(
+        &self,
+        entity_type: &str,
+        id: u64,
+        version: i64,
+        purpose: &str,
+        lifetime: std::time::Duration,
+    ) -> Result<String, EntityReferenceTokenError> {
+        if let Some(codec) = self.get_resource::<EntityReferenceCodecResource>() {
+            return codec.0.encode(entity_type, id, version, purpose, lifetime);
+        }
+        Err(EntityReferenceTokenError::codec_required())
+    }
+
+    pub fn decode_entity_reference(
+        &self,
+        token: &str,
+        expected_entity_type: &str,
+        purpose: &str,
+    ) -> Result<EntityReferenceClaims, EntityReferenceTokenError> {
+        if let Some(codec) = self.get_resource::<EntityReferenceCodecResource>() {
+            return codec.0.decode(token, expected_entity_type, purpose);
+        }
+        Err(EntityReferenceTokenError::codec_required())
+    }
+
+    pub fn with_round_trip_reference_runtime(
+        mut self,
+        runtime: Arc<ContextBoundReferenceRuntime>,
+    ) -> Self {
+        self.set_round_trip_reference_runtime(runtime);
+        self
+    }
+
+    pub fn set_round_trip_reference_runtime(&mut self, runtime: Arc<ContextBoundReferenceRuntime>) {
+        self.insert_resource(ContextBoundReferenceRuntimeResource(runtime));
+    }
+
+    pub fn with_trusted_reference_principal(
+        mut self,
+        principal: TrustedReferencePrincipal,
+    ) -> Self {
+        self.set_trusted_reference_principal(principal);
+        self
+    }
+
+    pub fn set_trusted_reference_principal(&mut self, principal: TrustedReferencePrincipal) {
+        self.insert_resource(TrustedReferencePrincipalResource(principal));
+    }
+
+    pub fn with_context_bound_document_service(
+        mut self,
+        service: Arc<dyn ContextBoundDocumentService>,
+    ) -> Self {
+        self.set_context_bound_document_service(service);
+        self
+    }
+
+    pub fn set_context_bound_document_service(
+        &mut self,
+        service: Arc<dyn ContextBoundDocumentService>,
+    ) {
+        self.insert_resource(ContextBoundDocumentServiceResource(service));
+    }
+
+    pub async fn open_document(
+        &self,
+        request: DocumentOpenRequest,
+    ) -> Result<ContextualDocument, DocumentRoundTripError> {
+        self.context_bound_document_service()?
+            .open_document(self, self.trusted_reference_principal()?, request)
+            .await
+    }
+
+    pub async fn accept_document(
+        &self,
+        request: DocumentAcceptRequest,
+    ) -> Result<AcceptedContextualDocument, DocumentRoundTripError> {
+        self.context_bound_document_service()?
+            .accept_document(self, self.trusted_reference_principal()?, request)
+            .await
+    }
+
+    pub fn issue_document_snapshot(
+        &self,
+        snapshot: DocumentSnapshot,
+        lifetime: std::time::Duration,
+    ) -> Result<String, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?
+            .issue_document_snapshot(self.trusted_reference_principal()?, snapshot, lifetime)
+    }
+
+    pub fn consume_document_snapshot(
+        &self,
+        token: &str,
+        expected_aggregate_type: &str,
+        expected_purpose: &str,
+    ) -> Result<VerifiedDocumentSnapshot, DocumentRoundTripError> {
+        self.round_trip_reference_runtime()?
+            .consume_document_snapshot(
+                self.trusted_reference_principal()?,
+                token,
+                expected_aggregate_type,
+                expected_purpose,
+            )
+    }
+
+    pub fn reference_mode(&self) -> Result<ReferenceMode, RoundTripReferenceError> {
+        Ok(self.round_trip_reference_runtime()?.mode())
+    }
+
+    pub fn reference_startup_notice(
+        &self,
+    ) -> Result<Option<ReferenceStartupNotice>, RoundTripReferenceError> {
+        Ok(self.round_trip_reference_runtime()?.startup_notice())
+    }
+
+    pub fn reference_for(
+        &self,
+        identity: ReferenceIdentity,
+        document_scope: &ReferenceDocumentScope,
+        lifetime: std::time::Duration,
+    ) -> Result<ExternalEntityReference, RoundTripReferenceError> {
+        self.round_trip_reference_runtime()?.issue(
+            self.trusted_reference_principal()?,
+            document_scope,
+            identity,
+            lifetime,
+        )
+    }
+
+    pub fn resolve_reference(
+        &self,
+        reference: &ExternalEntityReference,
+        expected_entity_type: &str,
+        document_scope: &ReferenceDocumentScope,
+    ) -> Result<ResolvedEntityReference, RoundTripReferenceError> {
+        self.round_trip_reference_runtime()?.consume(
+            self.trusted_reference_principal()?,
+            document_scope,
+            reference,
+            expected_entity_type,
+        )
+    }
+
+    pub fn serialize_reference(
+        &self,
+        reference: &ExternalEntityReference,
+    ) -> Result<serde_json::Value, RoundTripReferenceError> {
+        // Requiring the installed runtime prevents a caller from serializing
+        // a raw reference under a governed process assembly.
+        let mode = self.reference_mode()?;
+        match (mode, reference) {
+            (ReferenceMode::Governed, ExternalEntityReference::Governed(_))
+            | (ReferenceMode::Raw, ExternalEntityReference::Raw { .. }) => {
+                Ok(ReferenceWireCodec::serialize(reference))
+            }
+            _ => Err(RoundTripReferenceError::invalid()),
+        }
+    }
+
+    pub fn deserialize_reference(
+        &self,
+        value: &serde_json::Value,
+    ) -> Result<ExternalEntityReference, RoundTripReferenceError> {
+        ReferenceWireCodec::deserialize(value, self.reference_mode()?)
+    }
+
+    fn round_trip_reference_runtime(
+        &self,
+    ) -> Result<&ContextBoundReferenceRuntime, RoundTripReferenceError> {
+        self.get_resource::<ContextBoundReferenceRuntimeResource>()
+            .map(|resource| resource.0.as_ref())
+            .ok_or_else(RoundTripReferenceError::configuration)
+    }
+
+    fn trusted_reference_principal(
+        &self,
+    ) -> Result<&TrustedReferencePrincipal, RoundTripReferenceError> {
+        self.get_resource::<TrustedReferencePrincipalResource>()
+            .map(|resource| &resource.0)
+            .ok_or_else(RoundTripReferenceError::authorization_required)
+    }
+
+    fn context_bound_document_service(
+        &self,
+    ) -> Result<&dyn ContextBoundDocumentService, DocumentRoundTripError> {
+        self.get_resource::<ContextBoundDocumentServiceResource>()
+            .map(|resource| resource.0.as_ref())
+            .ok_or_else(DocumentRoundTripError::configuration)
+    }
+
+    pub fn with_business_id_service(mut self, service: BusinessIdService) -> Self {
+        self.insert_resource(service);
+        self
+    }
+
+    pub fn set_business_id_service(&mut self, service: BusinessIdService) {
+        self.insert_resource(service);
+    }
+
+    pub fn set_business_id_key_provider<K>(&mut self, key_provider: K) -> Result<(), ContextError>
+    where
+        K: crate::BusinessIdKeyProvider + 'static,
+    {
+        let service = self.business_ids()?.clone().with_key_provider(key_provider);
+        self.insert_resource(service);
+        Ok(())
+    }
+
+    /// Installs one provider-backed allocator as both the generated Fix service
+    /// and an explicit `ensure_schema` infrastructure contributor.
+    pub fn set_business_id_infrastructure<A>(&mut self, allocator: A)
+    where
+        A: BusinessIdAllocator + BusinessIdSchemaContributor + 'static,
+    {
+        let allocator = Arc::new(allocator);
+        let allocation_service: Arc<dyn BusinessIdAllocator> = allocator.clone();
+        let schema_contributor: Arc<dyn BusinessIdSchemaContributor> = allocator;
+        self.insert_resource(BusinessIdService::from_shared(allocation_service));
+        self.insert_resource(BusinessIdSchemaService::from_shared(schema_contributor));
+    }
+
+    pub fn business_ids(&self) -> Result<&BusinessIdService, ContextError> {
+        self.require_resource::<BusinessIdService>()
     }
 
     pub fn get_resource<T>(&self) -> Option<&T>
@@ -836,11 +1284,12 @@ impl UserContext {
     /// graph save. The task-local scope keeps concurrent saves on one context
     /// isolated; standalone checker calls receive their own current value.
     pub fn fix_time(&self) -> teaql_core::time::Timestamp {
-        crate::entity_save::current_graph_fix_time()
+        crate::entity_save::current_graph_fix_time(self)
+            .unwrap_or_else(|| teaql_core::time::Timestamp(self.business_time().timestamp_millis()))
     }
 
     pub fn record_fix_evidence(&self, evidence: FixEvidence) {
-        crate::entity_save::record_graph_fix_evidence(evidence);
+        crate::entity_save::record_graph_fix_evidence(self, evidence);
     }
 
     pub(crate) fn replace_last_fix_evidence(&self, evidence: Vec<FixEvidence>) {
@@ -865,6 +1314,68 @@ impl UserContext {
         values: &mut crate::EntityValues,
         location: &ObjectLocation,
     ) -> Result<(), RuntimeError> {
+        self.check_and_fix_values_scoped(entity, values, location, None)
+    }
+
+    fn check_and_fix_values_scoped(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+        changed: Option<bool>,
+    ) -> Result<(), RuntimeError> {
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, true)?;
+        }
+        let checker = self
+            .checker_registry
+            .as_ref()
+            .and_then(|registry| registry.checker(entity));
+        let fields: std::collections::BTreeSet<_> = checker
+            .as_ref()
+            .map(|checker| {
+                checker
+                    .managed_context_fields()
+                    .iter()
+                    .chain(checker.custom_context_fields())
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let before: BTreeMap<_, _> = fields
+            .iter()
+            .filter_map(|field| {
+                values
+                    .get(field)
+                    .cloned()
+                    .map(|value| ((*field).to_owned(), value))
+            })
+            .collect();
+        let result = crate::checker_messages::with_check_origin(self, entity, location, || {
+            self.check_and_fix_values_inner(entity, values, location, changed)
+        });
+        if result.is_err() {
+            for field in fields {
+                if let Some(value) = before.get(field) {
+                    values.insert(field.to_owned(), value.clone());
+                } else {
+                    values.remove(field);
+                }
+            }
+        }
+        result
+    }
+
+    fn check_and_fix_values_inner(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+        changed: Option<bool>,
+    ) -> Result<(), RuntimeError> {
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, true)?;
+        }
         let status = CheckObjectStatus::from_values(values);
         let checker = self
             .checker_registry
@@ -872,19 +1383,167 @@ impl UserContext {
             .and_then(|registry| registry.checker(entity));
         let mut results = CheckResults::new();
         if let Some(checker) = checker {
-            checker.check_and_fix(self, values, location, &mut results);
+            crate::entity_save::with_fix_time(self, || {
+                if let Some(changed) = changed {
+                    checker.check_and_fix_for_mutation(
+                        self,
+                        values,
+                        location,
+                        &mut results,
+                        changed,
+                    );
+                } else {
+                    checker.check_and_fix(self, values, location, &mut results);
+                }
+            });
+            // Bind rule ownership before localization. Nested/custom checkers
+            // may already provide a more specific type; never replace it with
+            // the current graph root or infer identity from a rendered path.
+            for result in &mut results {
+                if result
+                    .entity_type
+                    .as_deref()
+                    .is_none_or(|name| name.trim().is_empty())
+                {
+                    result.entity_type = Some(checker.entity().to_owned());
+                }
+            }
+        }
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, true)?;
         }
 
         // Custom checkers get the first chance to supply or fix a value.
         self.collect_required_property_results(entity, values, status, location, &mut results);
+        self.collect_boolean_property_results(entity, values, location, &mut results);
+        self.collect_numeric_property_results(entity, values, location, &mut results);
         if results.is_empty() {
             return Ok(());
         }
+        self.translate_check_results_with_values(&mut results, Some((entity, values)));
+        Err(RuntimeError::Check(results))
+    }
+
+    /// Native graph/provider bridge. Public Checker callbacks remain canonical;
+    /// only this explicit boundary returns values to native storage vocabulary.
+    pub(crate) fn check_and_fix_storage_values_at(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+    ) -> Result<(), RuntimeError> {
+        let result = self.check_and_fix_values_at(entity, values, location);
+        if let Some(descriptor) = self.entity(entity) {
+            crate::ledger_keys::map_checker_values(descriptor, values, false)?;
+        }
+        result
+    }
+
+    pub(crate) fn check_and_fix_storage_mutation_at(
+        &self,
+        entity: &str,
+        values: &mut crate::EntityValues,
+        location: &ObjectLocation,
+        intent: crate::checker::CheckMutationState<'_>,
+    ) -> Result<(), RuntimeError> {
+        let descriptor = self.require_entity(entity)?;
+        let checker = self
+            .checker_registry
+            .as_ref()
+            .and_then(|registry| registry.checker(entity));
+        let fields = checker
+            .as_ref()
+            .map(|checker| checker.managed_context_fields())
+            .unwrap_or(&[]);
+        let custom = checker
+            .as_ref()
+            .map(|checker| checker.custom_context_fields())
+            .unwrap_or(&[]);
+        let changed = intent.has_effective_change(values, descriptor, fields, custom);
+        let automatic = crate::ledger_keys::storage_fields_from_ledger(
+            descriptor,
+            &fields
+                .iter()
+                .chain(custom)
+                .map(|field| (*field).to_owned())
+                .collect(),
+        )?;
+        let before: Vec<_> = automatic
+            .into_iter()
+            .map(|field| {
+                let value = values.get(&field).cloned();
+                (field, value)
+            })
+            .collect();
+        let create = crate::CheckObjectStatus::from_values(values).is_create();
+        let result = self.check_and_fix_values_scoped(entity, values, location, Some(changed));
+        crate::ledger_keys::map_checker_values(descriptor, values, false)?;
+        // Inspect final persisted business values, not only the caller's dirty
+        // names: Fix can both repair an edit and introduce another valid edit.
+        // No original snapshot means no proof for cancelling unknown input.
+        if result.is_ok() && !create && intent.original.is_some() {
+            let final_intent = crate::checker::CheckMutationState {
+                original: intent.original,
+                dirty: None,
+                dynamic_changed: intent.dynamic_changed,
+            };
+            if !final_intent.has_effective_change(values, descriptor, fields, custom) {
+                for (field, old) in before {
+                    if let Some(old) = old {
+                        values.insert(field, old);
+                    } else {
+                        values.remove(&field);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Recheck intrinsic carriers in an already prepared sparse policy plan.
+    /// Never repeat customer Fix or apply full-object requiredness to changes.
+    pub(crate) fn validate_final_plan_scalars(
+        &self,
+        entity: &str,
+        values: &BTreeMap<String, Value>,
+    ) -> Result<(), RuntimeError> {
+        // A typed SQL null is still null. Normalize only this uncommon case,
+        // borrowing the ordinary plan map without copying its strings/values.
+        let normalized;
+        let values = if values
+            .values()
+            .any(|value| matches!(value, Value::TypedNull(_)))
+        {
+            normalized = values
+                .iter()
+                .map(|(field, value)| {
+                    (
+                        field.clone(),
+                        if matches!(value, Value::TypedNull(_)) {
+                            Value::Null
+                        } else {
+                            value.clone()
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            &normalized
+        } else {
+            values
+        };
+        let mut results = CheckResults::new();
+        let location = ObjectLocation::root();
+        self.collect_boolean_property_results(entity, values, &location, &mut results);
+        self.collect_numeric_property_results(entity, values, &location, &mut results);
+        if results.is_empty() {
+            return Ok(());
+        }
+        // Intrinsic messages describe the expected type, never the input value.
         self.translate_check_results(&mut results);
         Err(RuntimeError::Check(results))
     }
 
-    /// Validate the sparse values that a ledger CREATE will actually insert.
+    /// Validate required/portable scalar values a ledger CREATE actually inserts.
     /// This is intentionally metadata-only: the complete typed graph already
     /// ran Checker/Fix once, and running it again on sparse changes would
     /// misclassify unchanged loaded fields and repeat Fix side effects.
@@ -902,10 +1561,12 @@ impl UserContext {
             location,
             &mut results,
         );
+        self.collect_boolean_property_results(entity, values, location, &mut results);
+        self.collect_numeric_property_results(entity, values, location, &mut results);
         if results.is_empty() {
             return Ok(());
         }
-        self.translate_check_results(&mut results);
+        self.translate_check_results_with_values(&mut results, Some((entity, values)));
         Err(RuntimeError::Check(results))
     }
 
@@ -933,32 +1594,49 @@ impl UserContext {
                 // create caller must never be required to provide it.
                 .filter(|property| !property.nullable && !property.is_version)
             {
-                let missing = !values.contains_key(&property.name);
-                let null = matches!(values.get(&property.name), Some(Value::Null));
-                let property_location = location.clone().member(&property.name);
+                let canonical =
+                    crate::ledger_keys::canonical_field_from_storage(descriptor, &property.name)
+                        .unwrap_or_else(|_| property.name.clone());
+                let value = values
+                    .get(&canonical)
+                    .or_else(|| values.get(&property.name));
+                let missing = value.is_none();
+                let null = matches!(value, Some(Value::Null));
+                let property_location = location.clone().member(&canonical);
                 let already_reported = results.iter().any(|result| {
                     result.rule == crate::CheckRule::Required
                         && result.location == property_location
                 });
                 if ((status.is_create() && missing) || null) && !already_reported {
-                    results.push(CheckResult::required(property_location));
+                    results.push(CheckResult::required(property_location).with_entity_type(entity));
                 }
             }
         }
     }
 
     pub fn translate_check_results(&self, results: &mut CheckResults) {
-        for result in results {
-            if result.message.is_none() {
-                result.message = Some(
-                    self.i18n_catalog
-                        .translate_check_result(self.language, result),
-                );
-            }
-        }
+        self.translate_check_results_with_values(results, None);
+    }
+
+    /// For callers that already own a structured graph validation origin.
+    /// This argument is not the violation's declaring entity type.
+    pub fn translate_check_results_from(&self, origin: &str, results: &mut CheckResults) {
+        crate::checker_messages::with_origin(self, origin, || {
+            self.translate_check_results(results)
+        });
+    }
+
+    fn translate_check_results_with_values(
+        &self,
+        results: &mut CheckResults,
+        source_values: Option<(&str, &crate::EntityValues)>,
+    ) {
+        let warnings = std::cell::RefCell::new(BTreeSet::new());
+        crate::checker_privacy::translate(self, results, source_values, &warnings);
     }
 
     pub fn send_event(&self, mut event: RawAuditEvent) -> Result<(), RuntimeError> {
+        event.mutation_governance = crate::current_mutation_governance();
         if self.is_generated_schema_bootstrap()
             && matches!(
                 event.kind,
@@ -988,6 +1666,13 @@ impl UserContext {
                 occurred_at_millis,
             });
         }
+        match crate::commit_audit::try_enqueue(self, event) {
+            None => Ok(()),
+            Some(event) => self.deliver_audit_event(event),
+        }
+    }
+
+    pub(crate) fn deliver_audit_event(&self, event: RawAuditEvent) -> Result<(), RuntimeError> {
         let scope = self.start_runtime_operation(
             crate::RuntimeOperation::new("audit", format!("{}.event", event.entity))
                 .attribute("teaql.entity.type", event.entity.clone()),
@@ -1004,19 +1689,23 @@ impl UserContext {
         if let Some(sink) = self.event_sink.as_ref() {
             sink.on_event(self, &event)?;
         }
-        if let Some(sink) = self.custom_event_sink.as_ref() {
-            let (mask_fields, max_len) = self
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.entity(&event.entity))
-                .map(|desc| (desc.audit_mask_fields.clone(), desc.audit_value_max_len))
-                .unwrap_or_else(|| (vec![], None));
+        let (mask_fields, max_len) = self
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.entity(&event.entity))
+            .map(|desc| (desc.audit_mask_fields.clone(), desc.audit_value_max_len))
+            .unwrap_or_else(|| (vec![], None));
 
+        if let Some(sink) = self.custom_event_sink.as_ref() {
             let safe_event = event.build_safe_event(&mask_fields, max_len);
             sink.on_safe_event(self, &safe_event)?;
         }
 
-        crate::log_formatter::LogManager::write_audit_log(&event);
+        // The plaintext acknowledgement applies to explicitly selected debug
+        // sinks. Ordinary runtime files always use the model's safe projection.
+        self.runtime_logger
+            .audit(&event.build_runtime_log_event(&mask_fields, max_len));
+        crate::log_formatter::LogManager::write_sensitive_audit_log(&event);
 
         Ok(())
     }
@@ -1071,6 +1760,8 @@ mod sql_log_option_tests {
         context.disable_sql_log();
         let now = SystemTime::now();
         context.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            statements: Vec::new(),
+            sql_log: Default::default(),
             backend: "sql".to_owned(),
             operation: teaql_data_service::DataServiceOperation::Query,
             started_at: now,
@@ -1088,12 +1779,14 @@ mod sql_log_option_tests {
     }
 
     #[test]
-    fn default_sql_telemetry_never_retains_bound_values_or_copy_paste_sql() {
+    fn default_sql_telemetry_retains_expanded_masked_sql_not_raw_values() {
         let mut context = UserContext::default();
         let buffer = UnifiedLogBuffer::default();
         context.insert_resource(buffer.clone());
         let now = SystemTime::now();
         context.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            statements: Vec::new(),
+            sql_log: Default::default(),
             backend: "sqlite".to_owned(),
             operation: teaql_data_service::DataServiceOperation::Query,
             started_at: now,
@@ -1113,9 +1806,13 @@ mod sql_log_option_tests {
         assert_eq!(entry.sql, "SELECT id FROM account WHERE secret = ?");
         assert_eq!(entry.result_count, Some(1));
         assert_eq!(entry.parameter_count(), 1);
-        assert_eq!(entry.params, vec![Value::Null]);
-        assert!(entry.debug_sql.is_empty());
-        assert!(entry.pretty_sql.is_empty());
+        assert_eq!(entry.params, vec![Value::from("[REDACTED]")]);
+        assert!(
+            entry
+                .debug_sql
+                .contains("secret = '[REDACTED]' /* masked */")
+        );
+        assert_eq!(entry.pretty_sql, entry.debug_sql);
         let buffered = buffer.entries.lock().unwrap();
         let LogPayload::Sql(buffered_sql) = &buffered[0].payload else {
             panic!("expected SQL log");
@@ -1128,17 +1825,9 @@ mod sql_log_option_tests {
         );
         assert!(!ordinary_text.contains("private-value-0123"));
         assert!(!ordinary_text.contains("Debug SQL:"));
-        let mut diagnostic_entry = entry.clone();
-        diagnostic_entry.params = vec![Value::from("private-value-0123")];
-        diagnostic_entry.debug_sql =
-            "SELECT id FROM account WHERE secret = 'private-value-0123'".to_owned();
-        let diagnostic_text = crate::log_formatter::LogFormatter::format_sql_log(
-            &crate::log_formatter::HumanReaderFormatter,
-            &diagnostic_entry.trace_path,
-            &diagnostic_entry,
-        );
-        assert!(diagnostic_text.contains("Debug SQL:"));
-        assert!(diagnostic_text.contains("private-value-0123"));
+        assert!(!ordinary_text.contains("secret = ?"));
+        assert!(ordinary_text.contains("/* masked */"));
+        assert!(ordinary_text.contains("NOT REPLAYABLE"));
     }
 
     #[test]
@@ -1178,6 +1867,8 @@ mod sql_log_option_tests {
             ),
         ];
         context.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            statements: Vec::new(),
+            sql_log: Default::default(),
             backend: "sqlite".to_owned(),
             operation: teaql_data_service::DataServiceOperation::Query,
             started_at: now,
@@ -1217,8 +1908,8 @@ mod sql_log_option_tests {
         assert_eq!(query.trace_path[6].entity_type, "select");
         assert_eq!(query.sql, "SELECT name FROM school_data WHERE id = ?");
         assert_eq!(query.parameter_count(), 1);
-        assert_eq!(query.params, vec![Value::Null]);
-        assert!(query.debug_sql.is_empty());
+        assert_eq!(query.params, vec![Value::from("[REDACTED]")]);
+        assert!(query.debug_sql.contains("id = '[REDACTED]' /* masked */"));
         assert_eq!(query.result_count, Some(2));
 
         let mutation_trace = vec![teaql_core::TraceNode::typed(
@@ -1228,6 +1919,8 @@ mod sql_log_option_tests {
             "correct school name",
         )];
         context.record_metadata_log(&teaql_data_service::ExecutionMetadata {
+            statements: Vec::new(),
+            sql_log: Default::default(),
             backend: "sqlite".to_owned(),
             operation: teaql_data_service::DataServiceOperation::Update,
             started_at: now,
@@ -1243,7 +1936,10 @@ mod sql_log_option_tests {
         });
         let mutation = context.sql_logs().pop().expect("mutation log");
         assert_eq!(mutation.parameter_count(), 2);
-        assert_eq!(mutation.params, vec![Value::Null, Value::Null]);
+        assert_eq!(
+            mutation.params,
+            vec![Value::from("[REDACTED]"), Value::from("[REDACTED]")]
+        );
         assert_eq!(mutation.comment, None);
         assert_eq!(mutation.purpose, None);
         assert_eq!(
@@ -1264,7 +1960,12 @@ mod sql_log_option_tests {
             ]
         );
         assert_eq!(mutation.affected_rows, Some(1));
-        assert!(mutation.debug_sql.is_empty());
+        assert!(
+            mutation
+                .debug_sql
+                .contains("name = '[REDACTED]' /* masked */ WHERE id = '[REDACTED]' /* masked */")
+        );
+        assert!(!mutation.debug_sql.contains("Academy"));
     }
 }
 

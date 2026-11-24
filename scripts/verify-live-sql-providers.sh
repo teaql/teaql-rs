@@ -19,15 +19,15 @@ verify_expected_output() {
 }
 
 if [[ "${1:-}" == "--self-test" ]]; then
-  green='test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s'
+  green='test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s'
   partial='test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s'
-  ignored='test result: ok. 29 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.00s'
-  verify_expected_output postgres 29 "$green"
-  if verify_expected_output postgres 29 "$partial" >/dev/null 2>&1; then
+  ignored='test result: ok. 30 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.00s'
+  verify_expected_output postgres 30 "$green"
+  if verify_expected_output postgres 30 "$partial" >/dev/null 2>&1; then
     printf 'FAIL self-test: partial execution was accepted\n' >&2
     exit 1
   fi
-  if verify_expected_output postgres 29 "$ignored" >/dev/null 2>&1; then
+  if verify_expected_output postgres 30 "$ignored" >/dev/null 2>&1; then
     printf 'FAIL self-test: ignored test was accepted\n' >&2
     exit 1
   fi
@@ -68,7 +68,21 @@ run_expected_suite() {
   verify_expected_output "$package" "$expected" "$output"
 }
 
-run_expected_suite teaql-provider-sqlite '42,1' --lib --tests
-run_expected_suite teaql-provider-postgres '29' --lib
-run_expected_suite teaql-provider-mysql '23' --lib
+# Inventory includes the existing opt-in matched-driver test and the added
+# trace/privacy regressions. Execute the benchmark's correctness assertions too;
+# do not silently accept an ignored test or publish CI timings as benchmarks.
+run_expected_suite teaql-provider-sqlite '153,10,1,27,5,1,18,1,15,5,2,4,15,12,3,3' --lib --tests -- --include-ignored
+# Ordinary provider tests use their dedicated provider database. The new
+# statistics/inheritance binaries require a separate, ownership-marked fixture;
+# execute every binary explicitly rather than silently skipping live coverage.
+run_expected_suite teaql-provider-postgres '38,1' --lib --test guarded_mutation
+if [[ ! "${TEAQL_ROLLUP_TEST_POSTGRES_URL:-}" =~ ^postgres(ql)?://[^/]+/teaql_rollup_326$ ]]; then
+  printf 'TEAQL_ROLLUP_TEST_POSTGRES_URL must name the ownership-checked teaql_rollup_326 fixture\n' >&2
+  exit 1
+fi
+TEAQL_TEST_POSTGRES_URL="$TEAQL_ROLLUP_TEST_POSTGRES_URL" TEAQL_REQUIRE_LIVE_DB=true \
+  run_expected_suite teaql-provider-postgres '3' --test inherited_lifecycle -- --include-ignored --test-threads=1
+TEAQL_TEST_POSTGRES_URL="$TEAQL_ROLLUP_TEST_POSTGRES_URL" TEAQL_REQUIRE_LIVE_DB=true \
+  run_expected_suite teaql-provider-postgres '16' --test layered_statistics -- --test-threads=1
+run_expected_suite teaql-provider-mysql '24,1' --lib --tests
 printf 'PASS live SQLite/PostgreSQL/MySQL provider suites (isolated database URLs supplied)\n'

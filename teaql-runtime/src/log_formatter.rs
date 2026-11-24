@@ -99,26 +99,42 @@ impl LogFormatter for HumanReaderFormatter {
 
         let elapsed_us = (entry.elapsed.as_secs_f64() * 1_000_000.0).round() as u64;
         let intent = format!(
-            "comment={:?} purpose={:?} auditReason={:?}",
-            entry.comment, entry.purpose, entry.audit_reason
+            "outcome={} comment={:?} purpose={:?} auditReason={:?} traceChain=[{}]",
+            entry
+                .log_context
+                .execution_outcome
+                .map(|outcome| outcome.as_str())
+                .unwrap_or("unknown"),
+            entry.comment,
+            entry.purpose,
+            entry.audit_reason,
+            self.format_trace_chain(&entry.trace_chain)
         );
-        let mut output = format!(
-            "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}] {}\n          Parameterized SQL: {}",
+        let tree = entry
+            .log_context
+            .request_tree
+            .as_deref()
+            .map(|nodes| {
+                format!(
+                    " requestTree={}",
+                    teaql_core::QueryRequestTraceNode::to_json_value(nodes)
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            "[{}]-[{:>5}µs]-[DEBUG]-SqlLogEntry{} - [{}] {}{}\n          SQL: {}",
             ts,
             elapsed_us,
             trace_display,
             entry.result_summary,
             intent,
-            entry.sql.replace('\n', " ")
-        );
-        if !entry.debug_sql.is_empty() {
-            output.push_str(&format!(
-                " params={:?}\n          Debug SQL: {}",
-                entry.params,
-                entry.debug_sql.replace('\n', " ")
-            ));
-        }
-        output
+            tree,
+            if entry.debug_sql.is_empty() {
+                "[SQL omitted: missing safe projection; NOT REPLAYABLE]"
+            } else {
+                &entry.debug_sql
+            }
+        )
     }
 
     fn format_audit_log(&self, event: &RawAuditEvent) -> String {
@@ -330,7 +346,6 @@ pub struct LogManager;
 static LOG_ENDPOINT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 static SQL_DEBUG_ENDPOINT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 static AUDIT_DEBUG_ENDPOINT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-static HEADER_WRITTEN: std::sync::Once = std::sync::Once::new();
 
 const EXTREME_TEST_FLAG: &str =
     "__i_agree_to_disable_runtime_trace_only_for_extreme_performance_testing";
@@ -392,66 +407,35 @@ impl LogManager {
             .as_deref()
     }
 
-    fn write_header_if_needed(endpoint: &str) {
-        if endpoint == "off" {
+    pub fn write_sql_log(trace_chain: &[TraceNode], entry: &SqlLogEntry) {
+        // An off endpoint cannot consume the projected entry. Avoid cloning
+        // and masking it when only the in-memory context log is requested.
+        if matches!(Self::get_log_endpoint(), Some("off")) {
             return;
         }
-        HEADER_WRITTEN.call_once(|| {
-            let header = include_str!("log_header.txt");
-            match endpoint {
-                "stdout" => println!("{}", header),
-                path => {
-                    if let Ok(mut file) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(path)
-                    {
-                        use std::io::Write;
-                        let _ = writeln!(file, "{}", header);
-                    }
-                }
-            }
-        });
-    }
-
-    fn write_to_file(content: &str) {
-        if let Some(endpoint) = Self::get_log_endpoint() {
-            if endpoint == "off" {
-                return;
-            }
-
-            Self::write_header_if_needed(endpoint);
-
-            match endpoint {
-                "stdout" => println!("{}", content),
-                path => {
-                    if let Ok(mut file) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(path)
-                    {
-                        use std::io::Write;
-                        let _ = writeln!(file, "{}", content);
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn write_sql_log(trace_chain: &[TraceNode], entry: &SqlLogEntry) {
+        let mut source = entry.clone();
+        source.trace_path = trace_chain.to_vec();
+        let safe = crate::log_privacy::sql_entry(&source, false);
+        let entry = &safe;
         if !Self::config().should_log_sql(&entry.sql) {
             return;
         }
-        if let Some(endpoint) = Self::get_log_endpoint() {
-            if endpoint == "off" {
-                return;
-            }
-            let content = LogFormatterFactory::get_formatter().format_sql_log(trace_chain, entry);
-            Self::write_to_file(&content);
+        if !matches!(Self::get_log_endpoint(), Some("off")) {
+            // Legacy entry points share the startup-owned JSONL destination;
+            // human formatting remains available to explicit debug sinks.
+            crate::RuntimeLogger::default_logger().sql(entry);
         }
     }
 
     pub(crate) fn write_sensitive_sql_log(trace_chain: &[TraceNode], entry: &SqlLogEntry) {
+        if !crate::log_privacy::plaintext_enabled() {
+            return;
+        }
+        let mut source = entry.clone();
+        source.trace_path = trace_chain.to_vec();
+        let projected = crate::log_privacy::sql_entry(&source, true);
+        let entry = &projected;
+        let trace_chain = &projected.trace_path;
         if !Self::config().should_log_sql(&entry.sql)
             || matches!(Self::get_log_endpoint(), Some("off"))
         {
@@ -483,20 +467,24 @@ impl LogManager {
         if !Self::config().should_log_audit(&event.entity) {
             return;
         }
-        if let Some(endpoint) = Self::get_log_endpoint() {
-            if endpoint == "off" {
-                return;
-            }
-            let content = LogFormatterFactory::get_formatter().format_audit_log(event);
-            Self::write_to_file(&content);
+        if !matches!(Self::get_log_endpoint(), Some("off")) {
+            let safe = crate::log_privacy::audit_event(event, false);
+            crate::RuntimeLogger::default_logger().audit(&safe.build_safe_event(&[], Some(1024)));
         }
-        if !Self::config().should_log_sensitive_audit(&event.entity) {
+        Self::write_sensitive_audit_log(event);
+    }
+
+    pub(crate) fn write_sensitive_audit_log(event: &RawAuditEvent) {
+        if !Self::config().should_log_sensitive_audit(&event.entity)
+            || !crate::log_privacy::plaintext_enabled()
+        {
             return;
         }
         let Some(endpoint) = Self::get_audit_debug_endpoint() else {
             return;
         };
-        let content = LogFormatterFactory::get_formatter().format_sensitive_audit_log(event);
+        let projected = crate::log_privacy::audit_event(event, true);
+        let content = LogFormatterFactory::get_formatter().format_sensitive_audit_log(&projected);
         let content = truncate_sensitive_audit_log(&content, 64 * 1024);
         match endpoint {
             "stdout" => println!("{content}"),

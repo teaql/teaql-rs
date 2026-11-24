@@ -10,10 +10,7 @@ pub struct PurposedQuery<T> {
 impl<T> PurposedQuery<T> {
     pub fn new(inner: T, purpose: impl Into<String>) -> Self {
         let purpose = purpose.into();
-        assert!(
-            !purpose.trim().is_empty(),
-            "query purpose must not be empty"
-        );
+        assert!(!purpose.trim().is_empty(), "query purpose must not be empty");
         Self { inner, purpose }
     }
 }
@@ -28,7 +25,8 @@ impl Q {
     }
 
     pub fn platforms_minimal() -> PlatformRequest {
-        PlatformRequest::new().and_filter(Expr::gt("version", 0_i64))
+        PlatformRequest::new()
+            .and_filter(Expr::gt("version", 0_i64))
     }
 
     pub fn platforms_with_children() -> PlatformRequest {
@@ -38,6 +36,8 @@ impl Q {
             .enhance_children_if_needed()
     }
 
+
+
     pub fn school_types() -> SchoolTypeRequest {
         SchoolTypeRequest::new()
             .select_self()
@@ -45,7 +45,8 @@ impl Q {
     }
 
     pub fn school_types_minimal() -> SchoolTypeRequest {
-        SchoolTypeRequest::new().and_filter(Expr::gt("version", 0_i64))
+        SchoolTypeRequest::new()
+            .and_filter(Expr::gt("version", 0_i64))
     }
 
     pub fn school_types_with_children() -> SchoolTypeRequest {
@@ -55,6 +56,8 @@ impl Q {
             .enhance_children_if_needed()
     }
 
+
+
     pub fn schools() -> SchoolRequest {
         SchoolRequest::new()
             .select_self()
@@ -62,7 +65,8 @@ impl Q {
     }
 
     pub fn schools_minimal() -> SchoolRequest {
-        SchoolRequest::new().and_filter(Expr::gt("version", 0_i64))
+        SchoolRequest::new()
+            .and_filter(Expr::gt("version", 0_i64))
     }
 
     pub fn schools_with_children() -> SchoolRequest {
@@ -71,4 +75,6 @@ impl Q {
             .select_self_fields()
             .enhance_children_if_needed()
     }
+
+
 }

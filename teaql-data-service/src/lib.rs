@@ -1,9 +1,20 @@
 #![allow(async_fn_in_trait)]
 
+#[doc(hidden)]
+pub mod dynamic_fields;
+mod sql_log;
+#[doc(hidden)]
+pub mod statement_telemetry;
+pub use sql_log::{
+    SqlExecutionOutcome, SqlIntentRedactions, SqlLogContext, SqlParameterLogPolicy,
+    SqlProjectionState, SqlTelemetryState, is_credential_log_name,
+};
+
 use std::time::SystemTime;
 use teaql_core::{
-    CompactRow, DeleteCommand, EntitySnapshot, GeneratedValues, InsertCommand, RecoverCommand,
-    SelectQuery, TraceNode, UpdateCommand,
+    CompactRow, DeleteCommand, EntitySnapshot, Expr, GeneratedValues, InsertCommand,
+    MutationIntent, QueryIntent, RecoverCommand, RequestIntentError, SelectQuery, TraceNode,
+    UpdateCommand,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -24,13 +35,164 @@ pub struct DataServiceCapabilities {
 pub struct QueryRequest {
     pub query: SelectQuery,
     pub trace_chain: Vec<TraceNode>,
-    pub comment: Option<String>,
-    /// Build a copy-paste representation with bind values interpolated.
-    /// Runtimes should disable this when query logging is disabled.
+    /// Required, validated intent, independent of trace frames and logging flags.
+    pub intent: QueryIntent,
+    /// Request a diagnostic SQL representation. SQL executors retain bindings;
+    /// the runtime must project their privacy policies before interpolation.
+    /// This flag does not authorize plaintext rendering in an executor.
     pub capture_debug_query: bool,
     /// Retain timings, parameterized text, bind values, trace and comment in the result.
     /// Disable only when the caller will discard execution metadata.
     pub capture_execution_metadata: bool,
+}
+
+/// A body captured by another invocation cannot replace this request's body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryScopeOwnerMismatch;
+
+impl std::fmt::Display for QueryScopeOwnerMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("QUERY_SCOPE_OWNER_MISMATCH: replacement belongs to another query invocation")
+    }
+}
+impl std::error::Error for QueryScopeOwnerMismatch {}
+
+impl QueryRequest {
+    pub fn new(query: SelectQuery, intent: QueryIntent) -> Self {
+        let scope = query
+            .request_scope()
+            .filter(|scope| scope.intent() == &intent)
+            .cloned()
+            .unwrap_or_else(|| {
+                teaql_core::QueryRequestScope::root(query.entity.clone(), intent.clone())
+            });
+        let query = query.with_request_scope(scope);
+        Self {
+            trace_chain: query.trace_chain.clone(),
+            query,
+            intent,
+            capture_debug_query: false,
+            capture_execution_metadata: true,
+        }
+    }
+
+    pub fn from_query(query: SelectQuery) -> Result<Self, RequestIntentError> {
+        let intent =
+            QueryIntent::from_optional(query.comment.as_deref(), query.purpose.as_deref())?;
+        Ok(Self::new(query, intent))
+    }
+    pub fn comment(&self) -> &str {
+        self.intent.comment()
+    }
+    pub fn purpose(&self) -> &str {
+        self.intent.purpose()
+    }
+
+    pub fn request_scope(&self) -> teaql_core::QueryRequestScope {
+        self.query.request_scope().cloned().unwrap_or_else(|| {
+            teaql_core::QueryRequestScope::root(self.query.entity.clone(), self.intent.clone())
+        })
+    }
+    pub fn business_trace_chain(&self) -> Vec<TraceNode> {
+        self.request_scope().trace_chain()
+    }
+
+    pub fn with_query(&self, query: SelectQuery) -> Result<Self, QueryScopeOwnerMismatch> {
+        if query
+            .request_scope()
+            .is_some_and(|previous| previous.root_request() != self.request_scope().root_request())
+        {
+            return Err(QueryScopeOwnerMismatch);
+        }
+        Ok(self.clone_with_body(query))
+    }
+
+    // Explicit child derivation may rebind a reusable template to a new parent.
+    // Only the public replacement path requires the same invocation owner.
+    fn clone_with_body(&self, query: SelectQuery) -> Self {
+        let mut replaced = Self::new(
+            query.with_request_scope(self.request_scope()),
+            self.intent.clone(),
+        );
+        replaced.trace_chain = self.trace_chain.clone();
+        replaced.capture_debug_query = self.capture_debug_query;
+        replaced.capture_execution_metadata = self.capture_execution_metadata;
+        replaced
+    }
+
+    pub fn derive_operation(
+        &self,
+        query: SelectQuery,
+        operation: teaql_core::QueryOperation,
+    ) -> Self {
+        let scope = self
+            .request_scope()
+            .derive_operation(query.entity.clone(), operation);
+        self.clone_with_body(query).rebind_scope(scope)
+    }
+
+    fn rebind_scope(mut self, scope: teaql_core::QueryRequestScope) -> Self {
+        self.query = self.query.with_request_scope(scope);
+        self
+    }
+
+    pub fn derive(
+        &self,
+        query: SelectQuery,
+        relation: &str,
+        operation: Option<teaql_core::QueryOperation>,
+    ) -> Result<Self, RequestIntentError> {
+        let parent = self.request_scope().derive_operation(
+            self.query.entity.clone(),
+            operation.unwrap_or_else(|| {
+                teaql_core::QueryOperation::framework(
+                    teaql_core::QueryOperationKind::RelationSelect,
+                )
+                .with_relation(relation)
+            }),
+        );
+        let scope = parent.derive_child(query.entity.clone(), query.comment.as_deref())?;
+        let mut child = self.clone_with_body(query).rebind_scope(scope);
+        child.trace_chain.push(TraceNode::typed(
+            teaql_core::TraceKind::Relation,
+            relation,
+            None,
+            format!("{}.{}", self.query.entity, relation),
+        ));
+        Ok(child)
+    }
+
+    /// Materialize owned intent without trusting diagnostic frames for its value.
+    /// Derived requests retain the originating scope name and relation route.
+    pub fn execution_trace_chain(&self) -> Vec<TraceNode> {
+        use teaql_core::TraceKind;
+        let root = self
+            .trace_chain
+            .iter()
+            .find(|node| {
+                matches!(
+                    node.kind,
+                    TraceKind::Operation
+                        | TraceKind::Request
+                        | TraceKind::Comment
+                        | TraceKind::Purpose
+                        | TraceKind::AuditReason
+                ) && !node.entity_type.trim().is_empty()
+            })
+            .map(|node| node.entity_type.as_str())
+            .unwrap_or(&self.query.entity);
+        let mut trace = vec![
+            TraceNode::typed(TraceKind::Comment, root, None, self.comment()),
+            TraceNode::typed(TraceKind::Purpose, root, None, self.purpose()),
+        ];
+        trace.extend(
+            self.trace_chain
+                .iter()
+                .filter(|node| !matches!(node.kind, TraceKind::Comment | TraceKind::Purpose))
+                .cloned(),
+        );
+        trace
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -40,7 +202,7 @@ pub struct QueryResult {
 }
 
 #[derive(Debug, Clone)]
-pub enum MutationRequest {
+pub enum MutationCommand {
     Insert(InsertCommand),
     Update(UpdateCommand),
     Delete(DeleteCommand),
@@ -48,25 +210,109 @@ pub enum MutationRequest {
     Batch(Vec<MutationRequest>),
 }
 
+impl MutationCommand {
+    pub fn request(
+        self,
+        comment: impl Into<String>,
+    ) -> Result<MutationRequest, RequestIntentError> {
+        MutationRequest::new(self, comment)
+    }
+}
+
+/// A complete mutation envelope. Commands cannot reach an executor without an
+/// explicit validated root comment, including a batch of annotated children.
+#[derive(Debug, Clone)]
+pub struct MutationRequest {
+    pub command: MutationCommand,
+    intent: MutationIntent,
+    diagnostic_redactions: Option<std::sync::Arc<SqlIntentRedactions>>,
+}
+
 impl MutationRequest {
-    pub fn trace_chain(&self) -> &[teaql_core::TraceNode] {
-        match self {
-            MutationRequest::Insert(cmd) => &cmd.trace_chain,
-            MutationRequest::Update(cmd) => &cmd.trace_chain,
-            MutationRequest::Delete(cmd) => &cmd.trace_chain,
-            MutationRequest::Recover(cmd) => &cmd.trace_chain,
-            MutationRequest::Batch(_) => &[], // Batch traces are per-item
+    pub fn new(
+        command: MutationCommand,
+        comment: impl Into<String>,
+    ) -> Result<Self, RequestIntentError> {
+        Ok(Self::with_intent(command, MutationIntent::new(comment)?))
+    }
+
+    pub fn with_intent(command: MutationCommand, intent: MutationIntent) -> Self {
+        Self {
+            command,
+            intent,
+            diagnostic_redactions: None,
         }
     }
 
-    pub fn comment(&self) -> Option<&str> {
-        match self {
-            MutationRequest::Insert(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
-            MutationRequest::Update(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
-            MutationRequest::Delete(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
-            MutationRequest::Recover(cmd) => cmd.trace_chain.last().map(|n| n.comment.as_str()),
-            MutationRequest::Batch(_) => None,
+    /// Trusted, invocation-local provenance; never a command value or wire option.
+    #[doc(hidden)]
+    pub fn with_diagnostic_redactions(
+        mut self,
+        values: Option<std::sync::Arc<SqlIntentRedactions>>,
+    ) -> Self {
+        self.diagnostic_redactions = values;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn diagnostic_redactions(&self) -> Option<&SqlIntentRedactions> {
+        self.diagnostic_redactions.as_deref()
+    }
+
+    pub fn intent(&self) -> &MutationIntent {
+        &self.intent
+    }
+
+    pub fn trace_chain(&self) -> &[teaql_core::TraceNode] {
+        match &self.command {
+            MutationCommand::Insert(cmd) => &cmd.trace_chain,
+            MutationCommand::Update(cmd) => &cmd.trace_chain,
+            MutationCommand::Delete(cmd) => &cmd.trace_chain,
+            MutationCommand::Recover(cmd) => &cmd.trace_chain,
+            MutationCommand::Batch(_) => &[], // Batch traces are per-item
         }
+    }
+
+    pub fn comment(&self) -> &str {
+        self.intent.comment()
+    }
+
+    /// Statement-local lineage. Existing graph ancestors/local reasons survive;
+    /// a native command without graph frames still gets its owned root reason.
+    /// Batches carry independent statement traces on their children.
+    pub fn execution_trace_chain(&self) -> Vec<TraceNode> {
+        use teaql_core::TraceKind;
+        let (entity, id) = match &self.command {
+            MutationCommand::Insert(command) => (
+                &command.entity,
+                command
+                    .values
+                    .get("id")
+                    .and_then(teaql_core::Value::try_u64),
+            ),
+            MutationCommand::Update(command) => (&command.entity, command.id.try_u64()),
+            MutationCommand::Delete(command) => (&command.entity, command.id.try_u64()),
+            MutationCommand::Recover(command) => (&command.entity, command.id.try_u64()),
+            MutationCommand::Batch(_) => return Vec::new(),
+        };
+        let mut trace = self.trace_chain().to_vec();
+        if let Some(root) = trace
+            .iter_mut()
+            .find(|node| node.kind == TraceKind::AuditReason)
+        {
+            root.comment = self.comment().to_owned();
+        } else {
+            trace.insert(
+                0,
+                TraceNode::typed(
+                    TraceKind::AuditReason,
+                    entity,
+                    id.filter(|id| *id > 0),
+                    self.comment(),
+                ),
+            );
+        }
+        trace
     }
 }
 
@@ -91,6 +337,9 @@ pub enum DataServiceOperation {
 
 #[derive(Debug, Clone)]
 pub struct ExecutionMetadata {
+    /// Batch statements keep independent binding positions and policies.
+    pub statements: Vec<ExecutionMetadata>,
+    pub sql_log: SqlLogContext,
     pub backend: String,
     pub operation: DataServiceOperation,
     pub started_at: SystemTime,
@@ -111,6 +360,8 @@ pub struct ExecutionMetadata {
 impl ExecutionMetadata {
     pub fn unrecorded_query(result_count: usize) -> Self {
         Self {
+            statements: Vec::new(),
+            sql_log: SqlLogContext::default(),
             backend: String::new(),
             operation: DataServiceOperation::Query,
             started_at: SystemTime::UNIX_EPOCH,
@@ -134,10 +385,36 @@ pub trait DataServiceExecutor {
 }
 
 pub trait QueryExecutor: DataServiceExecutor {
+    /// Executor-owned storage, not a separate connection obtained from Context.
+    #[doc(hidden)]
+    fn dynamic_field_store(&self) -> Option<&dyn dynamic_fields::DynamicFieldStore> {
+        None
+    }
+
+    /// Provider diagnostic SPI for a cached/rewritten query whose original
+    /// statement will not execute. Must not perform I/O or emit a SQL log.
+    /// Providers can derive precise policies from compilation. The default
+    /// treats query literals as unknown, including in explicit debug mode.
+    #[doc(hidden)]
+    fn query_log_intent(&self, query: &SelectQuery) -> SqlIntentRedactions {
+        SqlIntentRedactions::from_unclassified_query(query)
+    }
+
     fn query(
         &self,
         request: QueryRequest,
     ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send;
+
+    /// Runtime diagnostic SPI. Success metadata remains in QueryResult; the
+    /// observer receives only failures/cancellation that cannot return a result.
+    #[doc(hidden)]
+    fn query_observed<'a>(
+        &'a self,
+        request: QueryRequest,
+        _observer: Option<ExecutionObserver<'a>>,
+    ) -> impl std::future::Future<Output = Result<QueryResult, Self::Error>> + Send + 'a {
+        self.query(request)
+    }
 }
 
 /// Result of a single streaming chunk.
@@ -151,13 +428,44 @@ pub struct StreamChunk {
 pub type QueryStream<'a, E> =
     std::pin::Pin<Box<dyn futures_core::Stream<Item = Result<StreamChunk, E>> + 'a>>;
 
+/// Provider SPI: runtime-owned diagnostic projection, never part of a serialized request.
+#[doc(hidden)]
+pub type ExecutionObserver<'a> = std::sync::Arc<dyn Fn(ExecutionMetadata) + Send + Sync + 'a>;
+
 /// Streaming query executor. Returns rows in chunks rather than all at once.
 pub trait StreamQueryExecutor: DataServiceExecutor {
+    /// Optional cursor-local enhancement. Unsupported executors fail before opening a cursor.
+    #[doc(hidden)]
+    fn query_stream_with_dynamic_fields<'a>(
+        &'a self,
+        _request: QueryRequest,
+        _chunk_size: usize,
+        _plan: dynamic_fields::DynamicFieldStreamPlan,
+        _observer: Option<ExecutionObserver<'a>>,
+    ) -> Result<QueryStream<'a, Self::Error>, teaql_core::dynamic_fields::DynamicFieldError> {
+        Err(teaql_core::dynamic_fields::DynamicFieldError {
+            code: "DYNAMIC_FIELD_STREAM_UNSUPPORTED",
+            field: "stream".into(),
+        })
+    }
+
     fn query_stream(
         &self,
         request: QueryRequest,
         chunk_size: usize,
     ) -> QueryStream<'_, Self::Error>;
+
+    /// Optional provider diagnostic hook. The default preserves third-party executors;
+    /// it cannot invent SQL or claim diagnostics for an executor that supplies none.
+    #[doc(hidden)]
+    fn query_stream_observed<'a>(
+        &'a self,
+        request: QueryRequest,
+        chunk_size: usize,
+        _observer: ExecutionObserver<'a>,
+    ) -> QueryStream<'a, Self::Error> {
+        self.query_stream(request, chunk_size)
+    }
 }
 
 pub trait MutationExecutor: DataServiceExecutor {
@@ -165,6 +473,54 @@ pub trait MutationExecutor: DataServiceExecutor {
         &self,
         request: MutationRequest,
     ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send;
+
+    /// Runtime-only diagnostic SPI for results lost to failure or cancellation.
+    #[doc(hidden)]
+    fn mutate_observed<'a>(
+        &'a self,
+        request: MutationRequest,
+        _observer: Option<ExecutionObserver<'a>>,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send + 'a {
+        self.mutate(request)
+    }
+}
+
+/// A mutation whose target must also satisfy a trusted, datastore-enforced guard.
+///
+/// The guard is deliberately kept outside [`MutationRequest`]: ordinary domain
+/// mutations do not own authorization policy, while boundary adapters such as a
+/// federated endpoint must be able to require one atomic mutation predicate.
+#[derive(Debug, Clone)]
+pub struct GuardedMutationRequest {
+    pub mutation: MutationRequest,
+    pub guard: Expr,
+}
+
+impl GuardedMutationRequest {
+    pub fn new(mutation: MutationRequest, guard: Expr) -> Self {
+        Self { mutation, guard }
+    }
+}
+
+/// Executes a mutation only when its target also satisfies a trusted guard.
+///
+/// Implementations must apply the guard atomically in the same datastore
+/// statement as the mutation. A separate read-before-write check does not
+/// satisfy this contract.
+pub trait GuardedMutationExecutor: MutationExecutor {
+    fn mutate_guarded(
+        &self,
+        request: GuardedMutationRequest,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send;
+
+    #[doc(hidden)]
+    fn mutate_guarded_observed<'a>(
+        &'a self,
+        request: GuardedMutationRequest,
+        _observer: Option<ExecutionObserver<'a>>,
+    ) -> impl std::future::Future<Output = Result<MutationResult, Self::Error>> + Send + 'a {
+        self.mutate_guarded(request)
+    }
 }
 
 pub trait TransactionExecutor: DataServiceExecutor {
@@ -217,81 +573,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mutation_request_trace_and_comment_accessors() {
-        let trace1 = TraceNode {
-            kind: teaql_core::TraceKind::Entity,
-            entity_type: "User".to_string(),
-            entity_id: Some(1),
-            comment: "Create User".to_string(),
-        };
-        let trace2 = TraceNode {
-            kind: teaql_core::TraceKind::Entity,
-            entity_type: "Profile".to_string(),
-            entity_id: None,
-            comment: "Create Profile".to_string(),
-        };
-        let trace_chain = vec![trace1.clone(), trace2.clone()];
+    fn mutation_comment_is_owned_and_never_derived_from_trace_tail() {
+        use teaql_core::TraceKind;
+        for kind in [TraceKind::Entity, TraceKind::Provider, TraceKind::Sql] {
+            let trace = TraceNode::typed(kind, "User", Some(1), "");
+            let mut commands = [
+                MutationCommand::Insert(InsertCommand::new("User")),
+                MutationCommand::Update(UpdateCommand::new("User", 1_u64)),
+                MutationCommand::Delete(DeleteCommand::new("User", 1_u64)),
+                MutationCommand::Recover(RecoverCommand::new("User", 1_u64, -1)),
+            ];
+            for command in &mut commands {
+                match command {
+                    MutationCommand::Insert(command) => command.trace_chain.push(trace.clone()),
+                    MutationCommand::Update(command) => command.trace_chain.push(trace.clone()),
+                    MutationCommand::Delete(command) => command.trace_chain.push(trace.clone()),
+                    MutationCommand::Recover(command) => command.trace_chain.push(trace.clone()),
+                    MutationCommand::Batch(_) => unreachable!(),
+                }
+            }
+            for command in commands {
+                // Put the actual tail in the input BEFORE capturing its intent.
+                let request = command.request(" review user changes ").unwrap();
+                assert_eq!(request.trace_chain().last(), Some(&trace));
+                assert_eq!(request.comment(), " review user changes ");
+                assert_eq!(
+                    request.execution_trace_chain()[0].comment,
+                    request.comment()
+                );
+            }
+        }
+    }
 
-        // Test Insert
-        let insert_cmd = InsertCommand {
-            entity: "User".to_string(),
-            values: teaql_core::MutationValues::new(),
-            trace_chain: trace_chain.clone(),
-        };
-        let req_insert = MutationRequest::Insert(insert_cmd);
-        assert_eq!(req_insert.trace_chain().len(), 2);
-        assert_eq!(req_insert.trace_chain()[1], trace2);
-        assert_eq!(req_insert.comment(), Some("Create Profile"));
+    #[test]
+    fn annotated_children_do_not_supply_a_batch_root_comment() {
+        let child = MutationCommand::Insert(InsertCommand::new("User"))
+            .request("create user")
+            .unwrap();
+        for comment in ["", " \t\n", "\u{2003}"] {
+            let error = MutationCommand::Batch(vec![child.clone()])
+                .request(comment)
+                .unwrap_err();
+            assert_eq!(error.code(), "REQUEST_COMMENT_REQUIRED");
+        }
+        let batch = MutationCommand::Batch(vec![child])
+            .request("import reviewed users")
+            .unwrap();
+        assert_eq!(batch.comment(), "import reviewed users");
+    }
 
-        // Test Update
-        let update_cmd = UpdateCommand {
-            entity: "User".to_string(),
-            id: teaql_core::Value::I64(1),
-            values: teaql_core::MutationValues::new(),
-            expected_version: None,
-            old_values: None,
-            trace_chain: trace_chain.clone(),
-        };
-        let req_update = MutationRequest::Update(update_cmd);
-        assert_eq!(req_update.trace_chain().len(), 2);
-        assert_eq!(req_update.comment(), Some("Create Profile"));
-
-        // Test Delete
-        let delete_cmd = DeleteCommand {
-            entity: "User".to_string(),
-            id: teaql_core::Value::I64(1),
-            expected_version: None,
-            soft_delete: true,
-            trace_chain: trace_chain.clone(),
-        };
-        let req_delete = MutationRequest::Delete(delete_cmd);
-        assert_eq!(req_delete.trace_chain().len(), 2);
-        assert_eq!(req_delete.comment(), Some("Create Profile"));
-
-        // Test Recover
-        let recover_cmd = RecoverCommand {
-            entity: "User".to_string(),
-            id: teaql_core::Value::I64(1),
-            expected_version: 1,
-            trace_chain: trace_chain.clone(),
-        };
-        let req_recover = MutationRequest::Recover(recover_cmd);
-        assert_eq!(req_recover.trace_chain().len(), 2);
-        assert_eq!(req_recover.comment(), Some("Create Profile"));
-
-        // Test Batch
-        let req_batch = MutationRequest::Batch(vec![req_insert, req_update]);
-        assert_eq!(req_batch.trace_chain().len(), 0);
-        assert_eq!(req_batch.comment(), None);
-
-        // Test empty trace chain
-        let insert_empty = InsertCommand {
-            entity: "User".to_string(),
-            values: teaql_core::MutationValues::new(),
-            trace_chain: vec![],
-        };
-        let req_empty = MutationRequest::Insert(insert_empty);
-        assert_eq!(req_empty.trace_chain().len(), 0);
-        assert_eq!(req_empty.comment(), None);
+    #[test]
+    fn trace_comment_cannot_supply_missing_request_comment_or_purpose() {
+        let mut query = SelectQuery::new("User");
+        query.trace_chain.push(TraceNode::typed(
+            teaql_core::TraceKind::Purpose,
+            "User",
+            None,
+            "fabricated purpose",
+        ));
+        assert_eq!(
+            QueryRequest::from_query(query.clone()).unwrap_err().code(),
+            "REQUEST_COMMENT_REQUIRED"
+        );
+        query.comment = Some("load user".into());
+        assert_eq!(
+            QueryRequest::from_query(query.clone()).unwrap_err().code(),
+            "QUERY_PURPOSE_REQUIRED"
+        );
+        query.purpose = Some("render user".into());
+        let mut request = QueryRequest::from_query(query).unwrap();
+        request.capture_execution_metadata = false;
+        request.capture_debug_query = false;
+        assert_eq!(request.comment(), "load user");
+        assert_eq!(request.purpose(), "render user");
     }
 }

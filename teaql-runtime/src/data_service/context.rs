@@ -17,6 +17,10 @@ use super::{
     RuntimeDataService, UserContextMetadata, helpers::invalidate_aggregation_cache_namespace,
 };
 
+#[cfg(test)]
+#[path = "context_observation_tests.rs"]
+mod observation_tests;
+
 impl UserContext {
     pub(crate) fn data_service_internal<E>(&self) -> Result<ContextDataService<'_, E>, ContextError>
     where
@@ -34,6 +38,8 @@ impl UserContext {
         Ok(ContextDataService {
             metadata: UserContextMetadata { context: self },
             executor,
+            mutation_intent: None,
+            mutation_privacy: None,
         })
     }
 
@@ -56,6 +62,9 @@ impl UserContext {
             entity,
             data_service: self.data_service_internal::<E>()?,
             trace_context: Vec::new(),
+            request_intent: None,
+            request_scope: None,
+            query_log_intent: None,
         })
     }
 
@@ -84,70 +93,103 @@ impl<'a, E> ContextDataService<'a, E>
 where
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
-    async fn observe<T, F, N>(
+    pub(crate) fn with_mutation_intent(mut self, intent: teaql_core::MutationIntent) -> Self {
+        self.mutation_intent = Some(intent);
+        self
+    }
+
+    async fn observe<T, F, N, W>(
         &self,
         family: &str,
         name: N,
         entity: &str,
-        work: F,
+        work: W,
     ) -> Result<T, DataServiceError<E::Error>>
     where
         F: Future<Output = Result<T, DataServiceError<E::Error>>>,
         N: FnOnce() -> String,
+        W: FnOnce() -> F,
     {
+        // Construct and pin the business future in this state machine. Returning
+        // it by value inside Either creates large await/IntoFuture temporaries;
+        // capturing an already-built future also reserves a second payload slot.
+        let mut work = std::pin::pin!(work());
         if self.metadata.context.runtime_telemetry_is_noop() {
-            return work.await;
+            return work.as_mut().await;
         }
-        let operation = crate::RuntimeOperation::new(family, name())
-            .attribute("teaql.entity.type", entity.to_owned());
-        let scope = self.metadata.context.start_runtime_operation(operation);
-        let provider_kind = std::any::type_name::<E>().to_owned();
-        let provider_operation = family.to_owned();
-        let result = scope
-            .run(async {
-                let provider_scope = self.metadata.context.start_runtime_operation(
-                    crate::RuntimeOperation::new(
-                        "provider",
-                        format!("{provider_kind}.{provider_operation}"),
-                    )
-                    .attribute("teaql.provider.kind", provider_kind)
-                    .attribute("teaql.provider.operation", provider_operation),
-                );
-                let result = provider_scope.run(work).await;
-                match &result {
-                    Ok(_) => provider_scope.success(BTreeMap::new()),
-                    Err(_) => provider_scope.failure("data_service_error"),
+        self.observe_instrumented(family, name, entity, work.as_mut())
+            .await
+    }
+
+    // Keep the optional allocation on a separate path. The boxed observer only
+    // borrows pinned work, so its size does not scale with the business future.
+    #[inline(never)]
+    fn observe_instrumented<T, F, N>(
+        &self,
+        family: &str,
+        name: N,
+        entity: &str,
+        work: std::pin::Pin<&mut F>,
+    ) -> std::pin::Pin<Box<impl Future<Output = Result<T, DataServiceError<E::Error>>>>>
+    where
+        F: Future<Output = Result<T, DataServiceError<E::Error>>>,
+        N: FnOnce() -> String,
+    {
+        Box::pin(async move {
+            let operation = crate::RuntimeOperation::new(family, name())
+                .attribute("teaql.entity.type", entity.to_owned());
+            let scope = self.metadata.context.start_runtime_operation(operation);
+            let provider_kind = std::any::type_name::<E>().to_owned();
+            let provider_operation = family.to_owned();
+            let result = scope
+                .run(async {
+                    let provider_scope = self.metadata.context.start_runtime_operation(
+                        crate::RuntimeOperation::new(
+                            "provider",
+                            format!("{provider_kind}.{provider_operation}"),
+                        )
+                        .attribute("teaql.provider.kind", provider_kind)
+                        .attribute("teaql.provider.operation", provider_operation),
+                    );
+                    let result = provider_scope
+                        .run(self.metadata.context.observe_sql_statements(work))
+                        .await;
+                    match &result {
+                        Ok(_) => provider_scope.success(BTreeMap::new()),
+                        Err(_) => provider_scope.failure("data_service_error"),
+                    }
+                    result
+                })
+                .await;
+            match result {
+                Ok(value) => {
+                    scope.success(BTreeMap::new());
+                    Ok(value)
                 }
-                result
-            })
-            .await;
-        match result {
-            Ok(value) => {
-                scope.success(BTreeMap::new());
-                Ok(value)
+                Err(error) => {
+                    scope.failure("data_service_error");
+                    Err(error)
+                }
             }
-            Err(error) => {
-                scope.failure("data_service_error");
-                Err(error)
-            }
-        }
+        })
     }
 
     fn data_service(&self) -> RuntimeDataService<'_, UserContextMetadata<'_>, E> {
-        RuntimeDataService::new(&self.metadata, self.executor)
+        let mut service = RuntimeDataService::new(&self.metadata, self.executor);
+        service.mutation_intent = self.mutation_intent.clone();
+        service.mutation_privacy = self.mutation_privacy.clone();
+        service
     }
 
     pub(crate) async fn fetch_all(
         &self,
-        mut query: SelectQuery,
+        query: SelectQuery,
     ) -> Result<Vec<CompactRow>, DataServiceError<E::Error>> {
-        let final_comment = self.resolve_final_comment(&query.trace_chain, query.comment.clone());
-        query.comment = final_comment;
         self.observe(
             "query",
             || format!("{}.list", query.entity),
             &query.entity,
-            self.data_service().fetch_all(&query),
+            || async { self.data_service().fetch_all(&query).await },
         )
         .await
     }
@@ -160,7 +202,7 @@ where
             "query",
             || format!("{}.list", query.entity),
             &query.entity,
-            self.data_service().fetch_smart_list(query),
+            || async { self.data_service().fetch_smart_list(query).await },
         )
         .await
     }
@@ -176,7 +218,7 @@ where
             "query",
             || format!("{}.list", query.entity),
             &query.entity,
-            self.data_service().fetch_entities(query),
+            || async { self.data_service().fetch_entities(query).await },
         )
         .await
     }
@@ -192,7 +234,7 @@ where
             "query",
             || format!("{}.list", query.entity),
             &query.entity,
-            self.data_service().fetch_enhanced_entities(query),
+            || async { self.data_service().fetch_enhanced_entities(query).await },
         )
         .await
     }
@@ -206,7 +248,7 @@ where
                 "mutation",
                 || format!("{}.insert", command.entity),
                 &command.entity,
-                self.data_service().insert(command),
+                || async { self.data_service().insert(command).await },
             )
             .await?;
         self.invalidate_aggregation_cache_for(&command.entity);
@@ -222,7 +264,7 @@ where
                 "mutation",
                 || format!("{}.update", command.entity),
                 &command.entity,
-                self.data_service().update(command),
+                || async { self.data_service().update(command).await },
             )
             .await?;
         self.invalidate_aggregation_cache_for(&command.entity);
@@ -238,7 +280,7 @@ where
                 "mutation",
                 || format!("{}.batch_insert", command.entity),
                 &command.entity,
-                self.data_service().batch_insert(command),
+                || async { self.data_service().batch_insert(command).await },
             )
             .await?;
         self.invalidate_aggregation_cache_for(&command.entity);
@@ -254,7 +296,7 @@ where
                 "mutation",
                 || format!("{}.batch_update", command.entity),
                 &command.entity,
-                self.data_service().batch_update(command),
+                || async { self.data_service().batch_update(command).await },
             )
             .await?;
         self.invalidate_aggregation_cache_for(&command.entity);
@@ -270,7 +312,7 @@ where
                 "mutation",
                 || format!("{}.delete", command.entity),
                 &command.entity,
-                self.data_service().delete(command),
+                || async { self.data_service().delete(command).await },
             )
             .await?;
         self.invalidate_aggregation_cache_for(&command.entity);
@@ -286,7 +328,7 @@ where
                 "mutation",
                 || format!("{}.recover", command.entity),
                 &command.entity,
-                self.data_service().recover(command),
+                || async { self.data_service().recover(command).await },
             )
             .await?;
         self.invalidate_aggregation_cache_for(&command.entity);

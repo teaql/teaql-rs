@@ -133,10 +133,33 @@ impl I18nCatalog {
             .unwrap_or_else(|| key.to_owned())
     }
 
+    /// Explicit application text only; builtin legacy templates do not override
+    /// the new natural catalog. Effective Locale selection remains in the caller.
+    pub(crate) fn application_message(&self, language: Language, key: &str) -> Option<&str> {
+        self.fallback.as_ref()?;
+        self.locales
+            .get(language.code())?
+            .messages
+            .get(key)
+            .map(String::as_str)
+    }
+
     pub fn translate_check_result(&self, language: Language, result: &CheckResult) -> String {
+        self.translate_check_result_with_input_length(language, result, None)
+    }
+
+    pub(crate) fn translate_check_result_with_input_length(
+        &self,
+        language: Language,
+        result: &CheckResult,
+        original_input_length: Option<usize>,
+    ) -> String {
         let key = match result.rule {
             CheckRule::Required => "checker.required",
             CheckRule::InvalidType => "checker.invalidType",
+            CheckRule::InvalidDeletionState => "checker.invalidDeletionState",
+            CheckRule::InvalidVersionState => "checker.invalidVersionState",
+            CheckRule::VersionExhausted => "checker.versionExhausted",
             CheckRule::Min => "checker.min",
             CheckRule::Max => "checker.max",
             CheckRule::MinStringLength => "checker.minLength",
@@ -155,12 +178,12 @@ impl I18nCatalog {
             .as_ref()
             .map(format_value)
             .unwrap_or_else(|| "-".to_owned());
-        let input_len = result
-            .input_value
-            .as_ref()
-            .and_then(|value| match value {
-                Value::Text(value) => Some(value.chars().count()),
-                _ => None,
+        let input_len = original_input_length
+            .or_else(|| {
+                result.input_value.as_ref().and_then(|value| match value {
+                    Value::Text(value) => Some(value.chars().count()),
+                    _ => None,
+                })
             })
             .unwrap_or(0)
             .to_string();
@@ -264,7 +287,7 @@ fn render_template(template: &str, arguments: &[(&str, &str)]) -> String {
         })
 }
 
-fn translate_location(location: &ObjectLocation) -> String {
+pub(crate) fn translate_location(location: &ObjectLocation) -> String {
     title_case_path(&location.to_string())
 }
 
@@ -302,6 +325,7 @@ fn format_value(value: &Value) -> String {
         Value::F64(value) => value.to_string(),
         Value::Decimal(value) => value.to_string(),
         Value::Text(value) => value.clone(),
+        Value::Binary(_) => "<binary>".to_owned(),
         Value::Json(value) => value.to_string(),
         Value::Date(value) => value.to_string(),
         Value::Timestamp(value) => value.0.to_string(),
@@ -314,6 +338,172 @@ fn format_value(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn context_root_result(rule: CheckRule) -> CheckResult {
+        CheckResult::new(
+            rule,
+            ObjectLocation::root()
+                .member("purchase_order_list")
+                .element(0)
+                .member("order_item_list")
+                .element(0)
+                .member("tenant"),
+        )
+        .with_entity_type("OrderItem")
+    }
+
+    #[test]
+    fn builtin_catalog_covers_every_checker_rule_in_all_supported_languages() {
+        let rules = [
+            CheckRule::Required,
+            CheckRule::InvalidType,
+            CheckRule::InvalidDeletionState,
+            CheckRule::InvalidVersionState,
+            CheckRule::VersionExhausted,
+            CheckRule::Min,
+            CheckRule::Max,
+            CheckRule::MinStringLength,
+            CheckRule::MaxStringLength,
+            CheckRule::ContextRootMissing,
+            CheckRule::ContextRootMismatch,
+        ];
+        for language in Language::ALL {
+            for rule in rules {
+                let message = I18nCatalog::builtin()
+                    .translate_check_result(language, &context_root_result(rule));
+                assert!(!message.trim().is_empty());
+                assert!(
+                    !message.starts_with("checker."),
+                    "untranslated rule {rule:?} for {}: {message}",
+                    language.code()
+                );
+                assert!(!message.contains('{') && !message.contains('}'));
+            }
+        }
+    }
+
+    #[test]
+    fn context_root_messages_are_readable_and_do_not_echo_input_or_system() {
+        for (rule, explanation) in [
+            (
+                CheckRule::ContextRootMissing,
+                "An active context root is required",
+            ),
+            (
+                CheckRule::ContextRootMismatch,
+                "does not match the active context root",
+            ),
+        ] {
+            let result = context_root_result(rule)
+                .with_input_value("PRIVATE-INPUT-ROOT")
+                .with_system_value("PRIVATE-SYSTEM-ROOT");
+            let message = I18nCatalog::builtin().translate_check_result(Language::English, &result);
+            assert!(message.contains(explanation), "{message}");
+            assert!(message.contains("Purchase_order_list[0].Order_item_list[0].Tenant"));
+            assert!(!message.contains("PRIVATE-INPUT-ROOT"));
+            assert!(!message.contains("PRIVATE-SYSTEM-ROOT"));
+        }
+    }
+
+    #[test]
+    fn context_root_builtin_fallback_is_readable_for_partial_custom_catalogs() {
+        let catalog = I18nCatalog::from_json(
+            r#"{"schema":"teaql.i18n/v1","defaultLocale":"en","locales":{"en":{"messages":{},"vocabulary":{}}}}"#,
+        )
+        .unwrap();
+        for rule in [
+            CheckRule::ContextRootMissing,
+            CheckRule::ContextRootMismatch,
+        ] {
+            let result = context_root_result(rule);
+            let english = I18nCatalog::builtin().translate_check_result(Language::English, &result);
+            let french = catalog.translate_check_result(Language::French, &result);
+            assert_eq!(french, english);
+            assert!(!french.starts_with("checker."));
+            let chinese = catalog.translate_check_result(Language::Chinese, &result);
+            assert_ne!(chinese, english);
+            assert!(!chinese.starts_with("checker."));
+        }
+    }
+
+    #[test]
+    fn project_context_root_translation_takes_precedence() {
+        let catalog = I18nCatalog::from_json(
+            r#"{"schema":"teaql.i18n/v1","defaultLocale":"en","locales":{"en":{"messages":{"checker.contextRootMissing":"Project root required at {location}","checker.contextRootMismatch":"Project root mismatch at {location}"},"vocabulary":{}}}}"#,
+        )
+        .unwrap();
+        let context = crate::UserContext::new().with_i18n_catalog(Arc::new(catalog));
+        for (rule, prefix) in [
+            (CheckRule::ContextRootMissing, "Project root required at "),
+            (CheckRule::ContextRootMismatch, "Project root mismatch at "),
+        ] {
+            let mut results = vec![context_root_result(rule)];
+            context.translate_check_results(&mut results);
+            assert!(results[0].message.as_deref().unwrap().starts_with(prefix));
+        }
+    }
+
+    #[test]
+    fn context_root_diagnostic_projection_preserves_code_and_pointer_in_all_profiles() {
+        for language in Language::ALL {
+            let context = crate::UserContext::new().with_language(language);
+            for rule in [
+                CheckRule::ContextRootMissing,
+                CheckRule::ContextRootMismatch,
+            ] {
+                let mut results = vec![context_root_result(rule)];
+                context.translate_check_results(&mut results);
+                let result = &results[0];
+                assert!(!result.message.as_deref().unwrap().starts_with("checker."));
+                assert_eq!(result.input_value, None);
+                assert_eq!(result.system_value, None);
+                for (profile, name, pointer) in [
+                    (
+                        crate::JsonFieldNamingProfile::CamelCase,
+                        "camelCase",
+                        "/purchaseOrderList/0/orderItemList/0/tenant",
+                    ),
+                    (
+                        crate::JsonFieldNamingProfile::SnakeCase,
+                        "snake_case",
+                        "/purchase_order_list/0/order_item_list/0/tenant",
+                    ),
+                    (
+                        crate::JsonFieldNamingProfile::PascalCase,
+                        "PascalCase",
+                        "/PurchaseOrderList/0/OrderItemList/0/Tenant",
+                    ),
+                ] {
+                    let wire = result.to_wire(profile);
+                    assert_eq!(wire.rule_id, rule.wire_id());
+                    assert_eq!(wire.entity_type.as_deref(), Some("OrderItem"));
+                    assert_eq!(wire.location, result.location.wire_segments());
+                    assert_eq!(wire.instance_path, pointer);
+                    assert_eq!(wire.message, result.message);
+                    println!(
+                        "CHECKER_CONTEXT_CATALOG_CASE={}",
+                        serde_json::json!({
+                            "language": language.code(), "profile": name, "wire": wire
+                        })
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_context_root_messages_remain_authoritative() {
+        let context = crate::UserContext::new();
+        let mut results = vec![
+            context_root_result(CheckRule::ContextRootMissing)
+                .with_message("An explicit contextual refusal"),
+        ];
+        context.translate_check_results(&mut results);
+        assert_eq!(
+            results[0].message.as_deref(),
+            Some("An explicit contextual refusal")
+        );
+    }
 
     #[test]
     fn rejects_unknown_placeholders_before_installation() {

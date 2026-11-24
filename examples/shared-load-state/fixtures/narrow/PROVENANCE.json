@@ -1,0 +1,155 @@
+{
+  "kind": "generated minimal Rust load-state fixture with field descriptor migration",
+  "producerCommit": "107bc82cde45837a78abd9686d40bd16ad764e5c",
+  "modelSha256": "0664ef5b32b1126100676782ec5c6c2d56e9e491920bfdfacadb4790a66b9ca9",
+  "runtimeVersion": "5.0.7",
+  "qualification": "generated source only; local runtime execution is a separate gate; emitted dependency version is not public-package compatibility acceptance",
+  "wide": false,
+  "inheritance": false,
+  "handEdited": false,
+  "previousProvenanceSha256": "5d6aeb93b9732451149a514dc67a921679b0d4d8efd5da56e0241ea8de7c1f30",
+  "producerReceipt": {
+    "repository": "teaql-conformance",
+    "path": "evidence/2026-10-25-core-p0-p1/rust-shared-current-fixture-export-v1/report.json",
+    "sha256": "df0de93ef80d778f761734e1255030171c1770120ee87ff240e73093e4b92f44"
+  },
+  "files": [
+    {
+      "path": "fixture-inheritance.txt",
+      "sha256": "2ed27c1421e6928dbe13dbfdb5c59e1045b30341fe7ebe05700006bc5ac572c0"
+    },
+    {
+      "path": "fixture-mode.txt",
+      "sha256": "42607e58fdc09b32cdb8ebe2e5746a080c96fa8b542ebcad8114d4c69b4204e4"
+    },
+    {
+      "path": "lib/Cargo.toml",
+      "sha256": "334904ed7798520ebac5e916da4331b860e9d3993a6ccf33f5d77ffc93bb89bf"
+    },
+    {
+      "path": "lib/src/e.rs",
+      "sha256": "20b97973b644c48fb427506da35c17f7cc25c91ccfffaa7f69759d2db778967d"
+    },
+    {
+      "path": "lib/src/lib.rs",
+      "sha256": "61981dc8dd17f8636ce0198d2077c211ad39e572cbfc1d8367c6be70e5763387"
+    },
+    {
+      "path": "lib/src/platform/behavior.rs",
+      "sha256": "33504f41ce179be8dcb01a52ef885e2894ee18a1f060a659c215ee41fbe43df4"
+    },
+    {
+      "path": "lib/src/platform/checker.rs",
+      "sha256": "961ad976a4b1f688072b20e86b1bcddd598f0f062eb7cb49dd66326e2602407e"
+    },
+    {
+      "path": "lib/src/platform/entity.rs",
+      "sha256": "6dd7006a0ddcfc2bfaadf03d71d9f1ba9858fe50cedc2832e93c2c49a167c128"
+    },
+    {
+      "path": "lib/src/platform/expression.rs",
+      "sha256": "de729ee2096cdf558e02e74cb4c270e90af8b44802b96d90479ce5b9dc2983e1"
+    },
+    {
+      "path": "lib/src/platform/mod.rs",
+      "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+    },
+    {
+      "path": "lib/src/platform/request.rs",
+      "sha256": "37e95044a12e8086f1136b5a87c6103d0de2246e8d96b7ffa5d4ccd60ebfcd09"
+    },
+    {
+      "path": "lib/src/q.rs",
+      "sha256": "06dda9e7c5e618c4d62847271713a4b02f4fa4bdaeda3e662aede3fa84c253e8"
+    },
+    {
+      "path": "lib/src/request_support.rs",
+      "sha256": "ad8aeb93f9c1e75784dad5a67bdfea068019ae3d065b896516eb8c6eceaff617"
+    },
+    {
+      "path": "lib/src/runtime.rs",
+      "sha256": "35405464bd2c6c5537ea63fe26ef39470b3d5fd2db84fd8affad1ea4985fda0f"
+    },
+    {
+      "path": "lib/src/sample_data.rs",
+      "sha256": "a453c210acf6ff4c949cbe1f206dfd55009991fb500a05a009b1eb54f457a714"
+    },
+    {
+      "path": "lib/src/school_capacity_summary/behavior.rs",
+      "sha256": "779c4e65b74946928409571a8cb0be25ff169db6dfd9566f60399bd7ebee0573"
+    },
+    {
+      "path": "lib/src/school_capacity_summary/checker.rs",
+      "sha256": "891e108062c0d66f405f1ed4fc72af28d2c79d2d93d31cc3f1c2dcf0240dfee5"
+    },
+    {
+      "path": "lib/src/school_capacity_summary/entity.rs",
+      "sha256": "4182a2bbd1c85f5096b8ccdf06a29366cf9ab30202dc3e5a6f995ac258d4bd8a"
+    },
+    {
+      "path": "lib/src/school_capacity_summary/expression.rs",
+      "sha256": "1baad53816184266644a6506c6c007cf88c0fb9b8e016ac5fa4f62ef595229d0"
+    },
+    {
+      "path": "lib/src/school_capacity_summary/mod.rs",
+      "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+    },
+    {
+      "path": "lib/src/school_capacity_summary/request.rs",
+      "sha256": "db51091d2709253123ad7bcc5aca69ded18e0567fcf28bee3e3cc89fb9462695"
+    },
+    {
+      "path": "lib/src/school_type/behavior.rs",
+      "sha256": "48d0c35546b4955fc90d927bbb6ee2dcad4eec42ba3c8609adf17e103c54d680"
+    },
+    {
+      "path": "lib/src/school_type/checker.rs",
+      "sha256": "1e16e866159462e71d5262fe28e0891f474f0bc83115c59a866cb6c16ca8ab51"
+    },
+    {
+      "path": "lib/src/school_type/entity.rs",
+      "sha256": "6cde2b8a1b0874c32b9609615ab457ebeb01bb401c5804f31c203a4ea80f2c47"
+    },
+    {
+      "path": "lib/src/school_type/expression.rs",
+      "sha256": "019bbb38e1d85b75b3c926c41d670bc0957b745eae8688a0894988fd70ea03a8"
+    },
+    {
+      "path": "lib/src/school_type/mod.rs",
+      "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+    },
+    {
+      "path": "lib/src/school_type/request.rs",
+      "sha256": "7300893b8a815643f671ae0c3710ac2a1e79418db82736d8522cf067175aace6"
+    },
+    {
+      "path": "lib/src/school/behavior.rs",
+      "sha256": "41c4faa5d2fc86da9b3d080a4a07b17cd5e74ac453ec1e7ca914b8c68c30db05"
+    },
+    {
+      "path": "lib/src/school/checker.rs",
+      "sha256": "1f645ffb84f16f2953fb050066843f92664dc1625b4c82f0eb0ca04918786db7"
+    },
+    {
+      "path": "lib/src/school/entity.rs",
+      "sha256": "d9a1f07f7f73d56c1eb852374519199feeabd25bd6011f0af134766e1ed2da9d"
+    },
+    {
+      "path": "lib/src/school/expression.rs",
+      "sha256": "69e51fbf2a71e975ba094c7c81d2fedc5d65979f5958fd9786fa0bd7df83f7e0"
+    },
+    {
+      "path": "lib/src/school/mod.rs",
+      "sha256": "2ec0f868bea19295ab6b4af4bd8e7e538c9d46aa88c4948383712752cc821ac7"
+    },
+    {
+      "path": "lib/src/school/request.rs",
+      "sha256": "8e3aab1c0a7da4722ae7acb5bcf887e26bb762f71049ca049d30d570c6d482f2"
+    },
+    {
+      "path": "model-under-test.xml",
+      "sha256": "0664ef5b32b1126100676782ec5c6c2d56e9e491920bfdfacadb4790a66b9ca9"
+    }
+  ],
+  "fieldDescriptorRefresh": "../../../field-descriptor-generation.json"
+}

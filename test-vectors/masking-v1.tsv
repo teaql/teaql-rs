@@ -1,0 +1,11 @@
+id	input	expected
+empty		
+short	Ada	***
+digits	12345678	********
+boundary	ABCDEFGH	AB****GH
+long	Riverside	Ri*****de
+quote	O'Reilly	O'****ly
+emoji	😀😀1234😀😀	😀😀****😀😀
+non_ascii_digits	１２３４５６７８	１２****７８
+combining	éabcdef	é****ef
+cjk	甲乙丙丁戊己庚辛	甲乙****庚辛

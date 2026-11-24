@@ -1,9 +1,14 @@
 use std::any::{Any, TypeId};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use teaql_core::{EntitySnapshot, MutationValues, SmartList, Value};
+
+#[cfg(test)]
+mod loaded_path_tests;
+#[cfg(test)]
+mod mutation_input_tests;
 
 /// The explicit load state of a relation stored in the runtime identity graph.
 ///
@@ -53,6 +58,7 @@ impl<'a, T> RelationHandle<'a, T> {
 pub struct EntityKey {
     pub entity: Cow<'static, str>,
     pub id: Value,
+    symbols: Option<&'static teaql_core::EntitySymbols>,
     id_key: EntityIdentityKey,
 }
 
@@ -71,10 +77,20 @@ enum EntityIdentityKey {
 }
 
 impl EntityKey {
+    pub fn for_type<T: teaql_core::TeaqlEntity>(id: impl Into<Value>) -> Self {
+        let mut key = Self::new_static(T::ENTITY_NAME, id);
+        key.symbols = T::symbols();
+        key
+    }
+    pub fn symbols(&self) -> Option<&'static teaql_core::EntitySymbols> {
+        self.symbols
+    }
+
     pub fn new(entity: impl Into<String>, id: impl Into<Value>) -> Self {
         let id = id.into();
         Self {
             entity: Cow::Owned(entity.into()),
+            symbols: None,
             id_key: entity_identity_key(&id),
             id,
         }
@@ -84,6 +100,7 @@ impl EntityKey {
         let id = id.into();
         Self {
             entity: Cow::Borrowed(entity),
+            symbols: None,
             id_key: entity_identity_key(&id),
             id,
         }
@@ -122,6 +139,7 @@ fn entity_identity_key(value: &Value) -> EntityIdentityKey {
         Value::F64(value) => EntityIdentityKey::F64(value.to_bits()),
         Value::Decimal(value) => EntityIdentityKey::Decimal(*value),
         Value::Text(value) => EntityIdentityKey::Text(value.clone()),
+        Value::Binary(value) => EntityIdentityKey::Other(format!("binary:{value:02x?}")),
         Value::Json(value) => EntityIdentityKey::Other(format!("json:{value}")),
         Value::Date(value) => EntityIdentityKey::Date(*value),
         Value::Timestamp(value) => EntityIdentityKey::Timestamp(value.0),
@@ -133,19 +151,158 @@ fn entity_identity_key(value: &Value) -> EntityIdentityKey {
 #[derive(Default)]
 pub struct EntityGraphBuilder {
     tables: HashMap<TypeId, EntityTable>,
-    relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
+    option_entities: Option<Box<RelationOptionEntities>>,
+    relation_lists: HashMap<RelationListKey, RelationValue>,
+    relation_facets: Option<Box<RelationFacetResults>>,
 }
 
 type EntityTable = HashMap<u64, Box<dyn Any + Send + Sync>>;
 
+/// Optional JSON-only coordinates keep the ordinary graph frame to one nullable pointer.
+#[derive(Default)]
+struct RelationOptionEntities {
+    index: HashMap<(u64, TypeId, u64), Option<RelationListKey>>,
+}
+
+#[derive(Default)]
+struct RelationFacetResults {
+    lists: HashMap<RelationListKey, BTreeMap<String, SmartList<teaql_core::CompactRow>>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RelationListKey {
+    view_id: u64,
     owner_entity: String,
     owner_id: u64,
     relation: String,
 }
 
+// One function pointer per selected relation, not a path/map on every row.
+// Identity visitation is lazy: ordinary relation reads and hydration do not
+// allocate path collections or serialize entity payloads.
+type RelationIdentityCallback<'a> = dyn FnMut(&str, u64, u64, Option<usize>) + 'a;
+type RelationIdentityVisitor = fn(&dyn Any, &mut RelationIdentityCallback<'_>);
+struct RelationValue {
+    value: Box<dyn Any + Send + Sync>,
+    identities: Option<RelationIdentityVisitor>,
+}
+impl RelationValue {
+    fn new<T: Any + Send + Sync>(value: T, identities: Option<RelationIdentityVisitor>) -> Self {
+        Self {
+            value: Box::new(value),
+            identities,
+        }
+    }
+    fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.value.downcast_ref()
+    }
+}
+fn visit_relation_entity<T: teaql_core::IdentifiableEntity + 'static>(
+    entity: &T,
+    index: Option<usize>,
+    visitor: &mut RelationIdentityCallback<'_>,
+) {
+    if entity.is_field_loaded("id")
+        && let Some(id) = entity.id_value().try_u64()
+    {
+        let view = entity
+            .__teaql_runtime_state_any()
+            .and_then(|state| state.downcast_ref::<EntityRuntimeState>())
+            .map_or(0, EntityRuntimeState::json_view_id);
+        visitor(T::ENTITY_NAME, id, view, index);
+    }
+}
+fn visit_relation_list<T: teaql_core::IdentifiableEntity + 'static>(
+    value: &dyn Any,
+    visitor: &mut RelationIdentityCallback<'_>,
+) {
+    for (index, entity) in value
+        .downcast_ref::<SmartList<T>>()
+        .expect("typed relation list")
+        .iter()
+        .enumerate()
+    {
+        visit_relation_entity(entity, Some(index), visitor);
+    }
+}
+fn visit_relation_option<T: teaql_core::IdentifiableEntity + 'static>(
+    value: &dyn Any,
+    visitor: &mut RelationIdentityCallback<'_>,
+) {
+    if let Some(entity) = value
+        .downcast_ref::<Option<T>>()
+        .expect("typed relation option")
+    {
+        visit_relation_entity(entity, None, visitor);
+    }
+}
+
 impl EntityGraphBuilder {
+    pub(crate) fn install_json_relation_list<
+        T: teaql_core::IdentifiableEntity + Any + Send + Sync,
+    >(
+        &mut self,
+        view_id: u64,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+        list: SmartList<T>,
+    ) {
+        self.relation_lists.insert(
+            RelationListKey {
+                view_id,
+                owner_entity: crate::canonical_id_space_entity(owner_entity),
+                owner_id,
+                relation: relation.to_owned(),
+            },
+            RelationValue::new(list, Some(visit_relation_list::<T>)),
+        );
+    }
+    pub(crate) fn for_json_read() -> Self {
+        Self {
+            option_entities: Some(Box::default()),
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn install_typed_relation_option<T>(
+        &mut self,
+        view_id: u64,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+        value: Option<T>,
+    ) where
+        T: teaql_core::IdentifiableEntity + Any + Send + Sync,
+    {
+        if let Some(index) = self.option_entities.as_mut()
+            && let Some(entity) = value.as_ref()
+            && entity.is_field_loaded("id")
+            && let Some(id) = entity.id_value().try_u64()
+        {
+            index
+                .index
+                .entry((view_id, TypeId::of::<T>(), id))
+                .and_modify(|key| *key = None)
+                .or_insert_with(|| {
+                    Some(RelationListKey {
+                        view_id,
+                        owner_entity: crate::canonical_id_space_entity(owner_entity),
+                        owner_id,
+                        relation: relation.to_owned(),
+                    })
+                });
+        }
+        self.relation_lists.insert(
+            RelationListKey {
+                view_id,
+                owner_entity: crate::canonical_id_space_entity(owner_entity),
+                owner_id,
+                relation: relation.to_owned(),
+            },
+            RelationValue::new(value, Some(visit_relation_option::<T>)),
+        );
+    }
     pub fn install<T>(&mut self, id: u64, entity: T)
     where
         T: Any + Send + Sync,
@@ -169,14 +326,75 @@ impl EntityGraphBuilder {
     ) where
         T: Any + Send + Sync,
     {
-        self.relation_lists.insert(
-            RelationListKey {
-                owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
-                owner_id,
-                relation: relation.into(),
-            },
-            Box::new(list),
+        self.insert_relation_list(owner_entity, owner_id, relation, list, None);
+    }
+
+    pub(crate) fn install_typed_relation_list<T>(
+        &mut self,
+        owner_entity: impl Into<String>,
+        owner_id: u64,
+        relation: impl Into<String>,
+        list: SmartList<T>,
+    ) where
+        T: teaql_core::IdentifiableEntity + Any + Send + Sync,
+    {
+        self.insert_relation_list(
+            owner_entity,
+            owner_id,
+            relation,
+            list,
+            Some(visit_relation_list::<T>),
         );
+    }
+
+    fn insert_relation_list<T: Any + Send + Sync>(
+        &mut self,
+        owner_entity: impl Into<String>,
+        owner_id: u64,
+        relation: impl Into<String>,
+        list: SmartList<T>,
+        identities: Option<RelationIdentityVisitor>,
+    ) {
+        let key = RelationListKey {
+            view_id: 0,
+            owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
+            owner_id,
+            relation: relation.into(),
+        };
+        if !list.facets.is_empty() {
+            self.relation_facets
+                .get_or_insert_with(Default::default)
+                .lists
+                .insert(key.clone(), list.facets.clone());
+        }
+        self.relation_lists
+            .insert(key, RelationValue::new(list, identities));
+    }
+
+    /// Read-result metadata for a selected relation, including null to-one views.
+    /// It never participates in entity snapshots or mutation-ledger ownership.
+    pub fn install_relation_facets(
+        &mut self,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+        facets: BTreeMap<String, SmartList<teaql_core::CompactRow>>,
+    ) {
+        if facets.is_empty() {
+            return;
+        }
+        self.relation_facets
+            .get_or_insert_with(Default::default)
+            .lists
+            .insert(
+                RelationListKey {
+                    view_id: 0,
+                    owner_entity: crate::canonical_id_space_entity(owner_entity),
+                    owner_id,
+                    relation: relation.to_owned(),
+                },
+                facets,
+            );
     }
 
     pub fn install_relation_option<T>(
@@ -190,11 +408,12 @@ impl EntityGraphBuilder {
     {
         self.relation_lists.insert(
             RelationListKey {
+                view_id: 0,
                 owner_entity: crate::canonical_id_space_entity(&owner_entity.into()),
                 owner_id,
                 relation: relation.into(),
             },
-            Box::new(value),
+            RelationValue::new(value, None),
         );
     }
 
@@ -205,7 +424,9 @@ impl EntityGraphBuilder {
     fn freeze(self) -> FrozenEntityGraph {
         FrozenEntityGraph {
             tables: self.tables,
+            option_entities: self.option_entities,
             relation_lists: self.relation_lists,
+            relation_facets: self.relation_facets,
         }
     }
 }
@@ -223,7 +444,9 @@ impl std::fmt::Debug for EntityGraphBuilder {
 
 struct FrozenEntityGraph {
     tables: HashMap<TypeId, EntityTable>,
-    relation_lists: HashMap<RelationListKey, Box<dyn Any + Send + Sync>>,
+    option_entities: Option<Box<RelationOptionEntities>>,
+    relation_lists: HashMap<RelationListKey, RelationValue>,
+    relation_facets: Option<Box<RelationFacetResults>>,
 }
 
 impl std::fmt::Debug for FrozenEntityGraph {
@@ -243,7 +466,20 @@ impl std::fmt::Debug for FrozenEntityGraph {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EntityChangeSet {
     changes: BTreeMap<EntityKey, MutationValues>,
+    dynamic_changes: Option<Box<DynamicFieldChanges>>,
+    // Keep rare extension provenance off every ordinary change-set/future frame.
+    dynamic_metadata: Option<Box<DynamicMutationMetadata>>,
 }
+
+type DynamicOriginalValues = BTreeMap<EntityKey, BTreeMap<String, Option<Value>>>;
+#[derive(Debug, Clone, Default, PartialEq)]
+struct DynamicMutationMetadata {
+    definitions: BTreeMap<EntityKey, Arc<teaql_core::dynamic_fields::DynamicFieldDefinitions>>,
+    originals: DynamicOriginalValues,
+}
+
+pub type DynamicFieldChanges =
+    BTreeMap<EntityKey, BTreeMap<String, teaql_core::dynamic_fields::DynamicFieldMutation>>;
 
 #[derive(Debug, Clone, Default)]
 struct OriginalVersions {
@@ -285,15 +521,66 @@ impl OriginalVersions {
 }
 
 impl EntityChangeSet {
+    pub(crate) fn scoped_keys(
+        &self,
+    ) -> impl Iterator<Item = (&EntityKey, Option<&'static teaql_core::EntitySymbols>)> {
+        self.changes
+            .iter()
+            .map(|(key, values)| (key, values.symbols().or(key.symbols)))
+            .chain(
+                self.dynamic_changes
+                    .iter()
+                    .flat_map(|changes| changes.keys().map(|key| (key, key.symbols))),
+            )
+    }
+
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
+            && self
+                .dynamic_changes
+                .as_ref()
+                .is_none_or(|changes| changes.is_empty())
     }
 
     pub fn set(&mut self, key: EntityKey, field: impl Into<String>, value: Value) {
-        self.changes
+        let symbols = key.symbols;
+        let values = self
+            .changes
             .entry(key)
-            .or_default()
-            .insert(field.into(), value);
+            .or_insert_with(|| symbols.map(MutationValues::indexed).unwrap_or_default());
+        if let Some(symbols) = symbols {
+            values.bind_symbols(symbols);
+        }
+        values.insert(field.into(), value);
+    }
+
+    pub fn set_slot(
+        &mut self,
+        mut key: EntityKey,
+        symbols: &'static teaql_core::EntitySymbols,
+        slot: teaql_core::FieldSlot,
+        value: Value,
+    ) {
+        assert_eq!(
+            symbols.name(),
+            Some(key.entity.as_ref()),
+            "field owner mismatch"
+        );
+        assert!(
+            key.symbols.is_none_or(|owner| owner.same_layout(symbols)),
+            "field owner belongs to a different generated model"
+        );
+        assert!(
+            symbols.field(slot).is_some(),
+            "field slot outside generated layout"
+        );
+        key.symbols = Some(symbols);
+        let values = self
+            .changes
+            .entry(key)
+            .or_insert_with(|| MutationValues::indexed(symbols));
+        values.bind_symbols(symbols);
+        values.insert_slot(symbols, slot, value);
     }
 
     pub fn get(&self, key: &EntityKey, field: &str) -> Option<&Value> {
@@ -304,17 +591,111 @@ impl EntityChangeSet {
         &self.changes
     }
 
+    pub fn dynamic_changes(&self) -> Option<&DynamicFieldChanges> {
+        self.dynamic_changes.as_deref()
+    }
+
+    pub(crate) fn dynamic_definitions(
+        &self,
+        key: &EntityKey,
+    ) -> Option<&Arc<teaql_core::dynamic_fields::DynamicFieldDefinitions>> {
+        self.dynamic_metadata.as_ref()?.definitions.get(key)
+    }
+
+    pub(crate) fn dynamic_originals(
+        &self,
+        key: &EntityKey,
+    ) -> Option<&BTreeMap<String, Option<Value>>> {
+        self.dynamic_metadata.as_ref()?.originals.get(key)
+    }
+
+    fn set_dynamic(
+        &mut self,
+        key: EntityKey,
+        code: String,
+        mutation: teaql_core::dynamic_fields::DynamicFieldMutation,
+        definitions: Arc<teaql_core::dynamic_fields::DynamicFieldDefinitions>,
+        original: Option<Value>,
+    ) {
+        let metadata = self.dynamic_metadata.get_or_insert_with(Default::default);
+        metadata
+            .definitions
+            .entry(key.clone())
+            .or_insert(definitions);
+        metadata
+            .originals
+            .entry(key.clone())
+            .or_default()
+            .entry(code.clone())
+            .or_insert(original);
+        self.dynamic_changes
+            .get_or_insert_with(Default::default)
+            .entry(key)
+            .or_default()
+            .insert(code, mutation);
+    }
+
+    fn clear_dynamic_field(&mut self, key: &EntityKey, code: &str) {
+        if let Some(changes) = self.dynamic_changes.as_mut()
+            && let Some(fields) = changes.get_mut(key)
+        {
+            fields.remove(code);
+            if fields.is_empty() {
+                changes.remove(key);
+            }
+        }
+        if let Some(metadata) = self.dynamic_metadata.as_mut()
+            && let Some(originals) = metadata.originals.get_mut(key)
+        {
+            originals.remove(code);
+            if originals.is_empty() {
+                metadata.originals.remove(key);
+                metadata.definitions.remove(key);
+            }
+        }
+    }
+
     /// Remove all pending changes for a specific entity key.
     pub fn clear_entity(&mut self, key: &EntityKey) {
         self.changes.remove(key);
+        if let Some(changes) = &mut self.dynamic_changes {
+            changes.remove(key);
+        }
+        if let Some(metadata) = &mut self.dynamic_metadata {
+            metadata.definitions.remove(key);
+            metadata.originals.remove(key);
+        }
+    }
+
+    fn clear_field(&mut self, key: &EntityKey, field: &str) {
+        if let Some(values) = self.changes.get_mut(key) {
+            values.remove(field);
+            if values.is_empty() {
+                self.changes.remove(key);
+            }
+        }
     }
 
     /// Get the set of field names that have been modified for a given entity key.
     pub fn field_names(&self, key: &EntityKey) -> BTreeSet<String> {
-        self.changes
+        let mut names: BTreeSet<String> = self
+            .changes
             .get(key)
-            .map(|record| record.keys().cloned().collect())
-            .unwrap_or_default()
+            .map(|record| {
+                record
+                    .named_entries()
+                    .map(|(field, _)| field.to_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(fields) = self
+            .dynamic_changes
+            .as_ref()
+            .and_then(|changes| changes.get(key))
+        {
+            names.extend(fields.keys().map(|code| format!("#{code}")));
+        }
+        names
     }
 }
 
@@ -367,6 +748,12 @@ impl ChangeSetStack {
         }
     }
 
+    fn clear_field(&mut self, key: &EntityKey, field: &str) {
+        for change_set in &mut self.stack {
+            change_set.clear_field(key, field);
+        }
+    }
+
     /// Get the union of all changed field names for a given entity key across all stack levels.
     /// This is the Rust equivalent of Java's `entity.getUpdatedProperties()`.
     pub fn changed_field_names(&self, key: &EntityKey) -> BTreeSet<String> {
@@ -383,15 +770,23 @@ struct EntityMutationLedger {
     change_sets: ChangeSetStack,
     /// Annotation comment for observability during graph save.
     comment: Option<String>,
+    /// Local entity reasons are distinct from the root request reason.
+    entity_comments: std::collections::BTreeMap<EntityKey, String>,
     /// Entity keys that have been marked for deletion.
     /// When the entity is saved, the graph save pipeline will treat these as Remove operations.
     deleted_keys: std::collections::BTreeSet<EntityKey>,
+    recovered_keys: std::collections::BTreeSet<EntityKey>,
     /// Entity keys that have been marked as newly inserted.
     new_keys: std::collections::BTreeSet<EntityKey>,
     /// The original loaded snapshot, used to avoid redundant fetching during save.
     original_snapshot: Option<OriginalSnapshot>,
-    /// Trace chains associated with each entity key.
-    trace_chains: std::collections::BTreeMap<EntityKey, Vec<teaql_core::TraceNode>>,
+    /// Immutable parent tokens are materialized only at a consumer boundary.
+    trace_chains: std::collections::BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+    /// Scope ownership before legacy lower-ledger allocation. Never infer an
+    /// owner's identity from the entity name or from an inherited child scope.
+    unassigned_trace_scopes: BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+    /// Loaded snapshots needed to locate composed/deleted children without I/O.
+    original_snapshots: std::collections::BTreeMap<EntityKey, OriginalSnapshot>,
     /// Original versions of entities to perform optimistic concurrency control.
     original_versions: OriginalVersions,
     /// A generated, void-returning graph attachment could not safely merge two snapshots.
@@ -401,19 +796,215 @@ struct EntityMutationLedger {
     is_new: bool,
 }
 
+/// Synchronous borrowed ledger view. Never call root accessors or user code while held.
+pub(crate) struct LedgerPreflightView<'a> {
+    ledger: &'a EntityMutationLedger,
+    state: &'a EntityRuntimeState,
+    pub(crate) changes: &'a EntityChangeSet,
+}
+
+impl LedgerPreflightView<'_> {
+    pub(crate) fn pending_keys(&self) -> BTreeSet<EntityKey> {
+        let mut keys: BTreeSet<_> = self.changes.changes().keys().cloned().collect();
+        if let Some(dynamic) = self.changes.dynamic_changes() {
+            keys.extend(dynamic.keys().cloned());
+        }
+        keys.extend(self.ledger.deleted_keys.iter().cloned());
+        keys.extend(self.ledger.new_keys.iter().cloned());
+        keys.extend(self.ledger.recovered_keys.iter().cloned());
+        keys
+    }
+    pub(crate) fn is_deleted(&self, key: &EntityKey) -> bool {
+        self.ledger.deleted_keys.contains(key)
+    }
+    pub(crate) fn is_recovered(&self, key: &EntityKey) -> bool {
+        self.ledger.recovered_keys.contains(key)
+    }
+    pub(crate) fn is_new(&self, key: &EntityKey) -> bool {
+        self.ledger.new_keys.contains(key)
+    }
+    pub(crate) fn comment(&self, key: &EntityKey) -> Option<String> {
+        self.ledger.entity_comments.get(key).cloned()
+    }
+    pub(crate) fn dirty_fields(&self, key: &EntityKey) -> BTreeSet<String> {
+        self.ledger.change_sets.changed_field_names(key)
+    }
+    pub(crate) fn original_values(&self, key: &EntityKey) -> Option<EntitySnapshot> {
+        self.ledger
+            .original_snapshots
+            .get(key)
+            .map(|snapshot| match snapshot {
+                OriginalSnapshot::Materialized(values) => values.clone(),
+                OriginalSnapshot::Compact(snapshot) => snapshot.values(),
+            })
+            .or_else(|| {
+                self.state
+                    .loaded_snapshot
+                    .with(|snapshot| {
+                        (snapshot.entity.as_ref() == key.entity.as_ref()
+                            && EntityKey::new(
+                                snapshot.entity.as_ref(),
+                                snapshot.row.get("id")?.clone(),
+                            ) == *key)
+                            .then(|| snapshot.values())
+                    })
+                    .flatten()
+            })
+    }
+    pub(crate) fn original_version(&self, key: &EntityKey) -> Option<i64> {
+        self.ledger.original_versions.get(key).or_else(|| {
+            self.state
+                .loaded_snapshot
+                .with(|snapshot| {
+                    if snapshot.entity.as_ref() != key.entity.as_ref()
+                        || EntityKey::new(snapshot.entity.as_ref(), snapshot.row.get("id")?.clone())
+                            != *key
+                    {
+                        return None;
+                    }
+                    snapshot.row.get("version")?.try_i64()
+                })
+                .flatten()
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct EntityRuntimeState {
     // The OnceLock itself is shared so entities composed before the first mutation
     // still materialize exactly one graph-owned ledger.
-    inner: Arc<OnceLock<Arc<Mutex<EntityMutationLedger>>>>,
+    inner: LazyLedgerSlot,
     graph: EntityGraphReference,
-    loaded_snapshot: Option<LoadedEntitySnapshot>,
+    // Zero for ordinary SQL graphs; JSON views get operation-local coordinates.
+    json_view: u64,
+    loaded_snapshot: LoadedSnapshotCarrier,
+    // View-owned payload; no allocation on the ordinary fixed-field path.
+    dynamic_fields: Option<Box<teaql_core::dynamic_fields::DynamicFieldValues>>,
+    view_subtype: Option<&'static teaql_core::RuntimeSubtypeIdentity>,
 }
 
-#[derive(Debug, Clone)]
+/// A never-cloned readonly view needs no heap-allocated mutation binding.
+/// Cloning shares only the empty slot; ledger construction still waits for mutation.
+#[derive(Debug, Default)]
+struct LazyLedgerSlot {
+    shared: OnceLock<SharedLedgerSlot>,
+}
+
+type MutationLedgerHandle = Arc<Mutex<EntityMutationLedger>>;
+type SharedLedgerSlot = Arc<OnceLock<MutationLedgerHandle>>;
+
+impl LazyLedgerSlot {
+    fn get(&self) -> Option<&MutationLedgerHandle> {
+        self.shared.get()?.get()
+    }
+
+    fn get_or_init(&self, create: impl FnOnce() -> MutationLedgerHandle) -> &MutationLedgerHandle {
+        self.shared.get_or_init(Arc::default).get_or_init(create)
+    }
+
+    fn shares_slot(&self, other: &Self) -> bool {
+        if std::ptr::eq(self, other) {
+            return true;
+        }
+        match (self.shared.get(), other.shared.get()) {
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
+}
+
+impl Clone for LazyLedgerSlot {
+    fn clone(&self) -> Self {
+        Self {
+            shared: OnceLock::from(self.shared.get_or_init(Arc::default).clone()),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct LoadedEntitySnapshot {
     entity: Arc<str>,
     row: teaql_core::CompactRow,
+    materialized: OnceLock<EntitySnapshot>,
+}
+
+impl LoadedEntitySnapshot {
+    fn values(&self) -> EntitySnapshot {
+        self.materialized
+            .get_or_init(|| EntitySnapshot::from(self.row.clone().into_map()))
+            .clone()
+    }
+}
+
+/// An original row is immutable. Keep never-cloned views inline, and move the
+/// row into one shared owner on first clone instead of copying its value buffer.
+#[derive(Debug, Default)]
+struct LoadedSnapshotCarrier {
+    storage: Mutex<LoadedSnapshotStorage>,
+}
+
+#[derive(Debug, Default)]
+enum LoadedSnapshotStorage {
+    #[default]
+    Empty,
+    Inline(LoadedEntitySnapshot),
+    Shared(Arc<LoadedEntitySnapshot>),
+}
+
+impl LoadedSnapshotCarrier {
+    fn new(snapshot: LoadedEntitySnapshot) -> Self {
+        Self {
+            storage: Mutex::new(LoadedSnapshotStorage::Inline(snapshot)),
+        }
+    }
+
+    // Private readers only; callbacks cannot expose a mutable row or re-enter
+    // this carrier. Original-value APIs return copy-on-write handles, never mutable shared data.
+    fn with<R>(&self, read: impl FnOnce(&LoadedEntitySnapshot) -> R) -> Option<R> {
+        let storage = self
+            .storage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*storage {
+            LoadedSnapshotStorage::Empty => None,
+            LoadedSnapshotStorage::Inline(snapshot) => Some(read(snapshot)),
+            LoadedSnapshotStorage::Shared(snapshot) => Some(read(snapshot)),
+        }
+    }
+}
+
+impl LoadedSnapshotCarrier {
+    // Sharing with the ledger must also share the one materialization cache.
+    fn shared(&self) -> Option<Arc<LoadedEntitySnapshot>> {
+        let mut storage = self
+            .storage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let shared = match &*storage {
+            LoadedSnapshotStorage::Empty => return None,
+            LoadedSnapshotStorage::Shared(snapshot) => snapshot.clone(),
+            LoadedSnapshotStorage::Inline(_) => {
+                let LoadedSnapshotStorage::Inline(snapshot) = std::mem::take(&mut *storage) else {
+                    unreachable!("the carrier is locked during promotion")
+                };
+                let shared = Arc::new(snapshot);
+                *storage = LoadedSnapshotStorage::Shared(shared.clone());
+                shared
+            }
+        };
+        Some(shared)
+    }
+}
+
+impl Clone for LoadedSnapshotCarrier {
+    fn clone(&self) -> Self {
+        Self {
+            storage: Mutex::new(match self.shared() {
+                Some(snapshot) => LoadedSnapshotStorage::Shared(snapshot),
+                None => LoadedSnapshotStorage::Empty,
+            }),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -473,9 +1064,12 @@ impl EntityGraphReference {
 impl Default for EntityRuntimeState {
     fn default() -> Self {
         Self {
-            inner: Arc::default(),
+            inner: LazyLedgerSlot::default(),
             graph: EntityGraphReference::Strong(Arc::default()),
-            loaded_snapshot: None,
+            json_view: 0,
+            loaded_snapshot: LoadedSnapshotCarrier::default(),
+            dynamic_fields: None,
+            view_subtype: None,
         }
     }
 }
@@ -485,7 +1079,10 @@ impl Clone for EntityRuntimeState {
         Self {
             inner: self.inner.clone(),
             graph: self.graph.promote(),
+            json_view: self.json_view,
             loaded_snapshot: self.loaded_snapshot.clone(),
+            dynamic_fields: self.dynamic_fields.clone(),
+            view_subtype: self.view_subtype,
         }
     }
 }
@@ -496,13 +1093,15 @@ impl std::panic::RefUnwindSafe for EntityRuntimeState {}
 #[derive(Debug, Clone)]
 enum OriginalSnapshot {
     Materialized(EntitySnapshot),
-    #[allow(dead_code)] // Retained for zero-copy CompactRow hydration rollout.
-    Compact(teaql_core::CompactRow),
+    Compact(Arc<LoadedEntitySnapshot>),
 }
 
 impl PartialEq for EntityRuntimeState {
     fn eq(&self, other: &Self) -> bool {
-        if Arc::ptr_eq(&self.inner, &other.inner) {
+        if self.dynamic_fields != other.dynamic_fields || self.view_subtype != other.view_subtype {
+            return false;
+        }
+        if self.inner.shares_slot(&other.inner) {
             return true;
         }
         match (self.inner.get(), other.inner.get()) {
@@ -514,14 +1113,69 @@ impl PartialEq for EntityRuntimeState {
 }
 
 impl EntityRuntimeState {
+    #[doc(hidden)]
+    pub fn set_loaded_runtime_type(
+        &mut self,
+        identity: &'static teaql_core::RuntimeSubtypeIdentity,
+    ) {
+        self.view_subtype = Some(identity);
+    }
+
+    #[doc(hidden)]
+    pub fn loaded_runtime_type(&self, view: &str) -> Option<&'static str> {
+        self.view_subtype
+            .and_then(|identity| identity.for_view(view))
+    }
+
+    pub(crate) fn with_json_view(mut self, view_id: u64) -> Self {
+        self.json_view = view_id;
+        self
+    }
+
+    pub(crate) fn json_view_id(&self) -> u64 {
+        self.json_view
+    }
+
+    pub fn loaded_dynamic_fields(&self) -> Option<&teaql_core::dynamic_fields::DynamicFieldValues> {
+        self.dynamic_fields.as_deref()
+    }
+
+    /// A query installs row-owned data; loading does not touch the mutation ledger.
+    #[doc(hidden)]
+    pub fn install_loaded_dynamic_fields(
+        &mut self,
+        values: teaql_core::dynamic_fields::DynamicFieldValues,
+    ) {
+        self.dynamic_fields = Some(Box::new(values));
+    }
+
+    /// Explicit graph composition changes ledger ownership, not the entity view's loaded data.
+    #[doc(hidden)]
+    pub fn with_loaded_view_from(mut self, source: &Self) -> Self {
+        self.json_view = source.json_view;
+        self.loaded_snapshot = source.loaded_snapshot.clone();
+        self.dynamic_fields = source.dynamic_fields.clone();
+        self.view_subtype = source.view_subtype;
+        self
+    }
     #[cfg(test)]
     fn has_mutation_context(&self) -> bool {
         self.inner.get().is_some()
     }
 
     fn context(&self) -> &Arc<Mutex<EntityMutationLedger>> {
-        self.inner
-            .get_or_init(|| Arc::new(Mutex::new(EntityMutationLedger::default())))
+        self.inner.get_or_init(|| {
+            let mut ledger = EntityMutationLedger::default();
+            if let Some(snapshot) = self.loaded_snapshot.shared()
+                && let Some(id) = snapshot.row.get("id")
+            {
+                ledger.original_snapshots.insert(
+                    EntityKey::new(snapshot.entity.as_ref(), id.clone()),
+                    OriginalSnapshot::Compact(snapshot),
+                );
+            }
+            Arc::new(Mutex::new(ledger))
+        })
     }
 
     fn read_context<R>(&self, default: R, read: impl FnOnce(&EntityMutationLedger) -> R) -> R {
@@ -542,9 +1196,12 @@ impl EntityRuntimeState {
 
     pub fn fresh_with_shared_graph(source: &EntityRuntimeState) -> Self {
         Self {
-            inner: Arc::default(),
+            inner: LazyLedgerSlot::default(),
             graph: source.graph.preserve(),
-            loaded_snapshot: None,
+            json_view: source.json_view,
+            loaded_snapshot: LoadedSnapshotCarrier::default(),
+            dynamic_fields: None,
+            view_subtype: None,
         }
     }
 
@@ -552,9 +1209,12 @@ impl EntityRuntimeState {
     /// the graph from strongly owning an entity that strongly owns the graph in return.
     pub(crate) fn fresh_with_weak_graph(source: &EntityRuntimeState) -> Self {
         Self {
-            inner: Arc::default(),
+            inner: LazyLedgerSlot::default(),
             graph: source.graph.weak(),
-            loaded_snapshot: None,
+            json_view: source.json_view,
+            loaded_snapshot: LoadedSnapshotCarrier::default(),
+            dynamic_fields: None,
+            view_subtype: None,
         }
     }
 
@@ -564,7 +1224,10 @@ impl EntityRuntimeState {
         Self {
             inner: self.inner.clone(),
             graph: source.graph.preserve(),
+            json_view: source.json_view,
             loaded_snapshot: self.loaded_snapshot.clone(),
+            dynamic_fields: self.dynamic_fields.clone(),
+            view_subtype: self.view_subtype,
         }
     }
 
@@ -598,12 +1261,42 @@ impl EntityRuntimeState {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
-        let loaded_version = source.loaded_snapshot.as_ref().and_then(|loaded| {
-            let id = loaded.row.get("id")?.clone();
-            let version = loaded.row.get("version")?.try_i64()?;
-            Some((EntityKey::new(loaded.entity.as_ref(), id), version))
-        });
+        let loaded_version = source
+            .loaded_snapshot
+            .with(|loaded| {
+                let id = loaded.row.get("id")?.clone();
+                let version = loaded.row.get("version")?.try_i64()?;
+                Some((EntityKey::new(loaded.entity.as_ref(), id), version))
+            })
+            .flatten();
         self.write_context(|target| {
+            // A named adapter is scoped to one generating layout per entity in a ledger.
+            // Reject an incompatible model before merging anything, including deletes.
+            let source_keys = snapshot
+                .change_sets
+                .stack
+                .iter()
+                .flat_map(EntityChangeSet::scoped_keys)
+                .chain(snapshot.new_keys.iter().map(|key| (key, key.symbols)))
+                .chain(snapshot.deleted_keys.iter().map(|key| (key, key.symbols)));
+            for (key, symbols) in source_keys {
+                let Some(symbols) = symbols else { continue };
+                let target_keys = target
+                    .change_sets
+                    .stack
+                    .iter()
+                    .flat_map(EntityChangeSet::scoped_keys)
+                    .chain(target.new_keys.iter().map(|key| (key, key.symbols)))
+                    .chain(target.deleted_keys.iter().map(|key| (key, key.symbols)));
+                if target_keys
+                    .filter(|(other, _)| other.entity == key.entity)
+                    .any(|(_, owner)| owner.is_some_and(|s| !s.same_layout(symbols)))
+                {
+                    return Err(LedgerCompositionError::ConflictingSymbolLayout {
+                        entity: key.entity.to_string(),
+                    });
+                }
+            }
             let source_versions = snapshot
                 .original_versions
                 .first
@@ -619,11 +1312,14 @@ impl EntityRuntimeState {
                 .chain(loaded_version.iter().map(|(key, version)| (key, *version)));
             for (key, source_version) in source_versions {
                 let target_version = target.original_versions.get(key).or_else(|| {
-                    let loaded = self.loaded_snapshot.as_ref()?;
-                    (loaded.entity.as_ref() == key.entity.as_ref()
-                        && loaded.row.get("id")?.try_u64() == key.id.try_u64())
-                    .then(|| loaded.row.get("version")?.try_i64())
-                    .flatten()
+                    self.loaded_snapshot
+                        .with(|loaded| {
+                            (loaded.entity.as_ref() == key.entity.as_ref()
+                                && loaded.row.get("id")?.try_u64() == key.id.try_u64())
+                            .then(|| loaded.row.get("version")?.try_i64())
+                            .flatten()
+                        })
+                        .flatten()
                 });
                 if let Some(target_version) = target_version
                     && target_version != source_version
@@ -640,14 +1336,63 @@ impl EntityRuntimeState {
                     });
                 }
             }
+            // Check definition compatibility before importing any field intent.
+            for change_set in &snapshot.change_sets.stack {
+                if let Some(metadata) = &change_set.dynamic_metadata {
+                    for (key, source) in &metadata.definitions {
+                        for receiving in &target.change_sets.stack {
+                            if receiving
+                                .dynamic_definitions(key)
+                                .is_some_and(|existing| existing != source)
+                            {
+                                return Err(
+                                    LedgerCompositionError::ConflictingDynamicDefinitions {
+                                        entity: key.entity.to_string(),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            }
             for change_set in snapshot.change_sets.stack {
                 for (key, values) in change_set.changes {
-                    for (field, value) in values {
-                        target.change_sets.set(key.clone(), field, value);
+                    let receiving = target
+                        .change_sets
+                        .current_mut()
+                        .changes
+                        .entry(key)
+                        .or_default();
+                    receiving.merge(values);
+                }
+                if let Some(changes) = change_set.dynamic_changes {
+                    for (key, fields) in *changes {
+                        let definitions = change_set
+                            .dynamic_metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.definitions.get(&key))
+                            .expect("typed dynamic mutation definitions");
+                        for (code, mutation) in fields {
+                            let original = change_set
+                                .dynamic_metadata
+                                .as_ref()
+                                .and_then(|metadata| metadata.originals.get(&key))
+                                .and_then(|originals| originals.get(&code))
+                                .cloned()
+                                .flatten();
+                            target.change_sets.current_mut().set_dynamic(
+                                key.clone(),
+                                code,
+                                mutation,
+                                definitions.clone(),
+                                original,
+                            );
+                        }
                     }
                 }
             }
             target.deleted_keys.extend(snapshot.deleted_keys);
+            target.recovered_keys.extend(snapshot.recovered_keys);
             target.new_keys.extend(snapshot.new_keys);
             target
                 .original_versions
@@ -656,14 +1401,20 @@ impl EntityRuntimeState {
                 target.original_versions.insert(key, version);
             }
             for (key, traces) in snapshot.trace_chains {
-                target.trace_chains.entry(key).or_default().extend(traces);
+                // Each stored chain is complete, not a segment to concatenate.
+                target.trace_chains.entry(key).or_insert(traces);
+            }
+            for (key, scope) in snapshot.unassigned_trace_scopes {
+                target.unassigned_trace_scopes.entry(key).or_insert(scope);
+            }
+            target.entity_comments.extend(snapshot.entity_comments);
+            for (key, snapshot) in snapshot.original_snapshots {
+                target.original_snapshots.entry(key).or_insert(snapshot);
             }
             if target.original_snapshot.is_none() {
                 target.original_snapshot = snapshot.original_snapshot;
             }
-            if target.comment.is_none() {
-                target.comment = snapshot.comment;
-            }
+            // Composition never supplies the receiving request's root reason.
             target.is_new |= snapshot.is_new;
             Ok(())
         })
@@ -678,8 +1429,75 @@ impl EntityRuntimeState {
             .set(builder.freeze())
             .map_err(|graph| EntityGraphBuilder {
                 tables: graph.tables,
+                option_entities: graph.option_entities,
                 relation_lists: graph.relation_lists,
+                relation_facets: graph.relation_facets,
             })
+    }
+
+    /// Resolve only requested identities through this view's explicitly loaded
+    /// edges. No I/O, entity cloning, JSON payloads or mutation-ledger changes.
+    pub(crate) fn loaded_object_locations(
+        &self,
+        root: &EntityKey,
+        wanted: &BTreeSet<EntityKey>,
+    ) -> BTreeMap<EntityKey, crate::ObjectLocation> {
+        let mut result = BTreeMap::new();
+        let Some(graph) = self.graph.frozen() else {
+            return result;
+        };
+        let Some(id) = root.id.try_u64() else {
+            return result;
+        };
+        if wanted.is_empty() {
+            return result;
+        }
+        let mut by_owner = HashMap::<_, Vec<_>>::new();
+        for (key, value) in &graph.relation_lists {
+            if value.identities.is_some() {
+                by_owner
+                    .entry((key.owner_entity.as_str(), key.owner_id, key.view_id))
+                    .or_default()
+                    .push((key, value));
+            }
+        }
+        for edges in by_owner.values_mut() {
+            edges.sort_by(|(left, _), (right, _)| left.relation.cmp(&right.relation));
+        }
+        let mut pending = VecDeque::from([(
+            root.entity.to_string(),
+            id,
+            self.json_view,
+            crate::ObjectLocation::root(),
+        )]);
+        let mut visited = BTreeSet::new();
+        while let Some((entity, id, view, location)) = pending.pop_front() {
+            if !visited.insert((entity.clone(), id, view)) {
+                continue;
+            }
+            let identity = EntityKey::new(entity.clone(), id);
+            if wanted.contains(&identity) {
+                result.entry(identity).or_insert_with(|| location.clone());
+                if result.len() == wanted.len() {
+                    break;
+                }
+            }
+            let entity = crate::canonical_id_space_entity(&entity);
+            // Index only selected edges once, rather than scanning the whole
+            // graph for each row. Stable shortest path ignores HashMap order.
+            let Some(edges) = by_owner.get(&(entity.as_str(), id, view)) else {
+                continue;
+            };
+            for (key, value) in edges {
+                let field = location.clone().member(&key.relation);
+                value.identities.unwrap()(&*value.value, &mut |entity, id, view, index| {
+                    let path =
+                        index.map_or_else(|| field.clone(), |index| field.clone().element(index));
+                    pending.push_back((entity.to_owned(), id, view, path));
+                });
+            }
+        }
+        result
     }
 
     /// Resolve an entity by type and ID without locking or reference cloning.
@@ -687,12 +1505,25 @@ impl EntityRuntimeState {
     where
         T: Any + Send + Sync,
     {
-        self.graph
-            .frozen()?
+        let graph = self.graph.frozen()?;
+        if let Some(entity) = graph
             .tables
-            .get(&TypeId::of::<T>())?
-            .get(&id)?
-            .downcast_ref::<T>()
+            .get(&TypeId::of::<T>())
+            .and_then(|table| table.get(&id))
+        {
+            return entity.downcast_ref::<T>();
+        }
+        let key = graph
+            .option_entities
+            .as_ref()?
+            .index
+            .get(&(self.json_view, TypeId::of::<T>(), id))?
+            .as_ref()?;
+        graph
+            .relation_lists
+            .get(key)?
+            .downcast_ref::<Option<T>>()?
+            .as_ref()
     }
 
     pub fn resolve_relation_list<T>(
@@ -708,11 +1539,35 @@ impl EntityRuntimeState {
             .frozen()?
             .relation_lists
             .get(&RelationListKey {
+                view_id: self.json_view,
                 owner_entity: crate::canonical_id_space_entity(owner_entity),
                 owner_id,
                 relation: relation.to_owned(),
             })?
             .downcast_ref::<SmartList<T>>()
+    }
+
+    /// Inspect query-only Facet metadata without changing the relation getter's
+    /// cardinality or triggering I/O. Also available for a loaded null to-one.
+    pub fn relation_facet(
+        &self,
+        owner_entity: &str,
+        owner_id: u64,
+        relation: &str,
+        facet: &str,
+    ) -> Option<&SmartList<teaql_core::CompactRow>> {
+        self.graph
+            .frozen()?
+            .relation_facets
+            .as_ref()?
+            .lists
+            .get(&RelationListKey {
+                view_id: self.json_view,
+                owner_entity: crate::canonical_id_space_entity(owner_entity),
+                owner_id,
+                relation: relation.to_owned(),
+            })?
+            .get(facet)
     }
 
     /// Resolve a to-many relation without performing an implicit database read.
@@ -729,6 +1584,7 @@ impl EntityRuntimeState {
             return RelationHandle::new(LoadedRelation::NotLoaded, None);
         };
         let key = RelationListKey {
+            view_id: self.json_view,
             owner_entity: crate::canonical_id_space_entity(owner_entity),
             owner_id,
             relation: relation.to_owned(),
@@ -762,6 +1618,7 @@ impl EntityRuntimeState {
             .frozen()?
             .relation_lists
             .get(&RelationListKey {
+                view_id: self.json_view,
                 owner_entity: crate::canonical_id_space_entity(owner_entity),
                 owner_id,
                 relation: relation.to_owned(),
@@ -783,6 +1640,7 @@ impl EntityRuntimeState {
             return RelationHandle::new(LoadedRelation::NotLoaded, None);
         };
         let key = RelationListKey {
+            view_id: self.json_view,
             owner_entity: crate::canonical_id_space_entity(owner_entity),
             owner_id,
             relation: relation.to_owned(),
@@ -805,6 +1663,7 @@ impl EntityRuntimeState {
     pub fn has_relation_view(&self, owner_entity: &str, owner_id: u64, relation: &str) -> bool {
         self.graph.frozen().is_some_and(|graph| {
             graph.relation_lists.contains_key(&RelationListKey {
+                view_id: self.json_view,
                 owner_entity: crate::canonical_id_space_entity(owner_entity),
                 owner_id,
                 relation: relation.to_owned(),
@@ -834,11 +1693,15 @@ impl EntityRuntimeState {
             self.write_context(|context| {
                 context.change_sets = ChangeSetStack::default();
                 context.deleted_keys.clear();
+                context.recovered_keys.clear();
                 context.new_keys.clear();
                 context.original_versions.clear();
                 context.trace_chains.clear();
+                context.unassigned_trace_scopes.clear();
                 context.original_snapshot = None;
+                context.original_snapshots.clear();
                 context.comment = None;
+                context.entity_comments.clear();
                 context.is_new = false;
             });
         }
@@ -848,14 +1711,196 @@ impl EntityRuntimeState {
         self.write_context(|context| context.change_sets.set(key, field, value.into()));
     }
 
+    pub fn set_slot(
+        &self,
+        key: EntityKey,
+        symbols: &'static teaql_core::EntitySymbols,
+        slot: teaql_core::FieldSlot,
+        value: impl Into<Value>,
+    ) {
+        self.write_context(|context| {
+            context
+                .change_sets
+                .current_mut()
+                .set_slot(key, symbols, slot, value.into())
+        });
+    }
+    pub fn get_slot(
+        &self,
+        key: &EntityKey,
+        symbols: &'static teaql_core::EntitySymbols,
+        slot: teaql_core::FieldSlot,
+    ) -> Option<Value> {
+        self.read_context(None, |context| {
+            context.change_sets.stack.iter().rev().find_map(|set| {
+                set.changes
+                    .get(key)
+                    .and_then(|v| v.get_slot(symbols, slot))
+                    .cloned()
+            })
+        })
+    }
+
+    // Only model-admitted known-baseline normalization may discard native intent.
+    // Raw set deliberately keeps equal, unknown and malformed caller input.
+    pub(crate) fn discard_restored_field(&self, key: &EntityKey, field: &str) {
+        if self.inner.get().is_some() {
+            self.write_context(|context| context.change_sets.clear_field(key, field));
+        }
+    }
+
     pub fn get(&self, key: &EntityKey, field: &str) -> Option<Value> {
         self.read_context(None, |context| context.change_sets.get(key, field))
+    }
+
+    pub(crate) fn with_preflight_view<R>(
+        &self,
+        read: impl FnOnce(&LedgerPreflightView<'_>) -> R,
+    ) -> R {
+        let empty_ledger = EntityMutationLedger::default();
+        let empty_changes = EntityChangeSet::default();
+        let guard = self
+            .inner
+            .get()
+            .map(|ledger| ledger.lock().unwrap_or_else(|e| e.into_inner()));
+        let ledger = guard.as_deref().unwrap_or(&empty_ledger);
+        read(&LedgerPreflightView {
+            ledger,
+            state: self,
+            changes: ledger.change_sets.current().unwrap_or(&empty_changes),
+        })
     }
 
     pub fn current_change_set(&self) -> EntityChangeSet {
         self.read_context(EntityChangeSet::default(), |context| {
             context.change_sets.current().cloned().unwrap_or_default()
         })
+    }
+
+    /// Checker-local snapshot of one typed carrier's native intent. Never copy
+    /// unrelated graph entities or allocate a ledger for a readonly carrier.
+    pub(crate) fn native_mutation_values_for(&self, key: &EntityKey) -> Option<MutationValues> {
+        self.read_context(None, |context| {
+            let mut values: Option<MutationValues> = None;
+            for layer in &context.change_sets.stack {
+                if let Some(current) = layer.changes().get(key) {
+                    let values = values.get_or_insert_with(MutationValues::new);
+                    for (field, value) in current.iter() {
+                        values.insert(field.clone(), value.clone());
+                    }
+                }
+            }
+            values
+        })
+    }
+
+    pub fn has_pending_dynamic_mutations(&self) -> bool {
+        self.read_context(false, |ledger| {
+            ledger.change_sets.stack.iter().any(|set| {
+                set.dynamic_changes
+                    .as_ref()
+                    .is_some_and(|changes| !changes.is_empty())
+            })
+        })
+    }
+
+    pub fn update_dynamic_field(
+        &mut self,
+        key: EntityKey,
+        code: &str,
+        value: Value,
+    ) -> Result<bool, teaql_core::dynamic_fields::DynamicFieldError> {
+        use teaql_core::dynamic_fields::{DynamicFieldError, DynamicFieldMutation};
+        let creating = self.is_new(&key);
+        let fields = self
+            .dynamic_fields
+            .as_mut()
+            .ok_or_else(|| DynamicFieldError {
+                code: "DYNAMIC_FIELD_DEFINITIONS_MISSING",
+                field: code.to_owned(),
+            })?;
+        if fields.definitions().owner_type() != key.entity.as_ref() {
+            return Err(DynamicFieldError {
+                code: "DYNAMIC_FIELD_OWNER_MISMATCH",
+                field: code.to_owned(),
+            });
+        }
+        let was_loaded = fields.selected_codes().contains(code);
+        let original = fields.values().get(code).cloned();
+        let definitions = fields.definitions().clone();
+        fields.assign(code, value.clone())?;
+        let baseline = self.read_context(original.clone(), |ledger| {
+            for frame in &ledger.change_sets.stack {
+                if let Some(original) = frame
+                    .dynamic_originals(&key)
+                    .and_then(|fields| fields.get(code))
+                {
+                    return original.clone();
+                }
+            }
+            original.clone()
+        });
+        if !creating
+            && baseline
+                .as_ref()
+                .is_some_and(|before| same_dynamic_baseline(before, &value))
+        {
+            // Do not allocate a ledger for an equal loaded assignment. If this
+            // code was edited earlier, cancel only it across all staged frames.
+            if self.inner.get().is_some() {
+                self.write_context(|ledger| {
+                    for frame in &mut ledger.change_sets.stack {
+                        frame.clear_dynamic_field(&key, code);
+                    }
+                });
+            }
+            return Ok(!was_loaded);
+        }
+        self.write_context(|ledger| {
+            ledger.change_sets.current_mut().set_dynamic(
+                key,
+                code.to_owned(),
+                DynamicFieldMutation::Set(value),
+                definitions,
+                original,
+            )
+        });
+        Ok(!was_loaded)
+    }
+
+    pub fn delete_dynamic_field(
+        &mut self,
+        key: EntityKey,
+        code: &str,
+    ) -> Result<bool, teaql_core::dynamic_fields::DynamicFieldError> {
+        use teaql_core::dynamic_fields::{DynamicFieldError, DynamicFieldMutation};
+        let fields = self
+            .dynamic_fields
+            .as_mut()
+            .ok_or_else(|| DynamicFieldError {
+                code: "DYNAMIC_FIELD_DEFINITIONS_MISSING",
+                field: code.to_owned(),
+            })?;
+        if fields.definitions().owner_type() != key.entity.as_ref() {
+            return Err(DynamicFieldError {
+                code: "DYNAMIC_FIELD_OWNER_MISMATCH",
+                field: code.to_owned(),
+            });
+        }
+        let was_loaded = fields.selected_codes().contains(code);
+        let original = fields.values().get(code).cloned();
+        let definitions = fields.definitions().clone();
+        fields.delete(code)?;
+        self.write_context(|ledger| {
+            ledger.change_sets.current_mut().set_dynamic(
+                key,
+                code.to_owned(),
+                DynamicFieldMutation::Delete,
+                definitions,
+                original,
+            )
+        });
+        Ok(was_loaded)
     }
 
     /// Set an annotation comment on this entity root.
@@ -867,6 +1912,19 @@ impl EntityRuntimeState {
     /// Get the annotation comment, if any.
     pub fn get_comment(&self) -> Option<String> {
         self.read_context(None, |context| context.comment.clone())
+    }
+
+    /// Record only this entity's local reason, even in a shared graph ledger.
+    #[doc(hidden)]
+    pub fn set_entity_comment(&self, key: EntityKey, comment: impl Into<String>) {
+        self.write_context(|context| {
+            context.entity_comments.insert(key, comment.into());
+        });
+    }
+
+    #[doc(hidden)]
+    pub fn get_entity_comment(&self, key: &EntityKey) -> Option<String> {
+        self.read_context(None, |context| context.entity_comments.get(key).cloned())
     }
 
     /// Mark this entity root as a newly created entity in memory.
@@ -892,18 +1950,20 @@ impl EntityRuntimeState {
     pub fn set_original_compact_row(
         &mut self,
         entity: impl Into<Arc<str>>,
-        row: teaql_core::CompactRow,
+        mut row: teaql_core::CompactRow,
     ) {
-        self.loaded_snapshot = Some(LoadedEntitySnapshot {
+        row.clear_loaded_relations();
+        self.loaded_snapshot = LoadedSnapshotCarrier::new(LoadedEntitySnapshot {
             entity: entity.into(),
             row,
+            materialized: OnceLock::new(),
         });
     }
 
     /// Retrieve the original loaded entity snapshot.
     pub fn original_snapshot(&self) -> Option<EntitySnapshot> {
-        if let Some(snapshot) = &self.loaded_snapshot {
-            return Some(EntitySnapshot::from(snapshot.row.clone().into_map()));
+        if let Some(snapshot) = self.loaded_snapshot.with(|snapshot| snapshot.values()) {
+            return Some(snapshot);
         }
         self.read_context(None, |context| {
             context
@@ -911,7 +1971,7 @@ impl EntityRuntimeState {
                 .as_ref()
                 .map(|snapshot| match snapshot {
                     OriginalSnapshot::Materialized(snapshot) => snapshot.clone(),
-                    OriginalSnapshot::Compact(row) => EntitySnapshot::from(row.clone().into_map()),
+                    OriginalSnapshot::Compact(snapshot) => snapshot.values(),
                 })
         })
     }
@@ -923,6 +1983,7 @@ impl EntityRuntimeState {
     pub fn mark_as_delete(&self, key: EntityKey) {
         self.write_context(|context| {
             context.change_sets.clear_entity(&key);
+            context.recovered_keys.remove(&key);
             context.deleted_keys.insert(key);
         });
     }
@@ -930,6 +1991,23 @@ impl EntityRuntimeState {
     /// Check whether an entity has been marked for deletion.
     pub fn is_marked_as_delete(&self, key: &EntityKey) -> bool {
         self.read_context(false, |context| context.deleted_keys.contains(key))
+    }
+
+    /// Recovery preserves pending field edits and uses the loaded tombstone
+    /// version. Marking is local intent, never an immediate database action.
+    pub fn mark_as_recover(&self, key: EntityKey) {
+        self.write_context(|context| {
+            context.deleted_keys.remove(&key);
+            context.recovered_keys.insert(key);
+        });
+    }
+
+    pub fn is_marked_as_recover(&self, key: &EntityKey) -> bool {
+        self.read_context(false, |context| context.recovered_keys.contains(key))
+    }
+
+    pub fn recovered_keys(&self) -> BTreeSet<EntityKey> {
+        self.read_context(BTreeSet::new(), |context| context.recovered_keys.clone())
     }
 
     /// Get the set of field names that have been modified for the given entity key.
@@ -950,22 +2028,147 @@ impl EntityRuntimeState {
     pub fn get_original_version(&self, key: &EntityKey) -> Option<i64> {
         self.read_context(None, |context| context.original_versions.get(key))
             .or_else(|| {
-                let snapshot = self.loaded_snapshot.as_ref()?;
-                if snapshot.entity.as_ref() != key.entity.as_ref() {
-                    return None;
-                }
-                snapshot
-                    .row
-                    .get("id")?
-                    .try_u64()
-                    .filter(|id| Some(*id) == key.id.try_u64())?;
-                snapshot.row.get("version")?.try_i64()
+                self.loaded_snapshot
+                    .with(|snapshot| {
+                        if snapshot.entity.as_ref() != key.entity.as_ref() {
+                            return None;
+                        }
+                        snapshot
+                            .row
+                            .get("id")?
+                            .try_u64()
+                            .filter(|id| Some(*id) == key.id.try_u64())?;
+                        snapshot.row.get("version")?.try_i64()
+                    })
+                    .flatten()
             })
     }
 
     pub fn get_trace_chain(&self, key: &EntityKey) -> Vec<teaql_core::TraceNode> {
         self.read_context(Vec::new(), |context| {
-            context.trace_chains.get(key).cloned().unwrap_or_default()
+            context
+                .trace_chains
+                .get(key)
+                .map(|scope| scope.recover_trace_chain())
+                .unwrap_or_default()
+        })
+    }
+
+    pub(crate) fn replace_trace_scopes(
+        &self,
+        scopes: std::collections::BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+        unassigned: BTreeMap<EntityKey, Arc<crate::TraceScopeToken>>,
+    ) {
+        self.write_context(|context| {
+            context.trace_chains = scopes;
+            context.unassigned_trace_scopes = unassigned;
+        });
+    }
+
+    /// Rebind immutable ancestors after allocation, before command/event
+    /// materialization. Keys and mutation payloads remain retryable; this only
+    /// updates operation-owned trace tokens. Shared ancestors stay shared.
+    pub(crate) fn enrich_allocated_trace_scopes(&self, assigned: &BTreeMap<EntityKey, Value>) {
+        if assigned.is_empty() {
+            return;
+        }
+        type Token = crate::TraceScopeToken;
+        fn rebind(
+            scope: &Arc<Token>,
+            identities: &HashMap<*const Token, u64>,
+            cache: &mut HashMap<*const Token, Arc<Token>>,
+        ) -> Arc<Token> {
+            let mut pending = Vec::new();
+            let mut cursor = Some(scope.clone());
+            while let Some(token) = cursor {
+                if cache.contains_key(&Arc::as_ptr(&token)) {
+                    break;
+                }
+                cursor = token.parent.clone();
+                pending.push(token);
+            }
+            while let Some(token) = pending.pop() {
+                let pointer = Arc::as_ptr(&token);
+                let parent = token.parent.as_ref().map(|parent| {
+                    cache
+                        .get(&Arc::as_ptr(parent))
+                        .expect("parent rebound first")
+                        .clone()
+                });
+                let assigned_id = identities.get(&pointer).copied();
+                let changed_parent = match (&token.parent, &parent) {
+                    (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+                    _ => false,
+                };
+                let rebound = if changed_parent
+                    || assigned_id.is_some_and(|id| token.track.entity_id != Some(id))
+                {
+                    let mut track = token.track.clone();
+                    if let Some(id) = assigned_id {
+                        track.entity_id = Some(id);
+                    }
+                    Arc::new(Token {
+                        parent,
+                        track,
+                        node_index: token.node_index,
+                    })
+                } else {
+                    token.clone()
+                };
+                cache.insert(pointer, rebound);
+            }
+            cache
+                .get(&Arc::as_ptr(scope))
+                .expect("scope rebound")
+                .clone()
+        }
+
+        self.write_context(|context| {
+            let identities = context
+                .unassigned_trace_scopes
+                .iter()
+                .filter_map(|(key, scope)| {
+                    assigned
+                        .get(key)?
+                        .try_u64()
+                        .filter(|id| *id > 0)
+                        .map(|id| (Arc::as_ptr(scope), id))
+                })
+                .collect::<HashMap<_, _>>();
+            if identities.is_empty() {
+                return;
+            }
+            let mut cache = HashMap::new();
+            for scope in context.trace_chains.values_mut() {
+                *scope = rebind(scope, &identities, &mut cache);
+            }
+            for scope in context.unassigned_trace_scopes.values_mut() {
+                *scope = rebind(scope, &identities, &mut cache);
+            }
+        });
+    }
+
+    pub(crate) fn original_values_for(&self, key: &EntityKey) -> Option<EntitySnapshot> {
+        self.read_context(None, |context| {
+            context
+                .original_snapshots
+                .get(key)
+                .map(|snapshot| match snapshot {
+                    OriginalSnapshot::Materialized(values) => values.clone(),
+                    OriginalSnapshot::Compact(snapshot) => snapshot.values(),
+                })
+        })
+        .or_else(|| {
+            self.loaded_snapshot
+                .with(|snapshot| {
+                    (snapshot.entity.as_ref() == key.entity.as_ref()
+                        && EntityKey::new(
+                            snapshot.entity.as_ref(),
+                            snapshot.row.get("id")?.clone(),
+                        ) == *key)
+                        .then(|| snapshot.values())
+                })
+                .flatten()
         })
     }
 
@@ -978,9 +2181,36 @@ impl EntityRuntimeState {
     }
 }
 
+// Definitions validate the value type first. Preserve representation-sensitive
+// numeric/JSON edits instead of treating them as proven baseline restoration.
+fn same_dynamic_baseline(before: &Value, current: &Value) -> bool {
+    match (before, current) {
+        (Value::F64(a), Value::F64(b)) => {
+            a.is_finite() && b.is_finite() && a.to_bits() == b.to_bits()
+        }
+        (Value::Decimal(a), Value::Decimal(b)) => a.serialize() == b.serialize(),
+        #[allow(
+            clippy::cmp_owned,
+            reason = "Mutation baselines preserve serialized JSON representation, including signed zero"
+        )]
+        (Value::Json(a), Value::Json(b)) => a.to_string() == b.to_string(),
+        _ => before == current,
+    }
+}
+
+#[cfg(test)]
+#[path = "entity_runtime/dynamic_normalization_tests.rs"]
+mod dynamic_normalization_tests;
+
 /// An explicit graph composition failed before any database write.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LedgerCompositionError {
+    ConflictingSymbolLayout {
+        entity: String,
+    },
+    ConflictingDynamicDefinitions {
+        entity: String,
+    },
     MissingTargetState,
     MissingSourceState,
     ConflictingOriginalVersion {
@@ -994,6 +2224,14 @@ pub enum LedgerCompositionError {
 impl std::fmt::Display for LedgerCompositionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ConflictingSymbolLayout { entity } => write!(
+                formatter,
+                "cannot compose incompatible generated symbol layouts for {entity}"
+            ),
+            Self::ConflictingDynamicDefinitions { entity } => write!(
+                formatter,
+                "cannot compose incompatible dynamic definitions for {entity}"
+            ),
             Self::MissingTargetState => formatter.write_str("target entity has no mutation ledger"),
             Self::MissingSourceState => formatter.write_str("source entity has no mutation ledger"),
             Self::ConflictingOriginalVersion {
@@ -1201,6 +2439,106 @@ mod composition_api_tests {
     }
 
     #[test]
+    fn deterministic_randomized_composition_is_atomic_and_seed_replayable() {
+        const SEED: u64 = 0x434f_4d50_4f53_4552;
+        const TRIALS: usize = 512;
+        const MUTATIONS_PER_TRIAL: usize = 32;
+
+        let mut random = SEED;
+        for trial in 0..TRIALS {
+            let target_state = EntityRuntimeState::default();
+            let source_state = EntityRuntimeState::default();
+            let key = EntityKey::new_static("Child", (trial % 17 + 1) as u64);
+            let other_type_key = EntityKey::new_static("OtherChild", key.id.clone());
+            let target_version = (trial % 11 + 1) as i64;
+            let source_version = if trial % 3 == 0 {
+                target_version + 1
+            } else {
+                target_version
+            };
+            target_state.set_original_version(key.clone(), target_version);
+            source_state.set_original_version(key.clone(), source_version);
+            source_state.set_original_version(other_type_key.clone(), source_version + 20);
+
+            for mutation in 0..MUTATIONS_PER_TRIAL {
+                random = random
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let field = match random % 3 {
+                    0 => "amount",
+                    1 => "status",
+                    _ => "description",
+                };
+                let source_value = Value::U64(random >> 16);
+                source_state.set(key.clone(), field, source_value);
+                if mutation % 5 == 0 {
+                    target_state.set(key.clone(), field, Value::U64(mutation as u64));
+                }
+                if mutation % 7 == 0 {
+                    source_state.set(
+                        other_type_key.clone(),
+                        field,
+                        Value::U64(random.rotate_left(17)),
+                    );
+                }
+            }
+
+            let target_before = target_state.current_change_set();
+            let source_before = source_state.current_change_set();
+            let result = TestEntity(Some(target_state.clone()))
+                .include_pending_mutations_from(&TestEntity(Some(source_state.clone())));
+
+            if source_version != target_version {
+                assert_eq!(
+                    result,
+                    Err(LedgerCompositionError::ConflictingOriginalVersion {
+                        entity: "Child".to_owned(),
+                        id: (trial % 17 + 1).to_string(),
+                        target: target_version,
+                        source: source_version,
+                    }),
+                    "seed={SEED:#x} trial={trial}"
+                );
+                assert_eq!(
+                    target_state.current_change_set(),
+                    target_before,
+                    "failed composition must not partially copy mutations; seed={SEED:#x} trial={trial}"
+                );
+                assert_eq!(
+                    target_state.get_original_version(&key),
+                    Some(target_version)
+                );
+                assert_eq!(target_state.get_original_version(&other_type_key), None);
+            } else {
+                result.unwrap();
+                for (source_key, values) in source_before.changes() {
+                    for (field, value) in values {
+                        assert_eq!(
+                            target_state.get(source_key, field),
+                            Some(value.clone()),
+                            "seed={SEED:#x} trial={trial} key={source_key:?} field={field}"
+                        );
+                    }
+                }
+                assert_eq!(
+                    target_state.get_original_version(&key),
+                    Some(target_version)
+                );
+                assert_eq!(
+                    target_state.get_original_version(&other_type_key),
+                    Some(source_version + 20)
+                );
+            }
+
+            assert_eq!(
+                source_state.current_change_set(),
+                source_before,
+                "composition must leave the retryable source ledger intact; seed={SEED:#x} trial={trial}"
+            );
+        }
+    }
+
+    #[test]
     fn generated_void_attachment_retains_version_conflict_for_save_preflight() {
         let target_state = EntityRuntimeState::default();
         let source_state = EntityRuntimeState::default();
@@ -1229,9 +2567,252 @@ mod composition_api_tests {
 mod lazy_root_tests {
     use super::*;
 
+    fn readonly_probe() -> EntityRuntimeState {
+        let mut root = EntityRuntimeState::default();
+        root.set_original_compact_row(
+            "SnapshotProbe",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(7)),
+                ("version".into(), Value::I64(3)),
+                ("name".into(), Value::Text("immutable baseline".into())),
+            ])),
+        );
+        root
+    }
+
+    #[test]
+    fn original_row_moves_on_first_clone_and_returned_values_remain_private() {
+        let mut root = readonly_probe();
+        assert!(matches!(
+            *root.loaded_snapshot.storage.lock().unwrap(),
+            LoadedSnapshotStorage::Inline(_)
+        ));
+        let payload = root
+            .loaded_snapshot
+            .with(|snapshot| {
+                snapshot
+                    .row
+                    .get("name")
+                    .unwrap()
+                    .try_text()
+                    .unwrap()
+                    .as_ptr() as usize
+            })
+            .unwrap();
+        let clone = root.clone();
+        let shared = root
+            .loaded_snapshot
+            .with(|snapshot| snapshot as *const _ as usize)
+            .unwrap();
+        assert_eq!(
+            shared,
+            clone
+                .loaded_snapshot
+                .with(|snapshot| snapshot as *const _ as usize)
+                .unwrap()
+        );
+        assert_eq!(
+            payload,
+            clone
+                .loaded_snapshot
+                .with(|snapshot| snapshot
+                    .row
+                    .get("name")
+                    .unwrap()
+                    .try_text()
+                    .unwrap()
+                    .as_ptr() as usize)
+                .unwrap()
+        );
+        let mut returned = clone.original_snapshot().unwrap();
+        returned.insert("name".into(), Value::Text("not the original".into()));
+        assert_eq!(
+            root.original_snapshot().unwrap().get("name"),
+            Some(&Value::Text("immutable baseline".into()))
+        );
+        root.set_original_compact_row(
+            "SnapshotProbe",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(7)),
+                ("version".into(), Value::I64(4)),
+            ])),
+        );
+        let key = EntityKey::new_static("SnapshotProbe", 7_u64);
+        assert_eq!(root.get_original_version(&key), Some(4));
+        assert_eq!(clone.get_original_version(&key), Some(3));
+        assert_eq!(
+            clone.get_original_version(&EntityKey::new_static("OtherType", 7_u64)),
+            None
+        );
+        assert!(!root.has_mutation_context());
+        assert!(!clone.has_mutation_context());
+    }
+
+    #[test]
+    fn concurrent_first_snapshot_clones_share_one_immutable_row() {
+        let root = readonly_probe();
+        let barrier = std::sync::Barrier::new(16);
+        let clones = std::thread::scope(|scope| {
+            let workers = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        root.clone()
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let shared = root
+            .loaded_snapshot
+            .with(|snapshot| snapshot as *const _ as usize)
+            .unwrap();
+        for clone in &clones {
+            assert_eq!(
+                shared,
+                clone
+                    .loaded_snapshot
+                    .with(|snapshot| snapshot as *const _ as usize)
+                    .unwrap()
+            );
+            assert_eq!(
+                clone.get_original_version(&EntityKey::new_static("SnapshotProbe", 7_u64)),
+                Some(3)
+            );
+            assert!(!clone.has_mutation_context());
+        }
+        let independent = readonly_probe();
+        let isolated = independent.clone();
+        assert_ne!(
+            shared,
+            isolated
+                .loaded_snapshot
+                .with(|snapshot| snapshot as *const _ as usize)
+                .unwrap()
+        );
+        clones[0].set(
+            EntityKey::new_static("SnapshotProbe", 7_u64),
+            "name",
+            "changed",
+        );
+        assert!(independent.current_change_set().is_empty());
+        assert_eq!(
+            clones[0].original_snapshot().unwrap().get("name"),
+            Some(&Value::Text("immutable baseline".into()))
+        );
+    }
+
+    #[test]
+    fn readonly_state_keeps_binding_and_ledger_unallocated_until_clone_or_mutation() {
+        let root = EntityRuntimeState::default();
+        let key = EntityKey::new_static("Probe", 7_u64);
+        assert!(root.inner.shared.get().is_none());
+        assert!(root.get(&key, "name").is_none());
+        assert!(!root.has_pending_dynamic_mutations());
+        assert!(root.inner.shared.get().is_none());
+        let cloned = root.clone();
+        assert!(root.inner.shares_slot(&cloned.inner));
+        assert!(!root.has_mutation_context());
+        assert!(!cloned.has_mutation_context());
+        let independent = EntityRuntimeState::default();
+        assert!(!root.inner.shares_slot(&independent.inner));
+        cloned.set(key.clone(), "name", "changed");
+        assert_eq!(root.get(&key, "name"), Some(Value::Text("changed".into())));
+        assert!(independent.get(&key, "name").is_none());
+        assert!(Arc::ptr_eq(
+            root.inner.get().unwrap(),
+            cloned.inner.get().unwrap()
+        ));
+    }
+
+    #[test]
+    fn concurrent_first_clones_share_one_empty_binding_then_one_ledger() {
+        let root = EntityRuntimeState::default();
+        let barrier = std::sync::Barrier::new(16);
+        let clones = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        root.clone()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert!(!root.has_mutation_context());
+        for cloned in &clones {
+            assert!(root.inner.shares_slot(&cloned.inner));
+            assert!(!cloned.has_mutation_context());
+        }
+        let key = EntityKey::new_static("Probe", 1_u64);
+        clones[0].set(key.clone(), "name", "one ledger");
+        for cloned in &clones {
+            assert!(Arc::ptr_eq(
+                root.inner.get().unwrap(),
+                cloned.inner.get().unwrap()
+            ));
+            assert_eq!(
+                cloned.get(&key, "name"),
+                Some(Value::Text("one ledger".into()))
+            );
+        }
+    }
+
     #[derive(Clone)]
     struct GraphChild {
         root: EntityRuntimeState,
+    }
+
+    #[test]
+    fn relation_facet_metadata_is_read_only_and_excluded_from_mutation_snapshots() {
+        let root = EntityRuntimeState::default();
+        let mut graph = EntityGraphBuilder::default();
+        let facets = BTreeMap::from([("choices".to_owned(), SmartList::new(Vec::new()))]);
+        graph.install_relation_facets("Owner", 1, "reference", facets.clone());
+        root.freeze_graph(graph).unwrap();
+        let mut first = EntityRuntimeState::fresh_with_shared_graph(&root);
+        let second = EntityRuntimeState::fresh_with_shared_graph(&root);
+        let mut row = teaql_core::CompactRow::from_map(BTreeMap::from([
+            ("id".to_owned(), Value::U64(1)),
+            ("version".to_owned(), Value::I64(1)),
+        ]));
+        row.set_loaded_relation(
+            "reference".to_owned(),
+            SmartList {
+                facets,
+                ..SmartList::new(Vec::new())
+            },
+        );
+        first.set_original_compact_row("Owner", row);
+        assert!(
+            !first
+                .loaded_snapshot
+                .with(|snapshot| snapshot.row.has_loaded_relations())
+                .unwrap()
+        );
+        assert!(
+            first
+                .relation_facet("Owner", 1, "reference", "choices")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!first.has_mutation_context());
+        assert!(!second.has_mutation_context());
+        first.set_comment("first independent mutation");
+        assert_eq!(second.get_comment(), None);
+        assert!(!second.has_mutation_context());
+        assert!(
+            second
+                .relation_facet("Owner", 1, "reference", "choices")
+                .is_some()
+        );
     }
 
     #[test]
@@ -1407,5 +2988,190 @@ mod lazy_root_tests {
         let absent = root.relation_option::<u64>("Owner", 1, "absent");
         assert_eq!(absent.state(), LoadedRelation::NotLoaded);
         assert!(absent.value().is_none());
+    }
+}
+
+#[cfg(test)]
+mod trace_allocation_sharing_tests {
+    use super::*;
+
+    #[test]
+    fn rebinding_preserves_shared_immutable_ancestors_and_cleanup() {
+        let state = EntityRuntimeState::default();
+        let key = EntityKey::new("Order", 0_u64);
+        let child = EntityKey::new("Payment", 301_u64);
+        let inherited = EntityKey::new("OrderItem", 201_u64);
+        let root_scope = Arc::new(crate::TraceScopeToken {
+            parent: None,
+            track: teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::AuditReason,
+                "Order",
+                None,
+                "submit",
+            ),
+            node_index: 0,
+        });
+        let child_scope = Arc::new(crate::TraceScopeToken {
+            parent: Some(root_scope.clone()),
+            track: teaql_core::TraceNode::typed(
+                teaql_core::TraceKind::AuditReason,
+                "Payment",
+                Some(301),
+                "authorize",
+            ),
+            node_index: 1,
+        });
+        state.replace_trace_scopes(
+            BTreeMap::from([
+                (key.clone(), root_scope.clone()),
+                (child.clone(), child_scope),
+                (inherited.clone(), root_scope.clone()),
+            ]),
+            BTreeMap::from([(key.clone(), root_scope)]),
+        );
+        state.enrich_allocated_trace_scopes(&BTreeMap::from([(key.clone(), Value::U64(100))]));
+        state.read_context((), |ledger| {
+            let root = &ledger.trace_chains[&key];
+            assert_eq!(root.track.entity_id, Some(100));
+            assert!(Arc::ptr_eq(root, &ledger.trace_chains[&inherited]));
+            assert!(Arc::ptr_eq(
+                root,
+                ledger.trace_chains[&child].parent.as_ref().unwrap()
+            ));
+            assert!(Arc::ptr_eq(root, &ledger.unassigned_trace_scopes[&key]));
+        });
+        state.clear_committed();
+        state.read_context((), |ledger| {
+            assert!(ledger.trace_chains.is_empty());
+            assert!(ledger.unassigned_trace_scopes.is_empty());
+        });
+    }
+}
+
+#[cfg(test)]
+mod shared_original_snapshot_tests {
+    use super::*;
+
+    fn state(version: i64) -> EntityRuntimeState {
+        let mut state = EntityRuntimeState::default();
+        state.set_original_compact_row(
+            "Probe",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(7)),
+                ("version".into(), Value::I64(version)),
+                ("name".into(), Value::from("original")),
+                ("nullable".into(), Value::Null),
+            ])),
+        );
+        state
+    }
+    fn same(left: &EntitySnapshot, right: &EntitySnapshot) {
+        assert!(
+            std::ptr::eq(&**left, &**right),
+            "one immutable snapshot must materialize only once"
+        );
+    }
+
+    #[test]
+    fn loaded_ledger_preflight_and_composed_views_reuse_one_materialization() {
+        let root = state(3);
+        assert!(
+            root.loaded_snapshot
+                .with(|s| s.materialized.get().is_none())
+                .unwrap()
+        );
+        let baseline = root.original_snapshot().unwrap();
+        let clone = root.clone(); // Promotion must retain an already-filled cache.
+        let key = EntityKey::new_static("Probe", 7_u64);
+        same(&baseline, &clone.original_snapshot().unwrap());
+        same(&baseline, &root.original_values_for(&key).unwrap());
+        root.set(key.clone(), "name", "pending");
+        same(&baseline, &root.original_values_for(&key).unwrap());
+        root.with_preflight_view(|view| same(&baseline, &view.original_values(&key).unwrap()));
+        let composed = EntityRuntimeState::default();
+        composed.adopt_mutations_from(&root);
+        same(&baseline, &composed.original_values_for(&key).unwrap());
+        root.push_change_set();
+        root.set(key.clone(), "name", "nested");
+        root.pop_change_set();
+        same(&baseline, &root.original_values_for(&key).unwrap());
+        assert_eq!(root.get(&key, "name"), Some(Value::from("pending")));
+        let mut changed = composed.original_values_for(&key).unwrap();
+        changed.insert("name".into(), Value::from("detached"));
+        assert_eq!(baseline.get("name"), Some(&Value::from("original")));
+        assert_eq!(baseline.get("nullable"), Some(&Value::Null));
+        assert!(!baseline.contains_key("missing"));
+        assert!(
+            root.original_values_for(&EntityKey::new_static("Other", 7_u64))
+                .is_none()
+        );
+        assert!(
+            root.original_values_for(&EntityKey::new_static("Probe", 8_u64))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn concurrent_first_reads_share_cache_but_independent_loads_do_not() {
+        let root = state(3);
+        let barrier = std::sync::Barrier::new(12);
+        let snapshots = std::thread::scope(|scope| {
+            let jobs: Vec<_> = (0..12)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        root.clone().original_snapshot().unwrap()
+                    })
+                })
+                .collect();
+            jobs.into_iter()
+                .map(|job| job.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        for snapshot in &snapshots {
+            same(&snapshots[0], snapshot);
+        }
+        let separate = state(3).original_snapshot().unwrap();
+        assert!(!std::ptr::eq(&*snapshots[0], &*separate));
+    }
+
+    #[test]
+    fn new_load_and_commit_boundaries_do_not_reuse_an_old_version_cache() {
+        let mut root = state(3);
+        let old_view = root.clone();
+        let old = root.original_snapshot().unwrap();
+        // Reload on this view installs a new cache; retained views keep theirs.
+        root.set_original_compact_row(
+            "Probe",
+            teaql_core::CompactRow::from_map(BTreeMap::from([
+                ("id".into(), Value::U64(7)),
+                ("version".into(), Value::I64(4)),
+                ("name".into(), Value::from("persisted")),
+            ])),
+        );
+        let new = root.original_snapshot().unwrap();
+        assert!(!std::ptr::eq(&*old, &*new));
+        assert_eq!(new.get("version"), Some(&Value::I64(4)));
+        assert_eq!(
+            old_view.original_snapshot().unwrap().get("version"),
+            Some(&Value::I64(3))
+        );
+        assert!(!new.contains_key("nullable"));
+        let key = EntityKey::new_static("Probe", 7_u64);
+        root.set(key.clone(), "name", "next pending");
+        root.clear_committed();
+        assert!(root.current_change_set().is_empty());
+        same(&new, &root.original_values_for(&key).unwrap());
+        // A separately hydrated post-save entity owns its own immutable version.
+        let next = state(5).original_snapshot().unwrap();
+        assert_eq!(next.get("version"), Some(&Value::I64(5)));
+        assert_eq!(old.get("version"), Some(&Value::I64(3)));
+        let materialized = EntityRuntimeState::default();
+        materialized.set_original_snapshot(old.clone());
+        let mut returned = materialized.original_snapshot().unwrap();
+        returned.clear();
+        same(&old, &materialized.original_snapshot().unwrap());
+        materialized.set_original_snapshot(next.clone());
+        same(&next, &materialized.original_snapshot().unwrap());
     }
 }

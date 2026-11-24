@@ -1,15 +1,26 @@
 extern crate self as teaql_core;
 
+pub mod aggregation_plan;
+pub mod business_id;
+pub mod dynamic_fields;
+pub mod dynamic_properties;
 pub mod dynamic_search;
 mod entity;
 mod entity_graph;
+pub mod eval_location;
 mod expr;
 mod list;
+mod load_state;
 mod meta;
 mod mutation;
+pub mod mutation_version;
 mod naming;
+pub mod object_location;
+pub mod object_storage;
 mod query;
 pub mod request;
+mod request_intent;
+mod request_tree;
 mod safe_expression;
 pub mod serde_utils;
 pub mod time;
@@ -20,24 +31,38 @@ mod xls;
 
 pub use entity::{
     Audited, BaseEntity, BaseEntityData, Entity, EntityDescriptorStore, EntityError,
-    IdentifiableEntity, TeaqlBoxedRelations, TeaqlEntity, VersionedEntity,
+    EntityJsonTraversal, EntityJsonTraversalError, IdentifiableEntity, RuntimeSubtypeIdentity,
+    TeaqlBoxedRelations, TeaqlEntity, VersionedEntity,
 };
 pub use entity_graph::{EntityGraph, EntityGraphBuilder, EntityGraphNode, EntityGraphOperation};
 pub use expr::{BinaryOp, Expr, ExprFunction};
 pub use list::SmartList;
-pub use meta::{EntityDescriptor, PropertyDescriptor, RelationDescriptor};
+pub use load_state::{FieldLayout, LoadedSnapshot};
+pub use meta::{
+    EntityDescriptor, EntityDescriptorData, InheritanceChild, PropertyDescriptor,
+    RelationDescriptor,
+};
 pub use mutation::{
     BatchInsertCommand, BatchUpdateCommand, DeleteCommand, EntitySnapshot, GeneratedValues,
     InsertCommand, MutationKind, MutationValues, RecoverCommand, UpdateCommand,
 };
 pub use naming::default_table_name;
+#[doc(hidden)]
+pub use query::RelationShapeCache;
 pub use query::{
-    Aggregate, AggregateFunction, AggregationCacheOptions, CompactRow, ContinuousPageFetchOptions,
-    IdSetPaginationOptions, NamedExpr, ObjectGroupBy, OrderBy, PARTITION_RANK_PROPERTY,
-    RawSqlProjection, Record, RelationAggregate, RelationLoad, SelectQuery, Slice, SortDirection,
-    StreamConfig, compact_row_to_json_value, record_to_json_value,
+    Aggregate, AggregateFunction, AggregationCacheOptions, CompactRow, CompactRowLayout,
+    ContinuousPageFetchOptions, IdSetPaginationOptions, NamedExpr, ObjectGroupBy, OrderBy,
+    PARTITION_RANK_PROPERTY, RawSqlProjection, Record, RelationAggregate, RelationLoad,
+    SelectQuery, Slice, SortDirection, StreamConfig, compact_row_to_json_value,
+    record_to_json_value,
+};
+pub use request_intent::{MutationIntent, QueryIntent, RequestIntentError, RequestKind};
+pub use request_tree::{
+    QueryOperation, QueryOperationKind, QueryRequestScope, QueryRequestTraceNode,
 };
 pub use safe_expression::{SafeExpression, TeaqlEmpty};
+#[doc(hidden)]
+pub use serde_json;
 pub use trace::{TraceKind, TraceNode};
 pub use value::{DataType, Decimal, Value};
 pub use web::{ACTION_LIST_KEY, STYLE_KEY, WEB_RESPONSE_VERSION, WebAction, WebResponse, WebStyle};
@@ -84,6 +109,71 @@ mod tests {
         unsigned: u32,
         #[teaql(numeric_precision = 19, numeric_scale = 7)]
         amount: Decimal,
+    }
+
+    #[test]
+    fn generated_metadata_and_query_clones_share_immutable_contents() {
+        let descriptor = OrderRow::entity_descriptor();
+        let second = OrderRow::entity_descriptor();
+        assert!(std::ptr::eq(&*descriptor, &*second));
+        assert_eq!(descriptor.properties.as_ptr(), second.properties.as_ptr());
+        let query = Expr::in_subquery("id", descriptor.clone(), SelectQuery::new("Order"), "id");
+        let cloned = query.clone();
+        let (
+            Expr::SubQuery {
+                entity: original, ..
+            },
+            Expr::SubQuery { entity: copy, .. },
+        ) = (query, cloned)
+        else {
+            panic!("subquery");
+        };
+        assert!(std::ptr::eq(&*original, &*copy));
+        assert!(std::ptr::eq(&*descriptor, &*copy));
+    }
+
+    #[test]
+    fn metadata_customization_detaches_without_changing_type_cache() {
+        let original = OrderRow::entity_descriptor();
+        let mut customized = original.clone().table_name("tenant_orders");
+        customized.properties[0].column_name = "tenant_id".into();
+        assert!(!std::ptr::eq(&*original, &*customized));
+        assert_eq!(original.table_name, "orders");
+        assert_eq!(original.properties[0].column_name, "id");
+        assert_eq!(OrderRow::entity_descriptor(), original);
+        assert!(std::ptr::eq(&*OrderRow::entity_descriptor(), &*original));
+    }
+
+    #[test]
+    fn descriptor_cache_is_per_rust_type_and_thread_safe() {
+        #[derive(TeaqlEntity)]
+        #[teaql(entity = "Order", table = "other_orders")]
+        struct OtherOrder {
+            #[teaql(id)]
+            id: u64,
+        }
+        let descriptors = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| scope.spawn(OtherOrder::entity_descriptor))
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        for descriptor in &descriptors {
+            assert!(std::ptr::eq(&*descriptors[0], &**descriptor));
+        }
+        // Same model name does not merge different compiled model definitions.
+        assert_eq!(descriptors[0].name, OrderRow::entity_descriptor().name);
+        assert_ne!(
+            descriptors[0].table_name,
+            OrderRow::entity_descriptor().table_name
+        );
+        assert!(!std::ptr::eq(
+            &*descriptors[0],
+            &*OrderRow::entity_descriptor()
+        ));
     }
 
     #[test]
@@ -148,12 +238,12 @@ mod tests {
                 ("unsigned".to_owned(), Value::U64(1)),
                 ("amount".to_owned(), Value::Decimal(Decimal::ONE)),
             ])));
-        assert!(
-            signed_overflow
-                .unwrap_err()
-                .message
-                .contains("out of i32 range")
+        let message = signed_overflow.unwrap_err().message;
+        assert_eq!(
+            message,
+            "invalid field signed: expected a signed 32-bit Integer"
         );
+        assert!(!message.contains("2147483648"));
 
         let unsigned_negative =
             TypedNumberRow::from_compact_row(CompactRow::from_map(Record::from([
@@ -475,21 +565,56 @@ mod tests {
 
     #[test]
     fn java_style_string_match_builders_expand_like_patterns() {
-        assert_eq!(Expr::contain("name", "tea"), Expr::like("name", "%tea%"));
-        assert_eq!(
-            Expr::not_contain("name", "tea"),
-            Expr::not_like("name", "%tea%")
-        );
-        assert_eq!(Expr::begin_with("name", "tea"), Expr::like("name", "tea%"));
-        assert_eq!(
-            Expr::not_begin_with("name", "tea"),
-            Expr::not_like("name", "tea%")
-        );
-        assert_eq!(Expr::end_with("name", "tea"), Expr::like("name", "%tea"));
-        assert_eq!(
-            Expr::not_end_with("name", "tea"),
-            Expr::not_like("name", "%tea")
-        );
+        for original in ["tea", "%tea_\\%"] {
+            for (expr, op, pattern) in [
+                (
+                    Expr::contain("name", original),
+                    BinaryOp::Like,
+                    format!("%{original}%"),
+                ),
+                (
+                    Expr::not_contain("name", original),
+                    BinaryOp::NotLike,
+                    format!("%{original}%"),
+                ),
+                (
+                    Expr::begin_with("name", original),
+                    BinaryOp::Like,
+                    format!("{original}%"),
+                ),
+                (
+                    Expr::not_begin_with("name", original),
+                    BinaryOp::NotLike,
+                    format!("{original}%"),
+                ),
+                (
+                    Expr::end_with("name", original),
+                    BinaryOp::Like,
+                    format!("%{original}"),
+                ),
+                (
+                    Expr::not_end_with("name", original),
+                    BinaryOp::NotLike,
+                    format!("%{original}"),
+                ),
+            ] {
+                assert_eq!(
+                    expr,
+                    Expr::binary(
+                        Expr::column("name"),
+                        op,
+                        Expr::LikePattern {
+                            pattern,
+                            original: original.into()
+                        }
+                    )
+                );
+            }
+        }
+        let Expr::Binary { right, .. } = Expr::like("name", "%tea%") else {
+            panic!()
+        };
+        assert_eq!(*right, Expr::value("%tea%"));
     }
 
     #[test]
@@ -981,3 +1106,7 @@ mod tests {
     }
 }
 pub mod eval;
+
+mod symbol;
+pub use mutation::{FieldEntries, MutationField, NamedEntries};
+pub use symbol::{EntitySymbols, EntityTypeId, FieldSlot, ModelSymbols, RelationSlot};

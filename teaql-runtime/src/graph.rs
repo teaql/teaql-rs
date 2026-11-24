@@ -8,16 +8,22 @@ use teaql_core::{EntitySnapshot, MutationValues, TraceNode, Value};
 /// It is deliberately distinct from query rows, mutation commands, and loaded
 /// snapshots.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct EntityValues(BTreeMap<String, Value>);
+pub struct EntityValues(MutationValues);
 
 impl EntityValues {
+    pub fn indexed(symbols: &'static teaql_core::EntitySymbols) -> Self {
+        Self(MutationValues::indexed(symbols))
+    }
+    pub fn into_mutation(self) -> MutationValues {
+        self.0
+    }
     pub fn new() -> Self {
         Self::default()
     }
 }
 
 impl Deref for EntityValues {
-    type Target = BTreeMap<String, Value>;
+    type Target = MutationValues;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -32,26 +38,25 @@ impl DerefMut for EntityValues {
 
 impl From<BTreeMap<String, Value>> for EntityValues {
     fn from(values: BTreeMap<String, Value>) -> Self {
-        Self(values)
+        Self(values.into())
     }
 }
 
 impl From<EntityValues> for BTreeMap<String, Value> {
     fn from(values: EntityValues) -> Self {
-        values.0
+        values.0.into()
     }
 }
 
 impl From<EntityValues> for MutationValues {
     fn from(values: EntityValues) -> Self {
-        BTreeMap::from(values).into()
+        values.0
     }
 }
 
 impl From<MutationValues> for EntityValues {
     fn from(values: MutationValues) -> Self {
-        let values: BTreeMap<String, Value> = values.into();
-        values.into()
+        Self(values)
     }
 }
 
@@ -85,6 +90,7 @@ pub enum GraphOperation {
     Create,
     Reference,
     Remove,
+    Recover,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -92,6 +98,7 @@ pub enum GraphMutationKind {
     Create,
     Update,
     Delete,
+    Recover,
     Reference,
 }
 
@@ -127,7 +134,7 @@ impl TraceScopeToken {
         let mut chain = Vec::new();
         let mut current: Option<&TraceScopeToken> = Some(self);
         while let Some(token) = current {
-            if !token.track.comment.is_empty() {
+            if !token.track.comment.trim().is_empty() {
                 chain.push(token.track.clone());
             }
             current = token.parent.as_deref();
@@ -196,7 +203,9 @@ impl GraphMutationPlan {
         self.batches.clear();
         for item in &self.items {
             let update_fields = match item.kind {
-                GraphMutationKind::Update => item.update_fields.clone(),
+                GraphMutationKind::Update | GraphMutationKind::Recover => {
+                    item.update_fields.clone()
+                }
                 _ => Vec::new(),
             };
             if let Some(batch) = self.batches.last_mut()
@@ -268,6 +277,8 @@ pub struct GraphNode {
     /// L1 Cache snapshot of the entity values exactly as they were loaded from the database.
     /// Used by the Event Engine to eliminate redundant old_value queries during auditing.
     pub original_values: Option<EntitySnapshot>,
+    #[doc(hidden)]
+    pub dynamic_fields: Option<Box<teaql_core::dynamic_fields::DynamicFieldValues>>,
 }
 
 impl GraphNode {
@@ -280,6 +291,7 @@ impl GraphNode {
             comment: None,
             dirty_fields: None,
             original_values: None,
+            dynamic_fields: None,
         }
     }
 
@@ -332,6 +344,35 @@ impl GraphNode {
     pub fn set_comment(&mut self, comment: impl Into<String>) {
         self.comment = Some(comment.into());
     }
+
+    pub(crate) fn audit_trace_node(&self) -> Option<TraceNode> {
+        self.comment
+            .as_ref()
+            .filter(|comment| !comment.trim().is_empty())
+            .map(|comment| {
+                TraceNode::typed(
+                    teaql_core::TraceKind::AuditReason,
+                    &self.entity,
+                    self.id().and_then(Value::try_u64).filter(|id| *id > 0),
+                    comment,
+                )
+            })
+    }
+
+    pub(crate) fn trace_scope(
+        &self,
+        parent: Option<Arc<TraceScopeToken>>,
+        node_index: u64,
+    ) -> Option<Arc<TraceScopeToken>> {
+        match self.audit_trace_node() {
+            Some(track) => Some(Arc::new(TraceScopeToken {
+                parent,
+                track,
+                node_index,
+            })),
+            None => parent,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +397,7 @@ impl<'a> ScopedCommentNode<'a> {
         let mut current: Option<&ScopedCommentNode<'_>> = Some(self);
 
         while let Some(node) = current {
-            if !node.track.comment.is_empty() {
+            if !node.track.comment.trim().is_empty() {
                 chain.push(node.track.clone());
             }
             current = node.parent;

@@ -6,8 +6,16 @@ pub struct ContainerAttrs {
     pub table_name: String,
     pub data_service: Option<String>,
     pub audit_mask_fields: Vec<String>,
+    pub audit_mask_fields_declared: bool,
     pub audit_value_max_len: Option<usize>,
     pub reverse_relations: Vec<ParsedContainerRelation>,
+    pub indexed_layout: bool,
+    pub symbol_model: Option<syn::Path>,
+    pub symbol_entity: Option<u32>,
+    pub symbol_fields: Vec<String>,
+    pub joined_parent: Option<syn::Path>,
+    pub inheritance_children: Vec<(String, String, String)>,
+    pub parse_errors: Vec<syn::Error>,
 }
 
 #[derive(Default)]
@@ -17,6 +25,7 @@ pub struct ParsedContainerRelation {
     pub local_key: Option<String>,
     pub foreign_key: Option<String>,
     pub many: bool,
+    pub json_type: Option<syn::Type>,
 }
 
 pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> ContainerAttrs {
@@ -25,18 +34,64 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
         table_name: default_table_name(default_name),
         data_service: None,
         audit_mask_fields: Vec::new(),
+        audit_mask_fields_declared: false,
         audit_value_max_len: None,
         reverse_relations: Vec::new(),
+        indexed_layout: false,
+        symbol_model: None,
+        symbol_entity: None,
+        symbol_fields: Vec::new(),
+        joined_parent: None,
+        inheritance_children: Vec::new(),
+        parse_errors: Vec::new(),
     };
 
     for attr in attrs {
         if !attr.path().is_ident("teaql") {
             continue;
         }
-        let _ = attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("entity") {
+        let result = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("symbol_model") {
+                attrs_out.symbol_model = Some(syn::parse_str(&parse_string_expr(
+                    &meta.value()?.parse::<Expr>()?,
+                ))?);
+            } else if meta.path.is_ident("symbol_fields") {
+                attrs_out.symbol_fields = parse_string_expr(&meta.value()?.parse::<Expr>()?)
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+            } else if meta.path.is_ident("symbol_entity") {
+                attrs_out.symbol_entity =
+                    Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?);
+            } else if meta.path.is_ident("indexed_layout") {
+                attrs_out.indexed_layout = true;
+            } else if meta.path.is_ident("entity") {
                 let value = meta.value()?;
                 attrs_out.entity_name = parse_string_expr(&value.parse::<Expr>()?);
+            } else if meta.path.is_ident("parent") {
+                attrs_out.joined_parent = Some(meta.value()?.parse::<syn::Path>()?);
+            } else if meta.path.is_ident("subtype") {
+                let (mut name, mut table, mut id_column) = (None, None, None);
+                meta.parse_nested_meta(|entry| {
+                    if entry.path.is_ident("name") {
+                        name = Some(parse_string_expr(&entry.value()?.parse::<Expr>()?));
+                    } else if entry.path.is_ident("table") {
+                        table = Some(parse_string_expr(&entry.value()?.parse::<Expr>()?));
+                    } else if entry.path.is_ident("id_column") {
+                        id_column = Some(parse_string_expr(&entry.value()?.parse::<Expr>()?));
+                    } else {
+                        return Err(entry.error("unknown subtype metadata"));
+                    }
+                    Ok(())
+                })?;
+                match (name, table, id_column) {
+                    (Some(name), Some(table), Some(id_column)) => attrs_out
+                        .inheritance_children
+                        .push((name, table, id_column)),
+                    _ => return Err(meta.error("subtype requires name, table and id_column")),
+                }
             } else if meta.path.is_ident("table") {
                 let value = meta.value()?;
                 attrs_out.table_name = parse_string_expr(&value.parse::<Expr>()?);
@@ -46,6 +101,7 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
             } else if meta.path.is_ident("audit_mask_fields") {
                 let value = meta.value()?;
                 let fields_str = parse_string_expr(&value.parse::<Expr>()?);
+                attrs_out.audit_mask_fields_declared = true;
                 attrs_out.audit_mask_fields = fields_str
                     .split(',')
                     .map(|s| s.trim().to_owned())
@@ -92,6 +148,10 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
                             Some(parse_string_expr(&nested.value()?.parse::<Expr>()?));
                     } else if nested.path.is_ident("many") {
                         relation.many = true;
+                    } else if nested.path.is_ident("json_type") {
+                        relation.json_type = Some(syn::parse_str(&parse_string_expr(
+                            &nested.value()?.parse::<Expr>()?,
+                        ))?);
                     }
                     Ok(())
                 })?;
@@ -99,6 +159,9 @@ pub fn parse_container_attrs(attrs: &[syn::Attribute], default_name: &str) -> Co
             }
             Ok(())
         });
+        if let Err(error) = result {
+            attrs_out.parse_errors.push(error);
+        }
     }
 
     attrs_out
@@ -125,6 +188,7 @@ fn default_table_name(entity_name: &str) -> String {
 pub struct ParsedFieldAttrs {
     pub id: bool,
     pub version: bool,
+    pub integer32: bool,
     pub large_text: bool,
     pub dynamic: bool,
     pub skip: bool,
@@ -133,6 +197,7 @@ pub struct ParsedFieldAttrs {
     pub max_length: Option<u32>,
     pub numeric_precision: Option<u32>,
     pub numeric_scale: Option<u32>,
+    pub context_root: Option<String>,
     pub relation: Option<ParsedRelation>,
 }
 
@@ -159,6 +224,8 @@ pub fn parse_field_attrs(attrs: &[syn::Attribute]) -> ParsedFieldAttrs {
                 parsed.id = true;
             } else if meta.path.is_ident("version") {
                 parsed.version = true;
+            } else if meta.path.is_ident("integer32") {
+                parsed.integer32 = true;
             } else if meta.path.is_ident("large_text") {
                 parsed.large_text = true;
             } else if meta.path.is_ident("dynamic") {
@@ -176,6 +243,8 @@ pub fn parse_field_attrs(attrs: &[syn::Attribute]) -> ParsedFieldAttrs {
                 parsed.numeric_precision = parse_u32_expr(&meta.value()?.parse::<Expr>()?);
             } else if meta.path.is_ident("numeric_scale") {
                 parsed.numeric_scale = parse_u32_expr(&meta.value()?.parse::<Expr>()?);
+            } else if meta.path.is_ident("context_root") {
+                parsed.context_root = Some(parse_string_expr(&meta.value()?.parse::<Expr>()?));
             } else if meta.path.is_ident("relation") {
                 let mut relation = ParsedRelation::default();
                 meta.parse_nested_meta(|nested| {
@@ -240,5 +309,43 @@ fn parse_u32_expr(expr: &Expr) -> Option<u32> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_container_attrs;
+
+    #[test]
+    fn subtype_storage_hints_are_shallow_and_incomplete_hints_fail() {
+        let valid = syn::parse_quote!(#[teaql(subtype(name = "Academy", table = "Legacy Academy", id_column = "Legacy ID"))]);
+        let valid = parse_container_attrs(&[valid], "School");
+        assert!(valid.parse_errors.is_empty());
+        assert_eq!(
+            valid.inheritance_children,
+            [(
+                "Academy".into(),
+                "Legacy Academy".into(),
+                "Legacy ID".into()
+            )]
+        );
+        let invalid = syn::parse_quote!(#[teaql(subtype(name = "Academy"))]);
+        assert!(
+            !parse_container_attrs(&[invalid], "School")
+                .parse_errors
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn empty_mask_attribute_is_distinct_from_absent_attribute() {
+        let absent: syn::Attribute = syn::parse_quote!(#[teaql(entity = "Customer")]);
+        let empty: syn::Attribute =
+            syn::parse_quote!(#[teaql(entity = "Customer", audit_mask_fields = "")]);
+        let absent = parse_container_attrs(&[absent], "Customer");
+        let empty = parse_container_attrs(&[empty], "Customer");
+        assert!(!absent.audit_mask_fields_declared);
+        assert!(empty.audit_mask_fields_declared);
+        assert!(empty.audit_mask_fields.is_empty());
     }
 }

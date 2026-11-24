@@ -14,6 +14,35 @@ mod hard_limit_tests {
     use super::*;
 
     #[test]
+    fn root_list_ceiling_must_not_invent_nested_pages() {
+        let mut query = SelectQuery::new("Parent")
+            .relation_query("children", SelectQuery::new("Child"))
+            .relation_query("recent", SelectQuery::new("Child").limit(3));
+        query.child_enhancements.push(SelectQuery::new("Subtype"));
+        let prepared = query.prepare_for_list().unwrap();
+        assert_eq!(prepared.slice.unwrap().limit, Some(10_000));
+        assert!(
+            prepared.relations[0]
+                .query
+                .as_ref()
+                .unwrap()
+                .slice
+                .is_none()
+        );
+        assert_eq!(
+            prepared.relations[1]
+                .query
+                .as_ref()
+                .unwrap()
+                .slice
+                .unwrap()
+                .limit,
+            Some(3)
+        );
+        assert!(prepared.child_enhancements[0].slice.is_none());
+    }
+
+    #[test]
     fn list_limit_defaults_rejects_and_allows_explicit_override() {
         assert_eq!(
             SelectQuery::new("Order")
@@ -110,6 +139,29 @@ impl NamedExpr {
             expr,
         }
     }
+
+    /// Classification only; the statistical binder validates arity and types.
+    pub fn is_aggregate(&self) -> bool {
+        let mut expression = &self.expr;
+        for _ in 0..=64 {
+            match expression {
+                Expr::Function {
+                    function: crate::ExprFunction::Identity,
+                    args,
+                } if args.len() == 1 => expression = &args[0],
+                Expr::Function { function, .. } => {
+                    return !matches!(
+                        function,
+                        crate::ExprFunction::Identity
+                            | crate::ExprFunction::Soundex
+                            | crate::ExprFunction::Gbk
+                    );
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +169,56 @@ pub struct OrderBy {
     pub field: String,
     pub expr: Option<Expr>,
     pub direction: SortDirection,
+}
+
+#[cfg(test)]
+mod aggregate_expression_tests {
+    use super::*;
+    #[test]
+    fn repeated_named_measure_keeps_the_first_expression_like_java() {
+        let query = SelectQuery::new("Owner")
+            .aggregate_expression(NamedExpr::new("total", Expr::sum_expr(Expr::value(3_i64))));
+        assert!(query.requires_statistical_plan());
+        let duplicate = query
+            .clone()
+            .aggregate_expression(NamedExpr::new("total", Expr::sum_expr(Expr::value(9_i64))));
+        assert_eq!(duplicate, query);
+        let field = SelectQuery::new("Owner").sum("amount", "total");
+        assert_eq!(
+            field
+                .clone()
+                .aggregate_expression(NamedExpr::new("total", Expr::sum_expr(Expr::value(9_i64)))),
+            field
+        );
+    }
+    #[test]
+    fn grouping_aliases_do_not_hide_conflicting_measure_aliases() {
+        let query = SelectQuery::new("Owner")
+            .group_by_expr("same", Expr::column("id"))
+            .aggregate_expression(NamedExpr::new("same", Expr::count_all()));
+        assert_eq!(query.expr_projection.len(), 2);
+        let owner = crate::EntityDescriptor::new("Owner")
+            .property(crate::PropertyDescriptor::new("id", crate::DataType::I64).id());
+        assert!(crate::aggregation_plan::StatisticalPlan::build(&query, |_| Some(&owner)).is_err());
+    }
+    #[test]
+    fn aggregate_classification_does_not_misclassify_scalar_grouping() {
+        for expr in [
+            Expr::column("id"),
+            Expr::identity(Expr::column("id")),
+            Expr::soundex(Expr::column("name")),
+        ] {
+            assert!(!NamedExpr::new("scalar", expr).is_aggregate());
+        }
+        assert!(NamedExpr::new("measure", Expr::identity(Expr::count_all())).is_aggregate());
+        let parent = SelectQuery::new("Parent")
+            .aggregate_expression(NamedExpr::new("owners", Expr::count_all()));
+        assert!(
+            SelectQuery::new("Child")
+                .object_group_by("parent", "parent_id", parent)
+                .has_layered_statistics()
+        );
+    }
 }
 
 impl OrderBy {
@@ -164,6 +266,7 @@ impl OrderBy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggregateFunction {
     Count,
+    CountDistinct,
     Sum,
     Avg,
     Min,
@@ -203,6 +306,10 @@ impl Aggregate {
 
     pub fn count_field(field: impl Into<String>, alias: impl Into<String>) -> Self {
         Self::new(AggregateFunction::Count, field, alias)
+    }
+
+    pub fn count_distinct(field: impl Into<String>, alias: impl Into<String>) -> Self {
+        Self::new(AggregateFunction::CountDistinct, field, alias)
     }
 
     pub fn sum(field: impl Into<String>, alias: impl Into<String>) -> Self {
@@ -260,6 +367,7 @@ pub struct Slice {
 pub struct RelationLoad {
     pub name: String,
     pub query: Option<Box<SelectQuery>>,
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl RelationLoad {
@@ -267,6 +375,7 @@ impl RelationLoad {
         Self {
             name: name.into(),
             query: None,
+            operation: None,
         }
     }
 
@@ -274,7 +383,12 @@ impl RelationLoad {
         Self {
             name: name.into(),
             query: Some(Box::new(query)),
+            operation: None,
         }
+    }
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -284,6 +398,7 @@ pub struct RelationAggregate {
     pub alias: String,
     pub query: SelectQuery,
     pub single_result: bool,
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl RelationAggregate {
@@ -298,7 +413,12 @@ impl RelationAggregate {
             alias: alias.into(),
             query,
             single_result,
+            operation: None,
         }
+    }
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -322,6 +442,8 @@ pub struct ObjectGroupBy {
     pub property_name: String,
     pub storage_field: String,
     pub query: SelectQuery,
+    /// Trusted generator-supplied Q spelling, not caller-provided query JSON.
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl ObjectGroupBy {
@@ -334,7 +456,13 @@ impl ObjectGroupBy {
             property_name: property_name.into(),
             storage_field: storage_field.into(),
             query,
+            operation: None,
         }
+    }
+
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -430,8 +558,19 @@ impl Default for StreamConfig {
     }
 }
 
+/// Optional process-local provenance shares one pointer in the query body.
+/// Copy-on-write keeps builder changes isolated without growing every async
+/// query frame when a new kind of internal provenance is introduced.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct QueryProvenance {
+    request_scope: Option<crate::QueryRequestScope>,
+    navigation_origin: Option<Arc<String>>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectQuery {
+    // Private capabilities: never populated by remote request decoders.
+    provenance: Option<Arc<QueryProvenance>>,
     /// Safety ceiling for a fully materialized outer query.
     pub hard_limit: u64,
     pub entity: String,
@@ -451,12 +590,26 @@ pub struct SelectQuery {
     pub aggregates: Vec<Aggregate>,
     pub group_by: Vec<String>,
     pub relations: Vec<RelationLoad>,
+    /// Query-only Facet selections retained across ordinary relation planning.
+    /// The relation loader executes these, never the physical SQL compiler.
+    pub facets: Vec<crate::request::FacetRequest>,
+    /// Runtime-assembled related metrics retained by nested typed selections.
+    /// These are not physical SQL aggregates or relation projection requests.
+    pub relation_aggregates: Vec<RelationAggregate>,
     pub aggregation_cache: Option<AggregationCacheOptions>,
     pub comment: Option<String>,
+    /// Explicit request purpose; trace nodes are diagnostic lineage, not intent.
+    pub purpose: Option<String>,
     pub trace_chain: Vec<crate::TraceNode>,
     pub raw_sql: Option<String>,
     pub raw_sql_search_criteria: Vec<String>,
     pub dynamic_properties: Vec<RawSqlProjection>,
+    /// Optional readonly result schema; no SQL fields, presence claims or persistence authority.
+    pub dynamic_property_definitions:
+        Option<Arc<crate::dynamic_properties::DynamicPropertyDefinitions>>,
+    /// Persistent extensions loaded by the context-owned provider, never compiled as physical SQL fields.
+    pub dynamic_field_selection:
+        Option<std::sync::Arc<crate::dynamic_fields::DynamicFieldSelection>>,
     pub raw_projections: Vec<RawSqlProjection>,
     pub object_group_bys: Vec<ObjectGroupBy>,
     pub child_enhancements: Vec<SelectQuery>,
@@ -468,9 +621,49 @@ pub struct SelectQuery {
 }
 
 impl SelectQuery {
+    /// Aggregate expression projections use the same typed owner-grain plan as
+    /// field aggregates inside a roll-up. Scalar projections are not aggregates.
+    pub fn has_aggregate_projection(&self) -> bool {
+        self.expr_projection.iter().any(NamedExpr::is_aggregate)
+    }
+
+    /// Java addAggregate: an existing aggregate alias keeps its first value.
+    /// Dimensions are a separate namespace; their collisions remain errors.
+    pub fn aggregate_expression(mut self, aggregate: NamedExpr) -> Self {
+        if self
+            .aggregates
+            .iter()
+            .any(|existing| existing.alias == aggregate.alias)
+            || self
+                .expr_projection
+                .iter()
+                .any(|existing| existing.alias == aggregate.alias && existing.is_aggregate())
+        {
+            return self;
+        }
+        self.expr_projection.push(aggregate);
+        self
+    }
+
+    pub fn requires_statistical_plan(&self) -> bool {
+        self.has_aggregate_projection() || self.has_layered_statistics()
+    }
+
+    /// A grouped parent changes the final statistical grain. It cannot be
+    /// hydrated through the ordinary entity-ID detail enhancement path.
+    pub fn has_layered_statistics(&self) -> bool {
+        self.object_group_bys.iter().any(|group| {
+            !group.query.group_by.is_empty()
+                || !group.query.aggregates.is_empty()
+                || group.query.has_aggregate_projection()
+                || !group.query.object_group_bys.is_empty()
+        })
+    }
+
     pub fn new(entity: impl Into<String>) -> Self {
         Self {
             hard_limit: 10_000,
+            provenance: None,
             entity: entity.into(),
             projection: Vec::new(),
             expr_projection: Vec::new(),
@@ -484,12 +677,17 @@ impl SelectQuery {
             aggregates: Vec::new(),
             group_by: Vec::new(),
             relations: Vec::new(),
+            facets: Vec::new(),
+            relation_aggregates: Vec::new(),
             aggregation_cache: None,
             comment: None,
+            purpose: None,
             trace_chain: Vec::new(),
             raw_sql: None,
             raw_sql_search_criteria: Vec::new(),
             dynamic_properties: Vec::new(),
+            dynamic_property_definitions: None,
+            dynamic_field_selection: None,
             raw_projections: Vec::new(),
             object_group_bys: Vec::new(),
             child_enhancements: Vec::new(),
@@ -499,8 +697,39 @@ impl SelectQuery {
         }
     }
 
+    pub fn request_scope(&self) -> Option<&crate::QueryRequestScope> {
+        self.provenance.as_ref()?.request_scope.as_ref()
+    }
+
+    #[doc(hidden)]
+    pub fn with_request_scope(mut self, scope: crate::QueryRequestScope) -> Self {
+        self.comment = Some(scope.intent().comment().to_owned());
+        self.purpose = Some(scope.purpose().to_owned());
+        Arc::make_mut(self.provenance.get_or_insert_with(Default::default)).request_scope =
+            Some(scope);
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn clear_request_scope(&mut self) {
+        if let Some(provenance) = &mut self.provenance {
+            Arc::make_mut(provenance).request_scope = None;
+            if provenance.navigation_origin.is_none() {
+                self.provenance = None;
+            }
+        }
+    }
+
     pub fn project(mut self, field: impl Into<String>) -> Self {
         self.projection.push(field.into());
+        self
+    }
+
+    pub fn select_dynamic_fields(
+        mut self,
+        selection: crate::dynamic_fields::DynamicFieldSelection,
+    ) -> Self {
+        self.dynamic_field_selection = Some(std::sync::Arc::new(selection));
         self
     }
 
@@ -534,6 +763,14 @@ impl SelectQuery {
         self
     }
 
+    pub fn with_dynamic_property_definitions(
+        mut self,
+        definitions: Arc<crate::dynamic_properties::DynamicPropertyDefinitions>,
+    ) -> Self {
+        self.dynamic_property_definitions = Some(definitions);
+        self
+    }
+
     pub fn search_with_text(mut self, text: impl Into<String>) -> Self {
         self.search_with_text = Some(text.into());
         self
@@ -542,6 +779,19 @@ impl SelectQuery {
     pub fn filter(mut self, filter: Expr) -> Self {
         self.filter = Some(filter);
         self
+    }
+
+    pub(crate) fn mark_navigation_origin(&mut self, relation: &str) {
+        Arc::make_mut(self.provenance.get_or_insert_with(Default::default)).navigation_origin =
+            Some(Arc::new(relation.to_owned()));
+    }
+
+    pub(crate) fn navigation_origin(&self) -> Option<&str> {
+        self.provenance
+            .as_ref()?
+            .navigation_origin
+            .as_deref()
+            .map(String::as_str)
     }
 
     pub fn and_filter(mut self, filter: Expr) -> Self {
@@ -615,6 +865,11 @@ impl SelectQuery {
         self
     }
 
+    pub fn group_by_expr(self, alias: impl Into<String>, expression: Expr) -> Self {
+        let alias = alias.into();
+        self.group_by(alias.clone()).project_expr(alias, expression)
+    }
+
     pub fn aggregate(mut self, aggregate: Aggregate) -> Self {
         self.aggregates.push(aggregate);
         self
@@ -626,6 +881,10 @@ impl SelectQuery {
 
     pub fn count_field(self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.aggregate(Aggregate::count_field(field, alias))
+    }
+
+    pub fn count_distinct(self, field: impl Into<String>, alias: impl Into<String>) -> Self {
+        self.aggregate(Aggregate::count_distinct(field, alias))
     }
 
     pub fn sum(self, field: impl Into<String>, alias: impl Into<String>) -> Self {
@@ -702,6 +961,11 @@ impl SelectQuery {
         self
     }
 
+    pub fn purpose(mut self, purpose: impl Into<String>) -> Self {
+        self.purpose = Some(purpose.into());
+        self
+    }
+
     pub fn raw_sql(mut self, raw_sql: impl Into<String>) -> Self {
         self.raw_sql = Some(raw_sql.into());
         self
@@ -754,14 +1018,14 @@ impl SelectQuery {
         self
     }
 
-    /// Apply and validate list-materialization limits. This is intentionally not
-    /// used by streaming execution.
+    /// Bound this materialized result, never its contributing nested populations.
+    /// An explicit nested Top-N remains part of that query's business semantics.
     pub fn prepare_for_list(mut self) -> Result<Self, String> {
-        self.apply_list_limit(self.hard_limit, true)?;
+        self.apply_list_limit(self.hard_limit)?;
         Ok(self)
     }
 
-    fn apply_list_limit(&mut self, ceiling: u64, outer: bool) -> Result<(), String> {
+    fn apply_list_limit(&mut self, ceiling: u64) -> Result<(), String> {
         let slice = self.slice.get_or_insert(Slice {
             limit: None,
             offset: 0,
@@ -775,15 +1039,6 @@ impl SelectQuery {
             None => slice.limit = Some(ceiling),
             _ => {}
         }
-        for relation in &mut self.relations {
-            if let Some(query) = relation.query.as_mut() {
-                query.apply_list_limit(10_000, false)?;
-            }
-        }
-        for query in &mut self.child_enhancements {
-            query.apply_list_limit(10_000, false)?;
-        }
-        let _ = outer;
         Ok(())
     }
 
@@ -871,20 +1126,210 @@ impl SelectQuery {
 
 pub type Record = BTreeMap<String, Value>;
 
+// Kept behind one optional pointer so rows without query-result metadata stay
+// compact. The result carrier is separate from projected/persistent values.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct LoadedRelationResults {
+    lists: BTreeMap<String, crate::SmartList<CompactRow>>,
+    dynamic_fields: Option<crate::dynamic_fields::DynamicFieldValues>,
+}
+
 /// A database result row whose column names are shared by the whole result set.
 ///
 /// Providers use this representation for typed decoding so a 100-row result does
 /// not allocate 100 copies of every projected column name (or 100 B-trees).
+/// Result-shape metadata shared by rows. Cached availability never contains values or ledgers.
+#[derive(Debug)]
+pub struct CompactRowLayout {
+    names: Arc<[String]>,
+    relation_names: Arc<[String]>,
+    dynamic_properties: Option<Arc<crate::dynamic_properties::DynamicPropertyDefinitions>>,
+    primary: std::sync::OnceLock<Arc<crate::LoadedSnapshot>>,
+    other_types:
+        std::sync::Mutex<std::collections::HashMap<usize, std::sync::Weak<crate::LoadedSnapshot>>>,
+}
+
+impl CompactRowLayout {
+    pub fn new(names: Arc<[String]>) -> Arc<Self> {
+        Self::with_relations(names, Arc::from([]))
+    }
+
+    fn with_relations(names: Arc<[String]>, relation_names: Arc<[String]>) -> Arc<Self> {
+        Self::with_metadata(names, relation_names, None)
+    }
+
+    fn with_metadata(
+        names: Arc<[String]>,
+        relation_names: Arc<[String]>,
+        dynamic_properties: Option<Arc<crate::dynamic_properties::DynamicPropertyDefinitions>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            names,
+            relation_names,
+            dynamic_properties,
+            primary: Default::default(),
+            other_types: Default::default(),
+        })
+    }
+
+    pub fn with_dynamic_property_definitions(
+        self: &Arc<Self>,
+        definitions: Arc<crate::dynamic_properties::DynamicPropertyDefinitions>,
+    ) -> Arc<Self> {
+        if self.dynamic_properties.as_ref() == Some(&definitions) {
+            return self.clone();
+        }
+        Self::with_metadata(
+            self.names.clone(),
+            self.relation_names.clone(),
+            Some(definitions),
+        )
+    }
+
+    fn load_state(&self, layout: Arc<crate::FieldLayout>) -> crate::eval::LoadState {
+        let primary = self.primary.get_or_init(|| {
+            crate::LoadedSnapshot::projection(
+                layout.clone(),
+                self.names
+                    .iter()
+                    .chain(self.relation_names.iter())
+                    .map(String::as_str),
+            )
+            .with_property_schema(self.dynamic_properties.clone())
+            .into_shared()
+        });
+        if Arc::ptr_eq(primary.layout(), &layout) {
+            return crate::eval::LoadState::Indexed(primary.clone());
+        }
+        // Unusual case: more than one typed decoder consumes one result shape.
+        let key = Arc::as_ptr(&layout) as usize;
+        let mut states = self
+            .other_types
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        states.retain(|_, state| state.strong_count() > 0);
+        if let Some(state) = states.get(&key).and_then(std::sync::Weak::upgrade) {
+            return crate::eval::LoadState::Indexed(state);
+        }
+        let state = crate::LoadedSnapshot::projection(
+            layout,
+            self.names
+                .iter()
+                .chain(self.relation_names.iter())
+                .map(String::as_str),
+        )
+        .with_property_schema(self.dynamic_properties.clone())
+        .into_shared();
+        states.insert(key, Arc::downgrade(&state));
+        crate::eval::LoadState::Indexed(state)
+    }
+}
+
+impl std::ops::Deref for CompactRowLayout {
+    type Target = [String];
+    fn deref(&self) -> &Self::Target {
+        &self.names
+    }
+}
+
+impl PartialEq for CompactRowLayout {
+    fn eq(&self, other: &Self) -> bool {
+        self.names == other.names
+            && self.relation_names == other.relation_names
+            && self.dynamic_properties == other.dynamic_properties
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactRow {
-    columns: Arc<[String]>,
+    columns: Arc<CompactRowLayout>,
     values: Vec<Value>,
+    // Read-result metadata only. Not a projected field, serialized Value, or
+    // mutation snapshot. Ordinary provider rows allocate no sidecar.
+    loaded_relations: Option<Box<LoadedRelationResults>>,
+}
+
+/// Bounded to one hydration pass. Retaining the source shape prevents address
+/// reuse from confusing projections while no entity values are retained.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct RelationShapeCache {
+    relation: Option<String>,
+    shapes: std::collections::HashMap<usize, (Arc<CompactRowLayout>, Arc<CompactRowLayout>)>,
 }
 
 impl CompactRow {
     pub fn new(columns: Arc<[String]>, values: Vec<Value>) -> Self {
-        debug_assert_eq!(columns.len(), values.len());
-        Self { columns, values }
+        Self::with_layout(CompactRowLayout::new(columns), values)
+    }
+
+    pub fn with_layout(columns: Arc<CompactRowLayout>, values: Vec<Value>) -> Self {
+        assert_eq!(
+            columns.len(),
+            values.len(),
+            "row values must match the actual projection layout"
+        );
+        Self {
+            columns,
+            values,
+            loaded_relations: None,
+        }
+    }
+
+    pub fn loaded_relation(&self, name: &str) -> Option<&crate::SmartList<CompactRow>> {
+        self.loaded_relations.as_ref()?.lists.get(name)
+    }
+
+    pub fn set_loaded_relation(&mut self, name: String, list: crate::SmartList<CompactRow>) {
+        self.loaded_relations
+            .get_or_insert_with(Default::default)
+            .lists
+            .insert(name, list);
+    }
+
+    pub fn take_loaded_relation(&mut self, name: &str) -> Option<crate::SmartList<CompactRow>> {
+        self.loaded_relations.as_mut()?.lists.remove(name)
+    }
+
+    /// Framework read metadata, never an SQL column or mutation payload.
+    #[doc(hidden)]
+    pub fn set_loaded_dynamic_fields(&mut self, values: crate::dynamic_fields::DynamicFieldValues) {
+        self.loaded_relations
+            .get_or_insert_with(Default::default)
+            .dynamic_fields = Some(values);
+    }
+
+    #[doc(hidden)]
+    pub fn merge_loaded_dynamic_fields(
+        &mut self,
+        values: crate::dynamic_fields::DynamicFieldValues,
+        shapes: &mut crate::dynamic_fields::DynamicFieldMergeShapes,
+    ) -> Result<(), crate::dynamic_fields::DynamicFieldError> {
+        let metadata = self.loaded_relations.get_or_insert_with(Default::default);
+        if let Some(current) = metadata.dynamic_fields.as_mut() {
+            current.merge_loaded(values, shapes)?;
+        } else {
+            metadata.dynamic_fields = Some(values);
+        }
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn take_loaded_dynamic_fields(
+        &mut self,
+    ) -> Option<crate::dynamic_fields::DynamicFieldValues> {
+        self.loaded_relations.as_mut()?.dynamic_fields.take()
+    }
+
+    pub fn has_loaded_relations(&self) -> bool {
+        self.loaded_relations
+            .as_ref()
+            .is_some_and(|relations| !relations.lists.is_empty())
+    }
+
+    /// Drop read-only relation metadata before retaining a persistence snapshot.
+    pub fn clear_loaded_relations(&mut self) {
+        self.loaded_relations = None;
     }
 
     pub fn get(&self, name: &str) -> Option<&Value> {
@@ -895,7 +1340,116 @@ impl CompactRow {
     }
 
     pub fn shared_columns(&self) -> Arc<[String]> {
+        self.columns.names.clone()
+    }
+
+    pub fn shared_layout(&self) -> Arc<CompactRowLayout> {
         self.columns.clone()
+    }
+
+    pub fn indexed_load_state(&self, layout: Arc<crate::FieldLayout>) -> crate::eval::LoadState {
+        self.columns.load_state(layout)
+    }
+
+    pub fn validate_dynamic_properties(&self) -> Result<(), String> {
+        if let Some(definitions) = &self.columns.dynamic_properties {
+            for (name, value) in self.iter() {
+                definitions.validate_value(name, value)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// One schema binding per actual result layout, never a dictionary copy per row.
+    pub fn attach_dynamic_property_definitions(
+        rows: &mut [Self],
+        definitions: Arc<crate::dynamic_properties::DynamicPropertyDefinitions>,
+    ) {
+        let mut layouts = std::collections::HashMap::new();
+        for row in rows {
+            let key = Arc::as_ptr(&row.columns) as usize;
+            row.columns = layouts
+                .entry(key)
+                .or_insert_with(|| {
+                    (
+                        row.columns.clone(),
+                        row.columns
+                            .with_dynamic_property_definitions(definitions.clone()),
+                    )
+                })
+                .1
+                .clone();
+        }
+    }
+
+    /// Query-only edge availability lives in the shared shape, never a row value.
+    #[doc(hidden)]
+    pub fn mark_relation_loaded(&mut self, name: &str, shapes: &mut RelationShapeCache) {
+        if self.is_loaded_relation(name) {
+            return;
+        }
+        let key = Arc::as_ptr(&self.columns) as usize;
+        if shapes.relation.as_deref() != Some(name) {
+            shapes.shapes.clear();
+            shapes.relation = Some(name.to_owned());
+        }
+        self.columns = shapes
+            .shapes
+            .entry(key)
+            .or_insert_with(|| {
+                let mut relations = self.columns.relation_names.to_vec();
+                relations.push(name.to_owned());
+                (
+                    self.columns.clone(),
+                    CompactRowLayout::with_metadata(
+                        self.columns.names.clone(),
+                        relations.into(),
+                        self.columns.dynamic_properties.clone(),
+                    ),
+                )
+            })
+            .1
+            .clone();
+    }
+
+    #[doc(hidden)]
+    pub fn is_loaded_relation(&self, name: &str) -> bool {
+        self.columns
+            .relation_names
+            .iter()
+            .any(|relation| relation == name)
+    }
+
+    /// Share actual shapes after relation hydration. The temporary pool cannot
+    /// retain historical projections, entity values or mutation ownership.
+    pub fn share_layouts(rows: &mut [Self]) {
+        let mut shapes = std::collections::HashMap::<
+            (
+                Arc<[String]>,
+                Arc<[String]>,
+                Option<Arc<crate::dynamic_properties::DynamicPropertyDefinitions>>,
+            ),
+            Arc<CompactRowLayout>,
+        >::new();
+        let mut previous: Option<Arc<CompactRowLayout>> = None;
+        for row in rows {
+            if previous
+                .as_ref()
+                .is_some_and(|layout| Arc::ptr_eq(layout, &row.columns))
+            {
+                continue;
+            }
+            let layout = shapes
+                .entry((
+                    row.shared_columns(),
+                    row.columns.relation_names.clone(),
+                    row.columns.dynamic_properties.clone(),
+                ))
+                .or_insert_with(|| row.columns.clone())
+                .clone();
+            row.columns = layout.clone();
+            previous = Some(layout);
+        }
     }
 
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
@@ -913,23 +1467,128 @@ impl CompactRow {
         }
         let mut columns = self.columns.to_vec();
         columns.push(name);
-        self.columns = columns.into();
+        self.columns = CompactRowLayout::with_metadata(
+            columns.into(),
+            self.columns.relation_names.clone(),
+            self.columns.dynamic_properties.clone(),
+        );
         self.values.push(value);
         None
     }
 
     pub fn remove(&mut self, name: &str) -> Option<Value> {
+        self.take_loaded_relation(name);
         let index = self.columns.iter().position(|column| column == name)?;
         let mut columns = self.columns.to_vec();
         columns.remove(index);
-        self.columns = columns.into();
+        self.columns = CompactRowLayout::with_metadata(
+            columns.into(),
+            self.columns.relation_names.clone(),
+            self.columns.dynamic_properties.clone(),
+        );
         Some(self.values.remove(index))
     }
 
     pub fn extend(&mut self, other: CompactRow) {
-        for (name, value) in other.columns.iter().cloned().zip(other.values) {
-            self.insert(name, value);
+        self.try_extend(other, &mut Default::default())
+            .expect("incompatible CompactRow read metadata");
+    }
+
+    /// Checked enhancement merge. Validate provenance before changing any
+    /// native value, relation or read payload; callers retain a failed row.
+    #[doc(hidden)]
+    pub fn try_extend(
+        &mut self,
+        other: CompactRow,
+        shapes: &mut crate::dynamic_fields::DynamicFieldMergeShapes,
+    ) -> Result<(), crate::dynamic_fields::DynamicFieldError> {
+        let property_definitions = match (
+            &self.columns.dynamic_properties,
+            &other.columns.dynamic_properties,
+        ) {
+            (Some(left), Some(right)) => Some(
+                crate::dynamic_properties::DynamicPropertyDefinitions::merge(left, right).map_err(
+                    |field| crate::dynamic_fields::DynamicFieldError {
+                        code: "DYNAMIC_PROPERTY_TYPE_MISMATCH",
+                        field,
+                    },
+                )?,
+            ),
+            (left, right) => left.clone().or_else(|| right.clone()),
+        };
+        if let Some(definitions) = &property_definitions {
+            // Check the final values before changing either payload or schema.
+            for (name, value) in self
+                .iter()
+                .filter(|(name, _)| !other.contains_key(name))
+                .chain(other.iter())
+            {
+                definitions.validate_value(name, value).map_err(|_| {
+                    crate::dynamic_fields::DynamicFieldError {
+                        code: "DYNAMIC_PROPERTY_TYPE_MISMATCH",
+                        field: name.clone(),
+                    }
+                })?;
+            }
         }
+        if let (Some(left), Some(right)) = (
+            self.loaded_relations
+                .as_ref()
+                .and_then(|metadata| metadata.dynamic_fields.as_ref()),
+            other
+                .loaded_relations
+                .as_ref()
+                .and_then(|metadata| metadata.dynamic_fields.as_ref()),
+        ) {
+            left.validate_merge(right)?;
+        }
+        let mut relation_names: Option<Vec<String>> = None;
+        for name in other.columns.relation_names.iter() {
+            let existing = relation_names
+                .as_deref()
+                .unwrap_or(&self.columns.relation_names);
+            if !existing.contains(name) {
+                relation_names
+                    .get_or_insert_with(|| self.columns.relation_names.to_vec())
+                    .push(name.clone());
+            }
+        }
+        if let Some(relations) = other.loaded_relations {
+            if let Some(values) = relations.dynamic_fields {
+                self.merge_loaded_dynamic_fields(values, shapes)?;
+            }
+            self.loaded_relations
+                .get_or_insert_with(Default::default)
+                .lists
+                .extend(relations.lists);
+        }
+        let mut columns: Option<Vec<String>> = None;
+        for (name, value) in other.columns.iter().zip(other.values) {
+            let names = columns.as_deref().unwrap_or(&self.columns.names);
+            if let Some(index) = names.iter().position(|column| column == name) {
+                self.values[index] = value;
+            } else {
+                columns
+                    .get_or_insert_with(|| self.columns.names.to_vec())
+                    .push(name.clone());
+                self.values.push(value);
+            }
+        }
+        if columns.is_some()
+            || relation_names.is_some()
+            || property_definitions != self.columns.dynamic_properties
+        {
+            self.columns = CompactRowLayout::with_metadata(
+                columns
+                    .map(Arc::from)
+                    .unwrap_or_else(|| self.columns.names.clone()),
+                relation_names
+                    .map(Arc::from)
+                    .unwrap_or_else(|| self.columns.relation_names.clone()),
+                property_definitions,
+            );
+        }
+        Ok(())
     }
 
     pub fn contains_key(&self, name: &str) -> bool {

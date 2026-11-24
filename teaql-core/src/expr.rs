@@ -18,9 +18,12 @@ pub enum BinaryOp {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExprFunction {
+    /// Java SELF: return one scalar operand without converting its value.
+    Identity,
     Soundex,
     Gbk,
     Count,
+    CountDistinct,
     Sum,
     Avg,
     Min,
@@ -38,6 +41,14 @@ pub enum ExprFunction {
 pub enum Expr {
     Column(String),
     Value(Value),
+    /// Compiler provenance for typed LIKE helpers. `pattern` is the unchanged
+    /// execution value; `original` is used only for classified intent projection.
+    /// Raw `like`/`not_like` expressions deliberately do not create this leaf.
+    #[doc(hidden)]
+    LikePattern {
+        pattern: String,
+        original: String,
+    },
     Function {
         function: ExprFunction,
         args: Vec<Expr>,
@@ -89,6 +100,10 @@ impl Expr {
         Self::function(ExprFunction::Soundex, [expr])
     }
 
+    pub fn identity(expr: Expr) -> Self {
+        Self::function(ExprFunction::Identity, [expr])
+    }
+
     pub fn gbk(expr: Expr) -> Self {
         Self::function(ExprFunction::Gbk, [expr])
     }
@@ -99,6 +114,10 @@ impl Expr {
 
     pub fn count_expr(expr: Expr) -> Self {
         Self::function(ExprFunction::Count, [expr])
+    }
+
+    pub fn count_distinct(expr: Expr) -> Self {
+        Self::function(ExprFunction::CountDistinct, [expr])
     }
 
     pub fn sum_expr(expr: Expr) -> Self {
@@ -194,27 +213,44 @@ impl Expr {
     }
 
     pub fn contain(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::like(column, format!("%{}%", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::Like, "%", "%")
     }
 
     pub fn not_contain(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::not_like(column, format!("%{}%", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::NotLike, "%", "%")
     }
 
     pub fn begin_with(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::like(column, format!("{}%", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::Like, "", "%")
     }
 
     pub fn not_begin_with(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::not_like(column, format!("{}%", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::NotLike, "", "%")
     }
 
     pub fn end_with(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::like(column, format!("%{}", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::Like, "%", "")
     }
 
     pub fn not_end_with(column: impl Into<String>, value: impl Into<String>) -> Self {
-        Self::not_like(column, format!("%{}", value.into()))
+        Self::typed_like(column, value.into(), BinaryOp::NotLike, "%", "")
+    }
+
+    fn typed_like(
+        column: impl Into<String>,
+        original: String,
+        op: BinaryOp,
+        prefix: &str,
+        suffix: &str,
+    ) -> Self {
+        Self::binary(
+            Self::column(column),
+            op,
+            Self::LikePattern {
+                pattern: format!("{prefix}{original}{suffix}"),
+                original,
+            },
+        )
     }
 
     pub fn binary(left: Expr, op: BinaryOp, right: Expr) -> Self {
@@ -307,7 +343,11 @@ impl Expr {
         // SQL `NOT IN` becomes UNKNOWN for every outer row when the projected
         // set contains NULL. Relation non-existence and negative matching must
         // ignore orphan child rows instead of poisoning the entire predicate.
-        if matches!(op, BinaryOp::NotIn | BinaryOp::NotInLarge) {
+        if matches!(op, BinaryOp::NotIn | BinaryOp::NotInLarge)
+            && query.group_by.is_empty()
+            && query.aggregates.is_empty()
+            && !query.has_layered_statistics()
+        {
             query = query.and_filter(Self::is_not_null(field.clone()));
         }
         query.projection = vec![field];

@@ -5,20 +5,158 @@ use crate::{MetadataStore, UserContext};
 pub(crate) struct RuntimeDataService<'a, M, E> {
     pub(super) metadata: &'a M,
     pub(super) executor: &'a E,
+    pub(super) mutation_intent: Option<teaql_core::MutationIntent>,
+    pub(super) mutation_privacy: Option<std::sync::Arc<teaql_data_service::SqlIntentRedactions>>,
 }
 
 pub(crate) struct ContextDataService<'a, E> {
     pub(super) metadata: UserContextMetadata<'a>,
     pub(crate) executor: &'a E,
+    pub(super) mutation_intent: Option<teaql_core::MutationIntent>,
+    pub(super) mutation_privacy: Option<std::sync::Arc<teaql_data_service::SqlIntentRedactions>>,
 }
 
 pub struct EntityDataService<'a, E> {
     pub(super) entity: String,
     pub(super) data_service: ContextDataService<'a, E>,
     pub(super) trace_context: Vec<teaql_core::TraceNode>,
+    /// Private operation scope; never inferred from caller-supplied trace nodes.
+    pub(super) request_intent: Option<teaql_core::QueryIntent>,
+    pub(super) request_scope: Option<teaql_core::QueryRequestScope>,
+    // Present only on a private query-tree scope. Never attached to UserContext,
+    // the public reusable repository, an entity ledger or a wire request.
+    pub(super) query_log_intent: Option<std::sync::Mutex<teaql_data_service::SqlIntentRedactions>>,
 }
 
 impl<'a, E> EntityDataService<'a, E> {
+    pub(crate) fn with_plan_privacy(
+        mut self,
+        plan: &crate::GraphMutationPlan,
+    ) -> Result<Self, crate::RuntimeError> {
+        use teaql_data_service::{SqlIntentRedactions, SqlLogContext};
+        let mut redactions = SqlIntentRedactions::default();
+        for batch in &plan.batches {
+            let descriptor = self
+                .data_service
+                .metadata
+                .context
+                .require_entity(&batch.entity)?;
+            for item in &batch.items {
+                let values = item
+                    .values
+                    .iter()
+                    .chain(item.old_values.iter().flat_map(|row| row.iter()));
+                let (params, policies): (Vec<_>, Vec<_>) = values
+                    .filter(|(name, _)| {
+                        descriptor.property_by_name(name).is_some()
+                            && descriptor.id_property().is_none_or(|p| p.name != **name)
+                            && descriptor
+                                .version_property()
+                                .is_none_or(|p| p.name != **name)
+                    })
+                    .map(|(name, value)| {
+                        (
+                            value.clone(),
+                            SqlIntentRedactions::field_policy(descriptor, name),
+                        )
+                    })
+                    .unzip();
+                redactions.extend(&SqlIntentRedactions::from_bindings(
+                    &SqlLogContext {
+                        generated_sql: true,
+                        parameter_policies: policies,
+                        ..Default::default()
+                    },
+                    &params,
+                    "",
+                ));
+            }
+        }
+        self.query_log_intent = Some(std::sync::Mutex::new(redactions.clone()));
+        self.data_service.mutation_privacy = Some(std::sync::Arc::new(redactions));
+        Ok(self)
+    }
+
+    pub(crate) fn with_ledger_privacy_from(
+        mut self,
+        root: &crate::EntityRuntimeState,
+        changes: &crate::EntityChangeSet,
+    ) -> Result<Self, crate::RuntimeError> {
+        use teaql_data_service::{SqlIntentRedactions, SqlLogContext};
+        let mut keys = root.deleted_keys();
+        keys.extend(changes.changes().keys().cloned());
+        if let Some(dynamic) = changes.dynamic_changes() {
+            keys.extend(dynamic.keys().cloned());
+        }
+        let mut redactions = SqlIntentRedactions::default();
+        for key in keys {
+            let descriptor = self
+                .data_service
+                .metadata
+                .context
+                .require_entity(&key.entity)?;
+            let original = root.original_values_for(&key);
+            let current = changes.changes().get(&key);
+            let values = original
+                .iter()
+                .flat_map(|row| row.iter())
+                .chain(current.into_iter().flat_map(|row| row.iter()));
+            let (params, policies): (Vec<_>, Vec<_>) = values
+                .filter(|(name, _)| {
+                    descriptor.property_by_name(name).is_some()
+                        && descriptor.id_property().is_none_or(|p| p.name != **name)
+                        && descriptor
+                            .version_property()
+                            .is_none_or(|p| p.name != **name)
+                })
+                .map(|(name, value)| {
+                    (
+                        value.clone(),
+                        SqlIntentRedactions::field_policy(descriptor, name),
+                    )
+                })
+                .unzip();
+            redactions.extend(&SqlIntentRedactions::from_bindings(
+                &SqlLogContext {
+                    generated_sql: true,
+                    parameter_policies: policies,
+                    ..Default::default()
+                },
+                &params,
+                "",
+            ));
+            if let Some(dynamic) = changes
+                .dynamic_changes()
+                .and_then(|changes| changes.get(&key))
+            {
+                let mut operands = Vec::new();
+                for mutation in dynamic.values() {
+                    if let teaql_core::dynamic_fields::DynamicFieldMutation::Set(value) = mutation {
+                        operands.push(value.clone());
+                    }
+                }
+                if let Some(originals) = changes.dynamic_originals(&key) {
+                    operands.extend(originals.values().flatten().cloned());
+                }
+                redactions.extend(&SqlIntentRedactions::from_bindings(
+                    &SqlLogContext {
+                        generated_sql: true,
+                        parameter_policies: vec![
+                            teaql_data_service::SqlParameterLogPolicy::Unknown;
+                            operands.len()
+                        ],
+                        ..Default::default()
+                    },
+                    &operands,
+                    "",
+                ));
+            }
+        }
+        self.query_log_intent = Some(std::sync::Mutex::new(redactions.clone()));
+        self.data_service.mutation_privacy = Some(std::sync::Arc::new(redactions));
+        Ok(self)
+    }
+
     /// Bind one entity data service to an explicit executor.
     ///
     /// Transaction scopes use this constructor to ensure generated repositories
@@ -34,14 +172,120 @@ impl<'a, E> EntityDataService<'a, E> {
             data_service: ContextDataService {
                 metadata: UserContextMetadata { context },
                 executor,
+                mutation_intent: None,
+                mutation_privacy: None,
             },
             trace_context: Vec::new(),
+            request_intent: None,
+            request_scope: None,
+            query_log_intent: None,
         }
     }
 
     pub fn with_trace_context(mut self, trace_context: Vec<teaql_core::TraceNode>) -> Self {
         self.trace_context = trace_context;
         self
+    }
+    pub(crate) fn with_request_scope(mut self, scope: teaql_core::QueryRequestScope) -> Self {
+        self.request_intent = Some(scope.intent().clone());
+        self.request_scope = Some(scope);
+        self
+    }
+
+    pub(crate) fn with_mutation_intent(&self, intent: teaql_core::MutationIntent) -> Self
+    where
+        E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
+    {
+        let mut scoped = self.scoped_data_service_internal(self.entity.clone());
+        scoped.trace_context = self.trace_context.clone();
+        scoped.request_intent = Some(
+            teaql_core::QueryIntent::new(
+                intent.comment(),
+                "runtime: load state for an audited graph mutation",
+            )
+            .expect("validated mutation intent"),
+        );
+        scoped.data_service.mutation_intent = Some(intent);
+        scoped
+    }
+
+    pub(super) fn request_intent_for(
+        &self,
+        query: &SelectQuery,
+    ) -> Result<teaql_core::QueryIntent, crate::RuntimeError> {
+        if let Some(intent) = &self.request_intent {
+            return Ok(intent.clone());
+        }
+        Ok(teaql_core::QueryIntent::from_optional(
+            query.comment.as_deref(),
+            query.purpose.as_deref(),
+        )?)
+    }
+
+    pub(super) fn query_intent_snapshot(&self) -> Option<teaql_data_service::SqlIntentRedactions> {
+        self.query_log_intent.as_ref().map(|intent| {
+            intent
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        })
+    }
+
+    pub(super) fn record_query_metadata(&self, metadata: &teaql_data_service::ExecutionMetadata) {
+        let Some(intent) = &self.query_log_intent else {
+            self.data_service
+                .metadata
+                .context
+                .record_metadata_log(metadata);
+            return;
+        };
+        let mut metadata = metadata.clone();
+        // A provider can return several independently bound statements.
+        // Accumulate each statement's normalized provenance for descendants;
+        // never interpret one statement's positional policies against another.
+        fn inherit(
+            metadata: &mut teaql_data_service::ExecutionMetadata,
+            inherited: &mut teaql_data_service::SqlIntentRedactions,
+        ) {
+            if !metadata.statements.is_empty() {
+                for statement in &mut metadata.statements {
+                    inherit(statement, inherited);
+                }
+                return;
+            }
+            metadata.sql_log.intent_redactions.extend(inherited);
+            *inherited = teaql_data_service::SqlIntentRedactions::from_bindings(
+                &metadata.sql_log,
+                &metadata.params,
+                metadata.parameterized_query.as_deref().unwrap_or_default(),
+            );
+        }
+        {
+            let mut inherited = intent
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            inherit(&mut metadata, &mut inherited);
+        }
+        // No scope lock survives callbacks; the runtime projects before all sinks.
+        self.data_service
+            .metadata
+            .context
+            .record_metadata_log(&metadata);
+    }
+
+    pub(super) fn query_diagnostic_observer(
+        &self,
+    ) -> Option<teaql_data_service::ExecutionObserver<'_>>
+    where
+        E: Sync,
+    {
+        self.data_service
+            .metadata
+            .capture_execution_metadata()
+            .then(|| {
+                std::sync::Arc::new(move |metadata| self.record_query_metadata(&metadata))
+                    as teaql_data_service::ExecutionObserver<'_>
+            })
     }
 }
 
@@ -56,6 +300,7 @@ pub struct RelationLoadPlan {
     pub many: bool,
     pub query: Option<SelectQuery>,
     pub children: Vec<RelationLoadPlan>,
+    pub operation: Option<teaql_core::QueryOperation>,
 }
 
 pub(crate) struct UserContextMetadata<'a> {
@@ -78,12 +323,27 @@ impl MetadataStore for UserContextMetadata<'_> {
     fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
         self.context.record_metadata_log(metadata);
     }
+    fn sql_statement_telemetry(
+        &self,
+    ) -> Option<std::sync::Arc<dyn teaql_data_service::statement_telemetry::SqlStatementTelemetry>>
+    {
+        self.context.sql_statement_factory()
+    }
+
+    fn mutation_diagnostic_observer(&self) -> Option<teaql_data_service::ExecutionObserver<'_>> {
+        (self.context.sql_log_options().mutation || self.context.records_sql_diagnostics()).then(
+            || {
+                std::sync::Arc::new(move |metadata| self.context.record_metadata_log(&metadata))
+                    as teaql_data_service::ExecutionObserver<'_>
+            },
+        )
+    }
 
     fn capture_query_debug(&self) -> bool {
-        self.context.sql_log_options().select
+        self.context.sql_log_options().select || self.context.records_sql_diagnostics()
     }
 
     fn capture_execution_metadata(&self) -> bool {
-        self.context.sql_log_options().select
+        self.context.sql_log_options().select || self.context.records_sql_diagnostics()
     }
 }

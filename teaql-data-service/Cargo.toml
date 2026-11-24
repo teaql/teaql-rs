@@ -10,3 +10,6 @@ repository.workspace = true
 [dependencies]
 teaql-core = { workspace = true }
 futures-core = "0.3"
+
+[dev-dependencies]
+serde_json.workspace = true

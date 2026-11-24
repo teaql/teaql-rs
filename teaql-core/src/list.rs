@@ -31,6 +31,7 @@ impl<T> SmartList<T> {
             if Entity::is_new(&entity)
                 || Entity::dirty_fields(&entity).is_some()
                 || Entity::is_marked_as_delete(&entity)
+                || Entity::is_marked_as_recover(&entity)
             {
                 has_changes = true;
             }
@@ -193,6 +194,22 @@ impl<T> SmartList<T> {
         }
     }
 
+    /// A derived row selection has no exact source-query statistics of its own.
+    pub fn filter(self, predicate: impl FnMut(&T) -> bool) -> Self {
+        let mut result = Self::new(self.data.into_iter().filter(predicate).collect());
+        result.is_loaded = self.is_loaded;
+        result
+    }
+
+    pub fn flat_map<U, I>(self, mapper: impl FnMut(T) -> I) -> SmartList<U>
+    where
+        I: IntoIterator<Item = U>,
+    {
+        let mut result = SmartList::new(self.data.into_iter().flat_map(mapper).collect());
+        result.is_loaded = self.is_loaded;
+        result
+    }
+
     pub fn to_list<U>(&self, mapper: impl FnMut(&T) -> U) -> Vec<U> {
         self.data.iter().map(mapper).collect()
     }
@@ -284,7 +301,10 @@ where
     {
         self.data
             .iter()
-            .map(|item| (id_key(&item.id_value()), item.clone()))
+            .filter_map(|item| match item.id_value() {
+                Value::Null | Value::TypedNull(_) => None,
+                id => Some((id_key(&id), item.clone())),
+            })
             .collect()
     }
 }
@@ -395,6 +415,7 @@ fn id_key(value: &Value) -> String {
         Value::F64(value) => format!("f:{value}"),
         Value::Decimal(value) => format!("decimal:{value}"),
         Value::Text(value) => format!("t:{value}"),
+        Value::Binary(value) => format!("binary:{value:02x?}"),
         Value::Json(value) => format!("j:{value}"),
         Value::Date(value) => format!("date:{value}"),
         Value::Timestamp(value) => format!("ts:{}", value.0),

@@ -1,17 +1,118 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    CompactRow, Decimal, EntityDescriptor, EntitySnapshot, MutationValues, Value,
+    CompactRow, Decimal, EntityDescriptor, EntitySnapshot, MutationIntent, MutationValues, Value,
     record_to_json_value,
 };
+
+/// A presentation-only, path-local guard. Never touches an entity's ledger.
+#[doc(hidden)]
+#[derive(Default)]
+pub struct EntityJsonTraversal {
+    path: Vec<(&'static str, usize)>,
+    strict_limits: Option<(usize, usize)>,
+    visited: usize,
+    failure: Option<EntityJsonTraversalError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityJsonTraversalError {
+    Cycle,
+    Limit,
+    DynamicPropertyCollision,
+}
+
+impl EntityJsonTraversal {
+    pub fn for_strict_wire(max_depth: usize, max_nodes: usize) -> Self {
+        Self {
+            strict_limits: Some((max_depth, max_nodes)),
+            ..Self::default()
+        }
+    }
+
+    pub fn failure(&self) -> Option<EntityJsonTraversalError> {
+        self.failure
+    }
+
+    /// Only the strict wire codec normalizes legacy query aliases for presentation.
+    pub fn is_strict_wire(&self) -> bool {
+        self.strict_limits.is_some()
+    }
+
+    /// Never silently choose between an alias and an already-prefixed property.
+    pub fn reject_dynamic_property_collision(&mut self) {
+        self.failure = Some(EntityJsonTraversalError::DynamicPropertyCollision);
+    }
+
+    pub fn enter(&mut self, entity: &'static str, address: usize) -> bool {
+        self.visited = self.visited.saturating_add(1);
+        let cycle = self.path.contains(&(entity, address));
+        if let Some((depth, nodes)) = self.strict_limits {
+            if self.path.len() >= depth || self.visited > nodes {
+                self.failure = Some(EntityJsonTraversalError::Limit);
+            } else if cycle {
+                self.failure = Some(EntityJsonTraversalError::Cycle);
+            }
+        }
+        let expand = self.path.len() < 128 && !cycle && self.failure.is_none();
+        self.path.push((entity, address));
+        expand
+    }
+
+    pub fn leave(&mut self) {
+        self.path.pop();
+    }
+}
 
 pub trait TeaqlEntity {
     const ENTITY_NAME: &'static str;
 
+    /// Derive capability witness. Legacy/hand-written adapters do not attest support.
+    #[doc(hidden)]
+    const CONTEXT_ROOT_METADATA_REVISION: u32 = 0;
+
+    /// An older derive must not silently erase generated inheritance metadata.
+    #[doc(hidden)]
+    const JOINED_INHERITANCE_METADATA_REVISION: u32 = 0;
+
+    /// The derive retains shallow direct-subtype metadata for typed views.
+    #[doc(hidden)]
+    const INHERITANCE_VIEW_METADATA_REVISION: u32 = 0;
+
+    fn symbols() -> Option<&'static crate::EntitySymbols> {
+        None
+    }
+
+    /// Return a descriptor handle. Derive-generated implementations initialize one
+    /// descriptor per concrete type and return allocation-free shared clones.
+    /// Handwritten implementations may construct context-independent metadata here.
     fn entity_descriptor() -> EntityDescriptor;
+
+    /// Fixed metadata supplied by generation; hand-written adapters may remain unindexed.
+    fn field_layout() -> Result<Option<std::sync::Arc<crate::FieldLayout>>, EntityError> {
+        Ok(None)
+    }
 
     fn register_into(store: &mut impl EntityDescriptorStore) {
         store.register_descriptor(Self::entity_descriptor());
+    }
+}
+
+/// Shared, immutable presentation metadata. Generated views keep only one
+/// optional pointer, not a per-row dictionary or a copy of the subtype name.
+#[doc(hidden)]
+#[derive(Debug, PartialEq, Eq)]
+pub struct RuntimeSubtypeIdentity {
+    owner: &'static str,
+    name: &'static str,
+}
+
+impl RuntimeSubtypeIdentity {
+    pub const fn new(owner: &'static str, name: &'static str) -> Self {
+        Self { owner, name }
+    }
+    pub fn for_view(&self, owner: &str) -> Option<&'static str> {
+        (self.owner == owner).then_some(self.name)
     }
 }
 
@@ -39,6 +140,110 @@ impl std::fmt::Display for EntityError {
 impl std::error::Error for EntityError {}
 
 pub trait Entity: TeaqlEntity + Sized {
+    /// Read-only next-subtype identity. A parent query still returns its parent
+    /// Rust type; this hint never selects a checker, repository, or mutation key.
+    fn runtime_type(&self) -> &str {
+        match self.dynamic_property("_type_") {
+            Some(Value::Text(name)) => name,
+            _ => Self::ENTITY_NAME,
+        }
+    }
+
+    /// Optional readonly schema: a known type does not make a missing property present.
+    fn dynamic_property_type(&self, key: &str) -> Option<crate::DataType> {
+        let state = self.loaded_state_snapshot()?;
+        state.dynamic_property_definitions()?.data_type(key)
+    }
+    /// Framework JSON hydration capability; readonly properties remain unnumbered data.
+    #[doc(hidden)]
+    fn supports_dynamic_property_load() -> bool {
+        false
+    }
+
+    /// Borrow a readonly derived property using its full `_`-prefixed name.
+    /// Missing properties and explicit null both return `None`; real zero,
+    /// false and empty text remain values. This never loads data or changes state.
+    fn dynamic_property(&self, _key: &str) -> Option<&Value> {
+        None
+    }
+
+    /// Presence is separate from the nullable derived-property read contract.
+    /// An explicit null is present; an absent key is not. Native fields and
+    /// persistent `#` extensions are not part of this namespace.
+    fn has_dynamic_property(&self, _key: &str) -> bool {
+        false
+    }
+
+    /// Runtime-owned persistent-extension carrier, separate from readonly dynamic properties.
+    fn dynamic_field_values(&self) -> Option<&crate::dynamic_fields::DynamicFieldValues> {
+        None
+    }
+
+    fn has_pending_dynamic_mutations(&self) -> bool {
+        false
+    }
+
+    /// Type-erased framework bridge without a core -> runtime dependency.
+    #[doc(hidden)]
+    fn __teaql_runtime_state_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
+
+    fn update_dynamic_field(
+        &mut self,
+        code: &str,
+        _value: Value,
+    ) -> Result<(), crate::dynamic_fields::DynamicFieldError> {
+        Err(crate::dynamic_fields::DynamicFieldError {
+            code: "DYNAMIC_FIELD_CARRIER_MISSING",
+            field: code.to_owned(),
+        })
+    }
+
+    fn delete_dynamic_field(
+        &mut self,
+        code: &str,
+    ) -> Result<(), crate::dynamic_fields::DynamicFieldError> {
+        Err(crate::dynamic_fields::DynamicFieldError {
+            code: "DYNAMIC_FIELD_CARRIER_MISSING",
+            field: code.to_owned(),
+        })
+    }
+
+    fn supports_dynamic_field_load() -> bool {
+        false
+    }
+
+    fn loaded_state_snapshot(&self) -> Option<std::sync::Arc<crate::LoadedSnapshot>> {
+        None
+    }
+
+    /// Runtime hydration only. Restores an unchanged view's validated immutable
+    /// geometry without copying row values or creating mutation intent.
+    #[doc(hidden)]
+    fn install_loaded_state_snapshot(
+        &mut self,
+        _state: std::sync::Arc<crate::LoadedSnapshot>,
+    ) -> Result<(), EntityError> {
+        Err(EntityError::new(
+            Self::ENTITY_NAME,
+            "entity lacks a runtime-owned indexed loaded-state carrier",
+        ))
+    }
+
+    /// Framework hydration only: it must not create mutation intent or share row payloads.
+    #[doc(hidden)]
+    fn install_loaded_dynamic_fields(
+        &mut self,
+        _values: crate::dynamic_fields::DynamicFieldValues,
+        _state: std::sync::Arc<crate::LoadedSnapshot>,
+    ) -> Result<(), EntityError> {
+        Err(EntityError::new(
+            Self::ENTITY_NAME,
+            "entity lacks the runtime-owned indexed dynamic-field carrier",
+        ))
+    }
+
     fn from_compact_row(row: CompactRow) -> Result<Self, EntityError>;
 
     fn from_compact_row_with_context(
@@ -52,6 +257,32 @@ pub trait Entity: TeaqlEntity + Sized {
 
     fn into_values(self) -> MutationValues;
 
+    /// Presentation bridge for macro-generated typed relation carriers.
+    /// Kept separate so JSON conversion cannot change the mutation contract.
+    #[doc(hidden)]
+    fn into_json_values(self) -> BTreeMap<String, Value> {
+        self.into_values().into()
+    }
+
+    /// Borrow an indexed graph view without cloning entities or triggering I/O.
+    /// Older/manual carriers retain their existing consuming presentation path.
+    #[doc(hidden)]
+    fn borrowed_json(&self, _traversal: &mut EntityJsonTraversal) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Lossless presentation snapshot for model-aware codecs. Values retain
+    /// their native kinds, including Decimal scale and non-finite floats, so
+    /// the boundary can validate them before any JSON conversion. Absence is
+    /// omission, not null. This does not clone entities, load data or mutate.
+    #[doc(hidden)]
+    fn borrowed_json_values(
+        &self,
+        _traversal: &mut EntityJsonTraversal,
+    ) -> Option<BTreeMap<String, Value>> {
+        None
+    }
+
     /// Whether a model field was loaded in the entity snapshot used for a
     /// mutation. Implementations without projection tracking remain fully
     /// loaded for backwards compatibility.
@@ -63,6 +294,41 @@ pub trait Entity: TeaqlEntity + Sized {
     /// This is runtime metadata, not mutation intent.
     fn set_checker_loaded_fields(&mut self, _fields: BTreeSet<String>) {}
 
+    /// Restore the caller's exact mutation boundary while materializing the
+    /// typed Checker view. This metadata is used only during validation and
+    /// must not widen the eventual database update.
+    fn set_checker_dirty_fields(&mut self, _fields: BTreeSet<String>, _values: &MutationValues) {}
+
+    /// Borrowed path used by generated entities to avoid copying the full
+    /// checker input. Existing handwritten implementations keep the owned hook.
+    #[doc(hidden)]
+    fn set_checker_dirty_fields_borrowed(
+        &mut self,
+        fields: &BTreeSet<String>,
+        values: &BTreeMap<String, Value>,
+    ) {
+        self.set_checker_dirty_fields(fields.clone(), &MutationValues::from(values.clone()));
+    }
+
+    /// Indexed adapter used by the runtime; handwritten checkers can keep their named hook.
+    #[doc(hidden)]
+    fn set_checker_dirty_values(&mut self, fields: &BTreeSet<String>, values: &MutationValues) {
+        self.set_checker_dirty_fields_borrowed(fields, values);
+    }
+
+    /// Stage generated Checker/Fix setters in an isolated ledger frame.
+    /// Non-ledger entities retain the legacy typed-checker adapter path.
+    #[doc(hidden)]
+    fn begin_checker_fix(&self) -> bool {
+        false
+    }
+
+    /// Consume only assignments made by Checker/Fix, leaving caller mutations intact.
+    #[doc(hidden)]
+    fn take_checker_fix_changes(&self) -> MutationValues {
+        MutationValues::default()
+    }
+
     /// Returns the set of field names that have been modified since the entity was loaded.
     /// Returns `None` if dirty tracking is not available (backwards compatible default).
     /// This is the Rust equivalent of Java's `entity.getUpdatedProperties()`.
@@ -72,6 +338,11 @@ pub trait Entity: TeaqlEntity + Sized {
 
     /// Returns true if this entity has been marked for deletion.
     fn is_marked_as_delete(&self) -> bool {
+        false
+    }
+
+    /// A pending recovery is persisted only through audited graph save.
+    fn is_marked_as_recover(&self) -> bool {
         false
     }
 
@@ -108,27 +379,59 @@ pub trait Entity: TeaqlEntity + Sized {
     fn on_loaded(&mut self, context: &dyn std::any::Any) {}
 
     fn into_json(self) -> serde_json::Value {
-        let values: BTreeMap<String, Value> = self.into_values().into();
-        record_to_json_value(&values)
+        if let Some(json) = self.borrowed_json(&mut EntityJsonTraversal::default()) {
+            return json;
+        }
+        // Persistent extensions are a separate carrier, never native mutation
+        // columns. Serialize only supplied values; absent definitions stay absent.
+        let extensions: serde_json::Map<String, serde_json::Value> = self
+            .dynamic_field_values()
+            .map(|fields| {
+                fields
+                    .values()
+                    .iter()
+                    .map(|(code, value)| (format!("#{code}"), value.to_json_value()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut values = self.into_json_values();
+        // These exact framework-owned keys belong to the mutation/checker
+        // contract, not to an external entity representation. Other `_` keys
+        // are legitimate readonly dynamic properties and must be preserved.
+        for key in [
+            "_comment",
+            "_dirty_fields",
+            "_original_values",
+            "_is_new",
+            "_is_deleted",
+        ] {
+            values.remove(key);
+        }
+        let mut json = record_to_json_value(&values);
+        json.as_object_mut()
+            .expect("entity serialization is an object")
+            .extend(extensions);
+        json
     }
 }
 
 /// A wrapper that carries a mandatory audit comment with an entity.
-/// Only `Commented<T>` has a `.save()` method — bare entities cannot be saved directly.
+/// Only `Audited<T>` has a `.save()` method — bare entities cannot be saved directly.
 /// This enforces the "must comment on save" policy at compile time.
 pub struct Audited<T: Entity> {
     inner: T,
-    comment: String,
+    comment: MutationIntent,
 }
 
 impl<T: Entity> Audited<T> {
-    /// Create a new Commented wrapper. Panics if comment is empty.
+    /// Create an audited wrapper with a validated, request-owned root reason.
+    ///
+    /// The fluent constructor remains infallible in its type signature, but
+    /// invalid input panics with the same code, location and repair guidance as
+    /// `MutationIntent`. Callers handling untrusted input can validate it with
+    /// `MutationIntent::new` before constructing this wrapper.
     pub fn new(entity: T, comment: impl Into<String>) -> Self {
-        let comment = comment.into();
-        assert!(
-            !comment.trim().is_empty(),
-            "audit comment must not be empty"
-        );
+        let comment = MutationIntent::new(comment).unwrap_or_else(|error| panic!("{error}"));
         Self {
             inner: entity,
             comment,
@@ -148,13 +451,13 @@ impl<T: Entity> Audited<T> {
     /// Consume and return the inner entity with comment applied.
     pub fn into_entity(self) -> T {
         let mut entity = self.inner;
-        entity.set_comment(self.comment);
+        entity.set_comment(self.comment.into_comment());
         entity
     }
 
     /// Get the comment.
     pub fn get_comment(&self) -> &str {
-        &self.comment
+        self.comment.comment()
     }
 }
 
@@ -338,6 +641,14 @@ pub trait TeaqlBoxedRelations: Sized {
     fn extend_descriptor(descriptor: &mut EntityDescriptor);
     fn extract_from_values(values: &CompactRow) -> Result<Self, EntityError>;
     fn inject_into_values(self, values: &mut BTreeMap<String, Value>);
+    #[doc(hidden)]
+    fn inject_into_json_values(
+        self,
+        values: &mut BTreeMap<String, Value>,
+        _loaded: Option<&crate::eval::LoadState>,
+    ) {
+        self.inject_into_values(values);
+    }
 }
 
 impl<T: TeaqlBoxedRelations> TeaqlBoxedRelations for Box<T> {
@@ -349,6 +660,13 @@ impl<T: TeaqlBoxedRelations> TeaqlBoxedRelations for Box<T> {
     }
     fn inject_into_values(self, values: &mut BTreeMap<String, Value>) {
         (*self).inject_into_values(values);
+    }
+    fn inject_into_json_values(
+        self,
+        values: &mut BTreeMap<String, Value>,
+        loaded: Option<&crate::eval::LoadState>,
+    ) {
+        (*self).inject_into_json_values(values, loaded);
     }
 }
 
