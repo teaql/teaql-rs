@@ -7,6 +7,10 @@ use teaql_core::{
 };
 use teaql_data_service::{DataServiceOperation, ExecutionMetadata, QueryResult};
 
+mod error;
+mod sum;
+pub use error::{InMemoryQueryError, InMemoryQueryErrorKind};
+
 /// A general-purpose in-memory query engine that executes [`SelectQuery`] against a
 /// compact rows. This replaces the database engine for non-SQL data sources.
 pub struct InMemoryQueryEngine;
@@ -14,8 +18,12 @@ pub struct InMemoryQueryEngine;
 impl InMemoryQueryEngine {
     /// Execute a [`SelectQuery`] against the given rows and return a [`QueryResult`].
     ///
-    /// Processing order: filter → aggregation (if any) → sort → paginate → project.
-    pub fn execute(query: &SelectQuery, mut rows: Vec<CompactRow>) -> QueryResult {
+    /// Processing order: filter → optional aggregation/HAVING → sort → paginate.
+    /// Non-aggregate queries then apply their ordinary field projection.
+    pub fn execute(
+        query: &SelectQuery,
+        mut rows: Vec<CompactRow>,
+    ) -> Result<QueryResult, InMemoryQueryError> {
         let started_at = SystemTime::now();
 
         // 1. Filter
@@ -23,12 +31,23 @@ impl InMemoryQueryEngine {
             Self::filter(&mut rows, filter);
         }
 
-        // 2. Aggregation short-circuits the normal pipeline.
+        // Aggregate aliases only exist after grouping. Apply HAVING, ordering
+        // and slicing to those result rows, not to their contributing inputs.
         if !query.aggregates.is_empty() {
-            let mut result = Self::aggregate(query, rows);
+            let mut result = Self::aggregate(query, rows)?;
+            if let Some(having) = &query.having {
+                Self::filter(&mut result.rows, having);
+            }
+            if !query.order_by.is_empty() {
+                Self::sort(&mut result.rows, &query.order_by);
+            }
+            if let Some(slice) = &query.slice {
+                result.rows = Self::paginate(result.rows, slice);
+            }
+            result.metadata.result_count = Some(result.rows.len());
             result.metadata.started_at = started_at;
             result.metadata.ended_at = SystemTime::now();
-            return result;
+            return Ok(result);
         }
 
         // 3. Sort
@@ -47,7 +66,7 @@ impl InMemoryQueryEngine {
         }
 
         let count = rows.len();
-        QueryResult {
+        Ok(QueryResult {
             rows,
             metadata: ExecutionMetadata {
                 statements: Vec::new(),
@@ -65,7 +84,7 @@ impl InMemoryQueryEngine {
                 parameterized_query: None,
                 params: Vec::new(),
             },
-        }
+        })
     }
 
     /// Retain only the rows for which the expression evaluates to `true`.
@@ -118,7 +137,10 @@ impl InMemoryQueryEngine {
 
     /// Compute aggregations over the (already-filtered) rows and return the result
     /// as a single-row [`QueryResult`].
-    fn aggregate(query: &SelectQuery, rows: Vec<CompactRow>) -> QueryResult {
+    fn aggregate(
+        query: &SelectQuery,
+        rows: Vec<CompactRow>,
+    ) -> Result<QueryResult, InMemoryQueryError> {
         let started_at = SystemTime::now();
 
         // If there are group-by fields, partition the rows into groups.
@@ -129,13 +151,13 @@ impl InMemoryQueryEngine {
         // No group-by: single aggregation over all rows.
         let mut result_row = std::collections::BTreeMap::new();
         for agg in &query.aggregates {
-            let value = compute_aggregate(agg, &rows);
+            let value = compute_aggregate(agg, &rows)?;
             result_row.insert(agg.alias.clone(), value);
         }
 
         let result_rows = vec![CompactRow::from_map(result_row)];
         let count = result_rows.len();
-        QueryResult {
+        Ok(QueryResult {
             rows: result_rows,
             metadata: ExecutionMetadata {
                 statements: Vec::new(),
@@ -153,7 +175,7 @@ impl InMemoryQueryEngine {
                 parameterized_query: None,
                 params: Vec::new(),
             },
-        }
+        })
     }
 
     /// Aggregate with GROUP BY support.
@@ -161,7 +183,7 @@ impl InMemoryQueryEngine {
         query: &SelectQuery,
         rows: Vec<CompactRow>,
         started_at: SystemTime,
-    ) -> QueryResult {
+    ) -> Result<QueryResult, InMemoryQueryError> {
         // Build groups keyed by the group-by field values.
         let mut groups: Vec<(Vec<Value>, Vec<CompactRow>)> = Vec::new();
 
@@ -189,7 +211,7 @@ impl InMemoryQueryEngine {
 
             // Compute each aggregate over this group.
             for agg in &query.aggregates {
-                let value = compute_aggregate(agg, group_rows);
+                let value = compute_aggregate(agg, group_rows)?;
                 result_row.insert(agg.alias.clone(), value);
             }
 
@@ -197,7 +219,7 @@ impl InMemoryQueryEngine {
         }
 
         let count = result_rows.len();
-        QueryResult {
+        Ok(QueryResult {
             rows: result_rows,
             metadata: ExecutionMetadata {
                 statements: Vec::new(),
@@ -215,7 +237,7 @@ impl InMemoryQueryEngine {
                 parameterized_query: None,
                 params: Vec::new(),
             },
-        }
+        })
     }
 }
 
@@ -250,6 +272,10 @@ impl ExprEvaluator {
             // SubQuery is not supported for in-memory evaluation; always false.
             Expr::SubQuery { .. } => false,
             // Function expressions are not boolean predicates in general.
+            Expr::Function {
+                function: teaql_core::ExprFunction::Identity,
+                args,
+            } if args.len() == 1 => Self::eval(&args[0], row),
             Expr::Function { .. } => false,
             // A bare column or value is truthy if it is a Bool(true).
             Expr::Column(_) | Expr::Value(_) | Expr::LikePattern { .. } => {
@@ -288,6 +314,10 @@ impl ExprEvaluator {
                 )
             }
             Expr::SubQuery { .. } => Value::Null,
+            Expr::Function {
+                function: teaql_core::ExprFunction::Identity,
+                args,
+            } if args.len() == 1 => Self::resolve(&args[0], row),
             Expr::Function { .. } => Value::Null,
         }
     }
@@ -405,7 +435,12 @@ fn compare_values(a: &Value, b: &Value) -> Ordering {
         (Value::U64(a), Value::I64(b)) => compare_i64_u64(*b, *a).reverse(),
         (Value::F64(a), Value::F64(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
         (Value::Decimal(a), Value::Decimal(b)) => a.cmp(b),
+        (Value::Decimal(a), Value::I64(b)) => a.cmp(&teaql_core::Decimal::from(*b)),
+        (Value::I64(a), Value::Decimal(b)) => teaql_core::Decimal::from(*a).cmp(b),
+        (Value::Decimal(a), Value::U64(b)) => a.cmp(&teaql_core::Decimal::from(*b)),
+        (Value::U64(a), Value::Decimal(b)) => teaql_core::Decimal::from(*a).cmp(b),
         (Value::Text(a), Value::Text(b)) => a.cmp(b),
+        (Value::Binary(a), Value::Binary(b)) => a.cmp(b),
         (Value::Date(a), Value::Date(b)) => a.cmp(b),
         (Value::Timestamp(a), Value::Timestamp(b)) => a.cmp(b),
         // Cross-type numeric comparisons via f64.
@@ -434,22 +469,13 @@ fn count_rows(rows: &[CompactRow], field: &str) -> Value {
 }
 
 /// Compute a single aggregate over a slice of rows.
-fn compute_aggregate(agg: &Aggregate, rows: &[CompactRow]) -> Value {
-    match agg.function {
+fn compute_aggregate(agg: &Aggregate, rows: &[CompactRow]) -> Result<Value, InMemoryQueryError> {
+    Ok(match agg.function {
         AggregateFunction::Count => count_rows(rows, &agg.field),
-        AggregateFunction::Sum => {
-            let mut sum: f64 = 0.0;
-            let mut found = false;
-            for row in rows {
-                if let Some(v) = row.get(&agg.field)
-                    && let Some(f) = v.try_f64()
-                {
-                    sum += f;
-                    found = true;
-                }
-            }
-            if found { Value::F64(sum) } else { Value::Null }
+        AggregateFunction::CountDistinct => {
+            count_distinct_values(rows.iter().filter_map(|row| row.get(&agg.field)))
         }
+        AggregateFunction::Sum => return sum::exact_sum(agg, rows),
         AggregateFunction::Avg => {
             let mut sum: f64 = 0.0;
             let mut count: u64 = 0;
@@ -507,13 +533,60 @@ fn compute_aggregate(agg: &Aggregate, rows: &[CompactRow]) -> Value {
         | AggregateFunction::BitAnd
         | AggregateFunction::BitOr
         | AggregateFunction::BitXor => Value::Null,
-    }
+    })
+}
+
+/// Distinct scalar observations, without a floating conversion of integers or
+/// exact Decimal values. Normalized Decimal scale must not create extra values.
+pub(crate) fn count_distinct_values<'a>(values: impl Iterator<Item = &'a Value>) -> Value {
+    let keys: std::collections::BTreeSet<String> = values
+        .filter_map(|value| {
+            Some(match value {
+                Value::Null | Value::TypedNull(_) => return None,
+                Value::Decimal(value) => format!("n:{}", value.normalize()),
+                Value::I64(value) => format!("n:{value}"),
+                Value::U64(value) => format!("n:{value}"),
+                Value::F64(value) if *value == 0.0 => "f:0".into(),
+                other => format!("{other:?}"),
+            })
+        })
+        .collect();
+    Value::I64(keys.len() as i64)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use teaql_core::{Aggregate, CompactRow, SelectQuery, Value};
+
+    #[test]
+    fn distinct_count_ignores_nulls_and_preserves_exact_numeric_identity() {
+        let values = [
+            Value::I64(i64::MAX),
+            Value::I64(i64::MAX - 1),
+            Value::I64(i64::MAX),
+            Value::Decimal("1.00".parse().unwrap()),
+            Value::Decimal("1.0".parse().unwrap()),
+            Value::Null,
+            Value::TypedNull(teaql_core::DataType::Decimal),
+        ];
+        let rows = values
+            .into_iter()
+            .map(|value| {
+                CompactRow::from_map(std::collections::BTreeMap::from([("amount".into(), value)]))
+            })
+            .collect();
+        let query = SelectQuery::new("Item").count_distinct("amount", "unique");
+        let result = InMemoryQueryEngine::execute(&query, rows).unwrap();
+        assert_eq!(result.rows[0].get("unique"), Some(&Value::I64(3)));
+        assert_eq!(
+            InMemoryQueryEngine::execute(&query, Vec::new())
+                .unwrap()
+                .rows[0]
+                .get("unique"),
+            Some(&Value::I64(0))
+        );
+    }
 
     fn make_row(pairs: Vec<(&str, Value)>) -> CompactRow {
         CompactRow::from_map(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
@@ -542,7 +615,8 @@ mod tests {
     #[test]
     fn test_execute_no_filter() {
         let query = SelectQuery::new("User");
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows.len(), 3);
         assert_eq!(result.metadata.backend, "memory");
     }
@@ -550,7 +624,8 @@ mod tests {
     #[test]
     fn test_execute_with_eq_filter() {
         let query = SelectQuery::new("User").filter(Expr::eq("name", "Bob"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(
             result.rows[0].get("name"),
@@ -561,14 +636,16 @@ mod tests {
     #[test]
     fn test_execute_with_gt_filter() {
         let query = SelectQuery::new("User").filter(Expr::gt("age", 28_i64));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows.len(), 2); // Alice(30) and Charlie(35)
     }
 
     #[test]
     fn test_sort_ascending() {
         let query = SelectQuery::new("User").order_by(teaql_core::OrderBy::asc("age"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         let ages: Vec<_> = result
             .rows
             .iter()
@@ -580,7 +657,8 @@ mod tests {
     #[test]
     fn test_sort_descending() {
         let query = SelectQuery::new("User").order_by(teaql_core::OrderBy::desc("age"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         let ages: Vec<_> = result
             .rows
             .iter()
@@ -592,7 +670,8 @@ mod tests {
     #[test]
     fn test_paginate() {
         let query = SelectQuery::new("User").page(1, 1);
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(
             result.rows[0].get("name"),
@@ -603,7 +682,8 @@ mod tests {
     #[test]
     fn test_projection() {
         let query = SelectQuery::new("User").projects(["name"]);
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         for row in &result.rows {
             assert!(row.contains_key("name"));
             assert!(!row.contains_key("id"));
@@ -614,7 +694,8 @@ mod tests {
     #[test]
     fn test_count_aggregate() {
         let query = SelectQuery::new("User").aggregate(Aggregate::count("total"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].get("total"), Some(&Value::I64(3)));
     }
@@ -622,28 +703,32 @@ mod tests {
     #[test]
     fn test_sum_aggregate() {
         let query = SelectQuery::new("User").aggregate(Aggregate::sum("age", "age_sum"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
-        assert_eq!(result.rows[0].get("age_sum"), Some(&Value::F64(90.0)));
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
+        assert_eq!(result.rows[0].get("age_sum"), Some(&Value::I64(90)));
     }
 
     #[test]
     fn test_avg_aggregate() {
         let query = SelectQuery::new("User").aggregate(Aggregate::avg("age", "age_avg"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows[0].get("age_avg"), Some(&Value::F64(30.0)));
     }
 
     #[test]
     fn test_max_aggregate() {
         let query = SelectQuery::new("User").aggregate(Aggregate::max("age", "age_max"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows[0].get("age_max"), Some(&Value::I64(35)));
     }
 
     #[test]
     fn test_min_aggregate() {
         let query = SelectQuery::new("User").aggregate(Aggregate::min("age", "age_min"));
-        let result = InMemoryQueryEngine::execute(&query, sample_rows());
+        let result =
+            InMemoryQueryEngine::execute(&query, sample_rows()).expect("valid in-memory query");
         assert_eq!(result.rows[0].get("age_min"), Some(&Value::I64(25)));
     }
 
@@ -719,5 +804,74 @@ mod tests {
 
         let expr_miss = Expr::in_list("status", vec![Value::Text("closed".to_owned())]);
         assert!(!ExprEvaluator::eval(&expr_miss, &row));
+    }
+
+    fn exact_domain_rows() -> Vec<CompactRow> {
+        vec![
+            make_row(vec![
+                ("bucket", Value::from("integer")),
+                ("amount", Value::U64(9_007_199_254_740_992)),
+            ]),
+            make_row(vec![
+                ("bucket", Value::from("decimal")),
+                (
+                    "amount",
+                    Value::Decimal("9007199254740992.01".parse().unwrap()),
+                ),
+            ]),
+        ]
+    }
+
+    #[test]
+    fn exact_sum_group_order_does_not_collapse_decimal_and_integer_domains() {
+        let query = SelectQuery::new("ExactGroups")
+            .comment("order exact aggregate domains")
+            .purpose("prevent large numeric grouping precision loss")
+            .group_by("bucket")
+            .aggregate(Aggregate::sum("amount", "total"))
+            .order_by(OrderBy::desc("total"))
+            .limit(1);
+        let result = InMemoryQueryEngine::execute(&query, exact_domain_rows()).unwrap();
+        assert_eq!(result.rows[0].get("bucket"), Some(&Value::from("decimal")));
+    }
+
+    #[test]
+    fn exact_sum_having_compares_decimal_total_against_integer_threshold_exactly() {
+        let query = SelectQuery::new("ExactGroups")
+            .comment("filter exact aggregate domains")
+            .purpose("preserve exact decimal HAVING thresholds")
+            .group_by("bucket")
+            .aggregate(Aggregate::sum("amount", "total"))
+            .having(Expr::gt("total", 9_007_199_254_740_992_i64));
+        let result = InMemoryQueryEngine::execute(&query, exact_domain_rows()).unwrap();
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("bucket"), Some(&Value::from("decimal")));
+    }
+
+    #[test]
+    fn exact_domain_min_max_order_is_independent_of_input_domain_order() {
+        let large = Value::Decimal("9007199254740992.01".parse().unwrap());
+        for small in [
+            Value::I64(9_007_199_254_740_992),
+            Value::U64(9_007_199_254_740_992),
+        ] {
+            for values in [
+                vec![small.clone(), large.clone()],
+                vec![large.clone(), small.clone()],
+            ] {
+                let query = SelectQuery::new("ExactGroups")
+                    .comment("compare exact numeric domains")
+                    .purpose("preserve MIN and MAX across integral and Decimal inputs")
+                    .aggregate(Aggregate::min("amount", "minimum"))
+                    .aggregate(Aggregate::max("amount", "maximum"));
+                let rows = values
+                    .into_iter()
+                    .map(|v| make_row(vec![("amount", v)]))
+                    .collect();
+                let result = InMemoryQueryEngine::execute(&query, rows).unwrap();
+                assert_eq!(result.rows[0].get("minimum"), Some(&small));
+                assert_eq!(result.rows[0].get("maximum"), Some(&large));
+            }
+        }
     }
 }

@@ -18,8 +18,9 @@ pub async fn create_example(
     let mut new_entity = Q::payment_attempts()
         .comment("what: Initialize a new entity instance")
         .purpose("why: Create a new entity instance")
-        .new_entity(context);
+        .new_entity(context)?;
 
+    // Identity has already been reserved; allocation failure returns an error.
     // 2. Set property values (replace dummy data with actual inputs)
     // new_entity.update_payment_id(/* input data */);
     // new_entity.update_reference_code(/* input data */);

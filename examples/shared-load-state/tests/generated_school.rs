@@ -8,6 +8,10 @@ use teaql_core::dynamic_fields::{
 use teaql_core::{Entity, TeaqlEntity, Value, time::Timestamp};
 use teaql_runtime::dynamic_fields::DatabaseDynamicFieldsProvider;
 
+#[path = "support/reserved_identity.rs"]
+mod reserved_identity;
+use reserved_identity::ReservedExampleIdentity as _;
+
 #[path = "support/checker_allocations.rs"]
 mod allocation_counter;
 #[path = "support/checker_state.rs"]
@@ -104,7 +108,7 @@ async fn generated_school_flow() -> Result<(), Box<dyn std::error::Error>> {
         let mut school = Q::schools()
             .comment("what: allocate a load-state probe School")
             .purpose("why: exercise the generated mutation and Checker contracts")
-            .new_entity(&context);
+            .new_entity(&context).expect("reserve example identity");
         school.update_platform_id(1_u64);
         school.update_school_type_to_primary();
         school.update_name(name.as_str());

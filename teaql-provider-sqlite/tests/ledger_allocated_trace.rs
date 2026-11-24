@@ -1064,12 +1064,14 @@ fn database_allocated_explicit_transaction_delivers_audit_only_after_commit() {
         let saved = context
             .execute_in_transaction::<Executor, _, _>(|transaction| {
                 Box::pin(async move {
-                    let saved = transaction
-                        .save_audited(
-                            new_root(0, "explicit database root")
-                                .audit_as("explicit root allocation"),
-                        )
-                        .await?;
+                    let save = transaction.save_audited(
+                        new_root(0, "explicit database root").audit_as("explicit root allocation"),
+                    );
+                    assert!(
+                        std::mem::size_of_val(&save) <= 16 * 1024,
+                        "one small entity must not embed the entire provider save future"
+                    );
+                    let saved = save.await?;
                     assert_eq!(saved.id, 501);
                     assert!(capture_in_work.audits.lock().unwrap().is_empty());
                     Ok(saved)
@@ -1161,15 +1163,13 @@ async fn blank_local_context(logging: bool) -> (UserContext, Capture, SqliteMuta
         parent("PaymentAttempt", "payment"),
         parent("Shipment", "customer_order"),
     ];
-    let directory = std::env::temp_dir().join(format!(
-        "teaql-rust-blank-local-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&directory).unwrap();
+    // Atomically allocate the directory: parallel tests can share a clock tick.
+    // Keep the database for the outer evidence owner, which cleans its scratch.
+    let directory = tempfile::Builder::new()
+        .prefix("teaql-rust-blank-local-")
+        .tempdir()
+        .expect("unique SQLite trace fixture directory")
+        .keep();
     let database = directory.join("trace.sqlite");
     let transport =
         SqliteMutationExecutor::from_connection(rusqlite::Connection::open(&database).unwrap());

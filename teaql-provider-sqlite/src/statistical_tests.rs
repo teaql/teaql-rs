@@ -1,0 +1,2882 @@
+use super::*;
+use teaql_core::aggregation_plan::StatisticalPlan;
+use teaql_core::{BinaryOp, PropertyDescriptor as P, RelationDescriptor as R, SelectQuery};
+
+fn descriptors() -> Vec<EntityDescriptor> {
+    vec![
+        EntityDescriptor::new("School")
+            .table_name("legacy_school")
+            .property(P::new("id", DataType::I64).id())
+            .property(P::new("capacity", DataType::I64).column_name("Legacy Capacity"))
+            .property(P::new("kind_id", DataType::I64).column_name("Legacy Kind Key"))
+            .relation(R::new("kind", "Kind").local_key("kind_id")),
+        EntityDescriptor::new("Kind")
+            .table_name("legacy_kind")
+            .property(P::new("id", DataType::I64).id())
+            .property(P::new("label", DataType::Text).column_name("Legacy Kind Label"))
+            .property(P::new("ordinal", DataType::I64))
+            .property(P::new("platform_id", DataType::I64))
+            .relation(R::new("platform", "Platform").local_key("platform_id")),
+        EntityDescriptor::new("Platform")
+            .table_name("legacy_platform")
+            .property(P::new("id", DataType::I64).id())
+            .property(P::new("name", DataType::Text)),
+    ]
+}
+
+fn executor() -> SqliteMutationExecutor {
+    let connection = Connection::open_in_memory().unwrap();
+    connection.execute_batch(
+        "CREATE TABLE legacy_school(id INTEGER PRIMARY KEY, \"Legacy Capacity\" INTEGER, \"Legacy Kind Key\" INTEGER);
+         CREATE TABLE legacy_kind(id INTEGER PRIMARY KEY, \"Legacy Kind Label\" TEXT, ordinal INTEGER, platform_id INTEGER);
+         CREATE TABLE legacy_platform(id INTEGER PRIMARY KEY, name TEXT);
+         INSERT INTO legacy_platform VALUES(1,'Campus');
+         INSERT INTO legacy_kind VALUES(1001,'shared',1,1),(1002,'shared',2,1);
+         INSERT INTO legacy_school VALUES(1,800,1001),(2,800,1001),(3,800,1001),(4,800,1001),(5,100,1002);"
+    ).unwrap();
+    SqliteMutationExecutor::from_connection(connection)
+}
+
+#[test]
+fn binary_results_sqlite_bind_decode_preserves_null_empty_and_arbitrary_bytes() {
+    use teaql_sql::SqlTransport;
+    let transport = executor();
+    for value in [
+        Value::Null,
+        Value::Binary(vec![]),
+        Value::Binary(vec![0, 0xff, 0x27]),
+        Value::Binary(vec![0xb0, 0xa2]),
+    ] {
+        let query = teaql_sql::CompiledQuery {
+            sql: "SELECT ? AS encoded".into(),
+            params: vec![value.clone()],
+            comment: None,
+            log_context: Default::default(),
+        };
+        for _ in 0..2 {
+            let rows = futures_executor::block_on(transport.fetch_all_compact_sql(&query)).unwrap();
+            assert_eq!(rows[0].get("encoded"), Some(&value));
+        }
+    }
+}
+
+#[test]
+fn binary_results_gbk_grouping_ordinary_and_parent_cells_keep_bytes_and_grains() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE legacy_kind SET \"Legacy Kind Label\"='中' WHERE id=1001;
+         UPDATE legacy_kind SET \"Legacy Kind Label\"='阿' WHERE id=1002;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let ordinary = SelectQuery::new("Kind")
+        .group_by_expr("encoded", Expr::gbk(Expr::column("label")))
+        .count("types")
+        .order_asc("encoded")
+        .limit(10)
+        .comment("Read binary GBK grouping cells without UTF8 coercion");
+    let parent = SelectQuery::new("Kind")
+        .group_by_expr("encoded", Expr::gbk(Expr::column("label")))
+        .count("types")
+        .having(Expr::eq("encoded", Value::Binary(vec![0xb0, 0xa2])))
+        .order_asc("encoded")
+        .limit(1);
+    for _ in 0..2 {
+        let rows = fetch(&context, ordinary.clone()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].get("encoded"),
+            Some(&Value::Binary(vec![0xb0, 0xa2]))
+        );
+        assert_eq!(
+            rows[1].get("encoded"),
+            Some(&Value::Binary(vec![0xd6, 0xd0]))
+        );
+        let rows = fetch(&context, source(parent.clone())).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rollup_object(&rows[0], "kind").get("encoded"),
+            Some(&Value::Binary(vec![0xb0, 0xa2]))
+        );
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+        assert_eq!(rows[0].get("total"), Some(&Value::I64(100)));
+    }
+}
+
+#[test]
+fn binary_results_gbk_null_and_empty_grouping_keys_are_distinct() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE legacy_kind SET \"Legacy Kind Label\"=NULL WHERE id=1001;
+         UPDATE legacy_kind SET \"Legacy Kind Label\"='' WHERE id=1002;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let query = SelectQuery::new("Kind")
+        .group_by_expr("encoded", Expr::gbk(Expr::column("label")))
+        .count("types")
+        .order_asc("encoded")
+        .limit(10)
+        .comment("Distinguish NULL from empty binary grouping keys");
+    for _ in 0..2 {
+        let rows = fetch(&context, query.clone()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("encoded"), Some(&Value::Null));
+        assert_eq!(rows[1].get("encoded"), Some(&Value::Binary(vec![])));
+        assert_eq!(rows[0].get("types"), Some(&Value::I64(1)));
+        assert_eq!(rows[1].get("types"), Some(&Value::I64(1)));
+    }
+}
+
+#[test]
+fn layered_expression_measures_keep_owner_grain_and_parent_result_bounds() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("platform_id")
+        .project_expr(
+            "ranks",
+            Expr::sum_expr(Expr::identity(Expr::column("ordinal"))),
+        )
+        .project_expr(
+            "parentXor",
+            Expr::bit_xor_expr(Expr::identity(Expr::column("id"))),
+        )
+        .having(Expr::eq("ranks", 3_i64))
+        .order_desc("ranks")
+        .limit(1)
+        .comment("Filter completed parent expression measures");
+    let query = SelectQuery::new("School")
+        .project_expr("schools", Expr::count_all())
+        .project_expr(
+            "capacity",
+            Expr::sum_expr(Expr::identity(Expr::column("capacity"))),
+        )
+        .project_expr(
+            "mean",
+            Expr::avg_expr(Expr::identity(Expr::column("capacity"))),
+        )
+        .object_group_by("kind", "kind_id", parent)
+        .having(Expr::eq("capacity", 3300_i64))
+        .order_desc("kind.parentXor")
+        .limit(1)
+        .comment("Execute aggregate expression projections at their original owner grain");
+    for _ in 0..2 {
+        let rows = fetch(&context, query.clone()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(5));
+        assert_eq!(rows[0].get("capacity").and_then(Value::try_i64), Some(3300));
+        assert_eq!(rows[0].get("mean").and_then(Value::try_f64), Some(660.0));
+        let parent = rollup_object(&rows[0], "kind");
+        assert_eq!(parent.get("ranks").and_then(Value::try_i64), Some(3));
+        assert_eq!(parent.get("parentXor").and_then(Value::try_i64), Some(3));
+    }
+}
+
+#[test]
+fn layered_expression_operators_compute_from_distinct_owner_observations() {
+    use teaql_core::ExprFunction as F;
+    let context = runtime_context(executor(), policy(false, false));
+    for (function, expected) in [
+        (F::Count, 2.0),
+        (F::CountDistinct, 2.0),
+        (F::Sum, 3.0),
+        (F::Min, 1.0),
+        (F::Max, 2.0),
+        (F::Avg, 1.5),
+        (F::Stddev, 0.5_f64.sqrt()),
+        (F::StddevPop, 0.5),
+        (F::VarSamp, 0.5),
+        (F::VarPop, 0.25),
+        (F::BitAnd, 0.0),
+        (F::BitOr, 3.0),
+        (F::BitXor, 3.0),
+    ] {
+        let parent = SelectQuery::new("Kind")
+            .group_by("platform_id")
+            .project_expr(
+                "computed",
+                Expr::function(function, [Expr::identity(Expr::column("ordinal"))]),
+            );
+        let rows = fetch(&context, source(parent)).unwrap();
+        assert_eq!(rows.len(), 1);
+        let value = rollup_object(&rows[0], "kind").get("computed").unwrap();
+        assert!(
+            (value.try_f64().unwrap() - expected).abs() < 1e-10,
+            "{function:?}: {value:?}"
+        );
+        if matches!(
+            function,
+            F::Count | F::CountDistinct | F::BitAnd | F::BitOr | F::BitXor
+        ) {
+            assert!(matches!(value, Value::I64(_)));
+        }
+    }
+}
+
+#[test]
+fn layered_expression_parameters_preserve_nulls_and_do_not_follow_child_fanout() {
+    use teaql_core::ExprFunction as F;
+    let context = runtime_context(executor(), policy(false, false));
+    for function in [
+        F::Count,
+        F::CountDistinct,
+        F::Sum,
+        F::Avg,
+        F::Min,
+        F::Max,
+        F::Stddev,
+        F::StddevPop,
+        F::VarSamp,
+        F::VarPop,
+        F::BitAnd,
+        F::BitOr,
+        F::BitXor,
+    ] {
+        for empty in [false, true] {
+            let parent = SelectQuery::new("Kind").project_expr(
+                "computed",
+                Expr::function(
+                    function,
+                    [Expr::identity(Expr::value(Value::TypedNull(DataType::I64)))],
+                ),
+            );
+            let mut query = source(parent);
+            if empty {
+                query = query.filter(Expr::lt("id", 0));
+            }
+            let rows = fetch(&context, query).unwrap();
+            assert_eq!(rows.len(), 1);
+            let value = rollup_object(&rows[0], "kind").get("computed").unwrap();
+            assert_eq!(
+                value,
+                &if matches!(function, F::Count | F::CountDistinct) {
+                    Value::I64(0)
+                } else {
+                    Value::Null
+                }
+            );
+        }
+    }
+    let parent =
+        SelectQuery::new("Kind").project_expr("perType", Expr::sum_expr(Expr::value(7_i64)));
+    let rows = fetch(
+        &context,
+        source(parent).project_expr("perSchool", Expr::sum_expr(Expr::value(3_i64))),
+    )
+    .unwrap();
+    assert_eq!(rows[0].get("perSchool"), Some(&Value::I64(15)));
+    assert_eq!(
+        rollup_object(&rows[0], "kind").get("perType"),
+        Some(&Value::I64(14))
+    );
+}
+
+#[test]
+fn layered_expression_text_transforms_and_decimal_literals_keep_exact_results() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .project_expr(
+            "labels",
+            Expr::count_distinct(Expr::soundex(Expr::column("label"))),
+        )
+        .project_expr(
+            "decimal",
+            Expr::sum_expr(Expr::identity(Expr::value(Decimal::new(1, 9)))),
+        )
+        .project_expr("caption", Expr::min_expr(Expr::value("owner")));
+    let rows = fetch(&context, source(parent)).unwrap();
+    let row = rollup_object(&rows[0], "kind");
+    assert_eq!(row.get("labels"), Some(&Value::I64(1)));
+    assert_eq!(
+        row.get("decimal"),
+        Some(&Value::Decimal(Decimal::new(2, 9)))
+    );
+    assert_eq!(row.get("caption"), Some(&Value::from("owner")));
+}
+
+#[test]
+fn layered_expression_decimal_field_min_max_sum_and_having_are_not_textual() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch("UPDATE legacy_kind SET ordinal=CASE id WHEN 1001 THEN 2 ELSE 10 END")
+        .unwrap();
+    let mut entities = descriptors();
+    entities[1]
+        .properties
+        .iter_mut()
+        .find(|p| p.name == "ordinal")
+        .unwrap()
+        .data_type = DataType::Decimal;
+    let metadata = entities.into_iter().fold(
+        teaql_runtime::InMemoryMetadataStore::new(),
+        |store, entity| store.with_entity(entity),
+    );
+    let service =
+        teaql_sql::SqlDataServiceExecutor::new(SqliteDialect, transport, metadata.clone());
+    let mut context = UserContext::new()
+        .with_metadata(metadata)
+        .with_request_policy(policy(false, false));
+    context.register_executor(service);
+    let parent = SelectQuery::new("Kind")
+        .group_by("platform_id")
+        .project_expr(
+            "minimum",
+            Expr::min_expr(Expr::identity(Expr::column("ordinal"))),
+        )
+        .project_expr(
+            "maximum",
+            Expr::max_expr(Expr::identity(Expr::column("ordinal"))),
+        )
+        .project_expr(
+            "total",
+            Expr::sum_expr(Expr::identity(Expr::column("ordinal"))),
+        )
+        .having(Expr::gt("maximum", Decimal::new(9, 0)))
+        .order_desc("total")
+        .limit(1);
+    let rows = fetch(&context, source(parent)).unwrap();
+    let row = rollup_object(&rows[0], "kind");
+    for (key, value) in [("minimum", 2), ("maximum", 10), ("total", 12)] {
+        assert_eq!(row.get(key), Some(&Value::Decimal(Decimal::new(value, 0))));
+    }
+}
+
+#[test]
+fn bitwise_field_types_fail_before_sql_for_ordinary_and_layered_statistics() {
+    for data_type in [
+        DataType::Bool,
+        DataType::F64,
+        DataType::Decimal,
+        DataType::Text,
+        DataType::LargeText,
+        DataType::Json,
+        DataType::Date,
+        DataType::Timestamp,
+    ] {
+        let transport = executor();
+        transport
+            .connection()
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TABLE legacy_kind")
+            .unwrap();
+        let mut entities = descriptors();
+        entities
+            .iter_mut()
+            .find(|d| d.name == "Kind")
+            .unwrap()
+            .properties
+            .iter_mut()
+            .find(|p| p.name == "label")
+            .unwrap()
+            .data_type = data_type;
+        let metadata = entities.into_iter().fold(
+            teaql_runtime::InMemoryMetadataStore::new(),
+            |store, descriptor| store.with_entity(descriptor),
+        );
+        let service =
+            teaql_sql::SqlDataServiceExecutor::new(SqliteDialect, transport, metadata.clone());
+        let mut context = UserContext::new()
+            .with_metadata(metadata)
+            .with_request_policy(policy(false, false));
+        context.register_executor(service);
+        for function in [
+            AggregateFunction::BitAnd,
+            AggregateFunction::BitOr,
+            AggregateFunction::BitXor,
+        ] {
+            let parent = SelectQuery::new("Kind")
+                .aggregate(Aggregate::new(function, "label", "bits"))
+                .comment("Reject invalid modeled bitwise operands");
+            for query in [parent.clone(), source(parent)] {
+                let error = fetch(&context, query).unwrap_err();
+                assert!(
+                    error.contains("bitwise aggregate requires an integer field"),
+                    "{data_type:?}: {error}"
+                );
+                assert!(!error.contains("no such table"), "{error}");
+                assert!(!error.contains("Legacy Kind Label"), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
+fn bitwise_expression_fields_and_identity_wrappers_fail_before_sql() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch("DROP TABLE legacy_kind")
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    for function in [
+        teaql_core::ExprFunction::BitAnd,
+        teaql_core::ExprFunction::BitOr,
+        teaql_core::ExprFunction::BitXor,
+    ] {
+        for depth in [0, 1, 2, 16] {
+            let mut operand = Expr::column("label");
+            for _ in 0..depth {
+                operand = Expr::identity(operand);
+            }
+            let query = SelectQuery::new("Kind")
+                .project_expr("bits", Expr::function(function, [operand]))
+                .comment("Reject invalid bitwise expression operands before SQL");
+            let error = fetch(&context, query).unwrap_err();
+            assert!(
+                error.contains("bitwise aggregate requires an integer field"),
+                "{error}"
+            );
+            assert!(!error.contains("no such table"), "{error}");
+        }
+    }
+}
+
+#[test]
+fn bitwise_expression_parameters_keep_exact_bounds_and_typed_nulls() {
+    let context = runtime_context(executor(), policy(false, false));
+    for function in [
+        teaql_core::ExprFunction::BitAnd,
+        teaql_core::ExprFunction::BitOr,
+        teaql_core::ExprFunction::BitXor,
+    ] {
+        for value in [
+            Value::I64(i64::MIN),
+            Value::I64(i64::MAX),
+            Value::U64(9_007_199_254_740_993),
+            Value::Null,
+            Value::TypedNull(DataType::I64),
+        ] {
+            let expected = match value.try_i64() {
+                Some(_) if function == teaql_core::ExprFunction::BitXor => Value::I64(0),
+                Some(value) => Value::I64(value),
+                None => Value::Null,
+            };
+            let query = SelectQuery::new("Kind")
+                .project_expr(
+                    "bits",
+                    Expr::function(
+                        function,
+                        [Expr::identity(Expr::identity(Expr::value(value)))],
+                    ),
+                )
+                .comment("Compute exact integer parameter aggregates without coercion");
+            let rows = fetch(&context, query).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("bits"), Some(&expected));
+        }
+    }
+}
+
+fn execute(executor: &SqliteMutationExecutor, query: SelectQuery) -> Vec<CompactRow> {
+    let descriptors = descriptors();
+    let plan = StatisticalPlan::build(&query, |name| {
+        descriptors
+            .iter()
+            .find(|descriptor| descriptor.name == name)
+    })
+    .unwrap();
+    let compiled = teaql_sql::compile_statistical_plan(&SqliteDialect, &plan).unwrap();
+    futures_executor::block_on(executor.fetch_all_compact_sql(&compiled)).unwrap()
+}
+
+fn source(parent: SelectQuery) -> SelectQuery {
+    SelectQuery::new("School")
+        .aggregate(Aggregate::count("schools"))
+        .aggregate(Aggregate::sum("capacity", "total"))
+        .aggregate(Aggregate::avg("capacity", "mean"))
+        .group_by("kind_id")
+        .object_group_by("kind", "kind_id", parent)
+        .comment("Count school observations at the final parent dimension")
+        .purpose("Validate metadata-bound roll-up SQL against independent totals")
+}
+
+#[test]
+fn layered_rollup_grouped_parent_merges_source_counts_and_weighted_average() {
+    let rows = execute(
+        &executor(),
+        source(SelectQuery::new("Kind").group_by("label")),
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("__teaql_d0"), Some(&Value::from("shared")));
+    assert_eq!(rows[0].get("__teaql_m0"), Some(&Value::I64(5)));
+    assert_eq!(rows[0].get("__teaql_m1"), Some(&Value::I64(3300)));
+    // Mean of the two per-kind averages is 450, not the correct 660.
+    assert_eq!(rows[0].get("__teaql_m2"), Some(&Value::F64(660.0)));
+}
+
+#[test]
+fn layered_rollup_distinct_counts_use_final_population_not_intermediate_totals() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch("INSERT INTO legacy_school VALUES(6,800,1002),(7,NULL,1002);")
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .count_distinct("label", "labels")
+        .having(Expr::eq("labels", 1));
+    let query = source(parent)
+        .count_distinct("capacity", "capacities")
+        .having(Expr::eq("capacities", 2))
+        .order_by(teaql_core::OrderBy::desc("capacities"));
+    for _ in 0..2 {
+        let result = fetch(&context, query.clone()).unwrap();
+        assert_eq!(result.len(), 1);
+        let row = &result[0];
+        assert_eq!(row.get("schools").and_then(Value::try_i64), Some(7));
+        assert_eq!(row.get("capacities").and_then(Value::try_i64), Some(2));
+        let Some(Value::Object(parent)) = row.get("kind") else {
+            panic!("missing parent measures")
+        };
+        assert_eq!(parent.get("labels").and_then(Value::try_i64), Some(1));
+    }
+}
+
+#[test]
+fn layered_rollup_distinct_count_empty_null_and_ordinary_having() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch("INSERT INTO legacy_school VALUES(7,NULL,1002);")
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    for (id, expected_parent) in [(7, 1), (999, 0)] {
+        let parent = SelectQuery::new("Kind").count_distinct("label", "labels");
+        let query = source(parent)
+            .count_distinct("capacity", "capacities")
+            .and_filter(Expr::eq("id", id));
+        let result = fetch(&context, query).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].get("capacities").and_then(Value::try_i64),
+            Some(0)
+        );
+        let Some(Value::Object(parent)) = result[0].get("kind") else {
+            panic!("missing parent measures")
+        };
+        assert_eq!(
+            parent.get("labels").and_then(Value::try_i64),
+            Some(expected_parent)
+        );
+    }
+    let ordinary = SelectQuery::new("School")
+        .count_distinct("capacity", "capacities")
+        .having(Expr::eq("capacities", 2))
+        .comment("Count distinct mapped capacities")
+        .purpose("Verify ordinary statistical HAVING");
+    let result = fetch(&context, ordinary.clone()).unwrap();
+    assert_eq!(
+        result[0].get("capacities").and_then(Value::try_i64),
+        Some(2)
+    );
+    assert!(
+        fetch(&context, ordinary.having(Expr::gt("capacities", 2)))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn layered_rollup_function_dimension_merges_distinct_source_values() {
+    let transport = executor();
+    transport.connection().lock().unwrap().execute_batch(
+        "UPDATE legacy_kind SET \"Legacy Kind Label\"=CASE id WHEN 1001 THEN 'Robert' ELSE 'Rupert' END;"
+    ).unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("phonetic")
+        .project_expr("phonetic", Expr::soundex(Expr::column("label")))
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .having(Expr::eq("phonetic", "R163"))
+        .order_asc("phonetic")
+        .limit(1);
+    for _ in 0..2 {
+        let rows = fetch(&context, source(parent.clone())).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(5));
+        assert_eq!(rows[0].get("total").and_then(Value::try_i64), Some(3300));
+        let Some(Value::Object(kind)) = rows[0].get("kind") else {
+            panic!("missing parent")
+        };
+        assert_eq!(kind.get("phonetic"), Some(&Value::from("R163")));
+        assert_eq!(kind.get("kinds").and_then(Value::try_i64), Some(2));
+        assert_eq!(kind.get("ordinalTotal").and_then(Value::try_i64), Some(3));
+        assert!(!kind.contains_key("label"));
+    }
+}
+
+#[test]
+fn layered_rollup_multihop_function_dimension_keeps_owner_grains() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE legacy_platform SET name='Robert' WHERE id=1;
+         INSERT INTO legacy_platform VALUES(2,'Rupert');
+         UPDATE legacy_kind SET platform_id=2 WHERE id=1002;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let platform = SelectQuery::new("Platform")
+        .group_by("phonetic")
+        .project_expr("phonetic", Expr::soundex(Expr::column("name")))
+        .count("platforms");
+    let parent = SelectQuery::new("Kind")
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .group_by("platform_id")
+        .object_group_by("platform", "platform_id", platform);
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(5));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing parent")
+    };
+    assert_eq!(kind.get("kinds").and_then(Value::try_i64), Some(2));
+    assert_eq!(kind.get("ordinalTotal").and_then(Value::try_i64), Some(3));
+    let Some(Value::Object(platform)) = kind.get("platform") else {
+        panic!("missing grandparent")
+    };
+    assert_eq!(platform.get("phonetic"), Some(&Value::from("R163")));
+    assert_eq!(platform.get("platforms").and_then(Value::try_i64), Some(2));
+}
+
+#[test]
+fn ordinary_function_grouping_uses_the_transformed_key_and_having() {
+    let transport = executor();
+    transport.connection().lock().unwrap().execute_batch(
+        "UPDATE legacy_kind SET \"Legacy Kind Label\"=CASE id WHEN 1001 THEN 'Robert' ELSE 'Rupert' END;"
+    ).unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let request = SelectQuery::new("Kind")
+        .group_by_expr("phonetic", Expr::soundex(Expr::column("label")))
+        .count("kinds")
+        .having(Expr::eq("phonetic", "R163"))
+        .order_asc("phonetic")
+        .limit(1)
+        .comment("Group transformed parent labels without a roll-up");
+    let rows = fetch(&context, request).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("phonetic"), Some(&Value::from("R163")));
+    assert_eq!(rows[0].get("kinds").and_then(Value::try_i64), Some(2));
+    assert!(!rows[0].contains_key("label"));
+}
+
+#[test]
+fn identity_grouping_preserves_legacy_values_aliases_having_and_cell_page() {
+    let context = runtime_context(executor(), policy(false, false));
+    let ordinary = SelectQuery::new("School")
+        .group_by_expr("bucket", Expr::identity(Expr::column("capacity")))
+        .count("schools")
+        .having(Expr::gte("bucket", 100))
+        .order_desc("bucket")
+        .offset(1)
+        .limit(1)
+        .comment("Group mapped capacity without converting its value")
+        .purpose("Verify Java SELF equivalent on ordinary statistics");
+    let parent = SelectQuery::new("Kind")
+        .group_by_expr("rank", Expr::identity(Expr::column("ordinal")))
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .having(Expr::gte("rank", 1))
+        .order_desc("ordinal")
+        .limit(1)
+        .comment("Page completed identity groups, not school rows");
+    let multi = SelectQuery::new("Kind")
+        .count("kinds")
+        .sum("ordinal", "ordinalTotal")
+        .group_by("platform_id")
+        .object_group_by(
+            "platform",
+            "platform_id",
+            SelectQuery::new("Platform")
+                .group_by_expr("caption", Expr::identity(Expr::column("name")))
+                .count("platforms")
+                .order_asc("name")
+                .comment("Keep the platform name unchanged"),
+        );
+    for _ in 0..2 {
+        let rows = fetch(&context, ordinary.clone()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("bucket"), Some(&Value::I64(100)));
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+        assert!(!rows[0].contains_key("capacity"));
+        let rows = fetch(&context, source(parent.clone())).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+        let Some(Value::Object(kind)) = rows[0].get("kind") else {
+            panic!("missing parent")
+        };
+        assert_eq!(kind.get("rank"), Some(&Value::I64(2)));
+        assert_eq!(kind.get("kinds"), Some(&Value::I64(1)));
+        assert!(!kind.contains_key("ordinal"));
+        let rows = fetch(&context, source(multi.clone())).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
+        let Some(Value::Object(kind)) = rows[0].get("kind") else {
+            panic!("missing parent")
+        };
+        assert_eq!(kind.get("kinds"), Some(&Value::I64(2)));
+        assert_eq!(kind.get("ordinalTotal"), Some(&Value::I64(3)));
+        let Some(Value::Object(platform)) = kind.get("platform") else {
+            panic!("missing grandparent")
+        };
+        assert_eq!(platform.get("caption"), Some(&Value::from("Campus")));
+        assert_eq!(platform.get("platforms"), Some(&Value::I64(1)));
+    }
+}
+
+#[test]
+fn identity_grouping_retains_null_and_large_integer_cells() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE legacy_school SET \"Legacy Capacity\"=9007199254740993 WHERE id<=4;
+         UPDATE legacy_school SET \"Legacy Capacity\"=NULL WHERE id=5;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let base = SelectQuery::new("School")
+        .group_by_expr("bucket", Expr::identity(Expr::column("capacity")))
+        .count("schools")
+        .order_desc("capacity")
+        .comment("Keep null and large integer identity groups")
+        .purpose("Reject lossy floating point coercion");
+    for request in [
+        base.clone(),
+        base.object_group_by("kind", "kind_id", SelectQuery::new("Kind").count("kinds")),
+    ] {
+        let rows = fetch(&context, request).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].get("bucket"),
+            Some(&Value::I64(9_007_199_254_740_993))
+        );
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+        assert_eq!(rows[1].get("bucket"), Some(&Value::Null));
+        assert_eq!(rows[1].get("schools"), Some(&Value::I64(1)));
+    }
+}
+
+#[test]
+fn layered_order_matches_selected_expressions_not_source_population() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind").group_by("ordinal").count("kinds");
+    let request = source(parent)
+        .order_by(teaql_core::OrderBy::desc_expr(Expr::sum_expr(
+            Expr::column("capacity"),
+        )))
+        .limit(1);
+    let result = fetch(&context, request).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].get("schools"), Some(&Value::I64(4)));
+    assert_eq!(result[0].get("total"), Some(&Value::I64(3200)));
+}
+
+#[test]
+fn non_text_gbk_is_rejected_before_sql_not_silently_coerced() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("DROP TABLE legacy_kind", [])
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let query = SelectQuery::new("Kind")
+        .group_by("label")
+        .count("types")
+        .order_gbk_asc("types")
+        .limit(1)
+        .comment("Reject non-text GBK operands")
+        .purpose("Prove typed sorting fails before the missing table");
+    let error = fetch(&context, query).unwrap_err();
+    assert!(error.contains("text"), "{error}");
+    assert!(!error.contains("no such table"), "{error}");
+}
+
+#[test]
+fn gbk_orders_ordinary_parent_and_final_cells_by_encoded_bytes() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "UPDATE legacy_kind SET \"Legacy Kind Label\"='中' WHERE id=1001;
+         UPDATE legacy_kind SET \"Legacy Kind Label\"='阿' WHERE id=1002;
+         INSERT INTO legacy_kind VALUES(1003,'文',3,1),(1004,NULL,4,1);
+         INSERT INTO legacy_school VALUES(6,50,1003);",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let ordinary = SelectQuery::new("Kind")
+        .group_by_expr("caption", Expr::identity(Expr::column("label")))
+        .count("types")
+        .filter(Expr::is_not_null("label"))
+        .order_gbk_asc("caption")
+        .comment("Order completed Chinese cells using their GBK bytes")
+        .limit(2);
+    for _ in 0..2 {
+        let rows = fetch(&context, ordinary.clone()).unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.get("caption").unwrap().clone())
+                .collect::<Vec<_>>(),
+            vec![Value::from("阿"), Value::from("文")]
+        );
+        let descending = fetch(
+            &context,
+            SelectQuery::new("Kind")
+                .group_by("label")
+                .filter(Expr::is_not_null("label"))
+                .count("types")
+                .order_gbk_desc("label")
+                .offset(1)
+                .comment("Page completed Chinese cells in reverse GBK order")
+                .limit(1),
+        )
+        .unwrap();
+        assert_eq!(descending[0].get("label"), Some(&Value::from("文")));
+        let parent = SelectQuery::new("Kind")
+            .group_by("label")
+            .count("types")
+            .order_gbk_asc("label")
+            .offset(1)
+            .limit(1);
+        let rows = fetch(&context, source(parent)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rollup_object(&rows[0], "kind").get("label"),
+            Some(&Value::from("文"))
+        );
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+        assert_eq!(rows[0].get("total"), Some(&Value::I64(50)));
+        let rows = fetch(
+            &context,
+            source(SelectQuery::new("Kind").group_by("label").count("types"))
+                .order_gbk_asc("kind.label")
+                .limit(1),
+        )
+        .unwrap();
+        assert_eq!(
+            rollup_object(&rows[0], "kind").get("label"),
+            Some(&Value::from("阿"))
+        );
+        assert_eq!(rows[0].get("total"), Some(&Value::I64(100)));
+        let rows = fetch(
+            &context,
+            SelectQuery::new("Kind")
+                .group_by("label")
+                .filter(Expr::is_null("label"))
+                .count("types")
+                .comment("Keep null GBK keys distinct from empty text")
+                .order_gbk_asc("label"),
+        )
+        .unwrap();
+        assert_eq!(rows[0].get("label"), Some(&Value::Null));
+        assert_eq!(rows[0].get("types"), Some(&Value::I64(1)));
+    }
+}
+
+#[test]
+fn expression_measure_order_uses_selected_ast_at_source_and_parent_grain() {
+    let context = runtime_context(executor(), policy(false, false));
+    let total = Expr::sum_expr(Expr::identity(Expr::column("capacity")));
+    let parent_total = Expr::sum_expr(Expr::identity(Expr::column("ordinal")));
+    let parent = SelectQuery::new("Kind")
+        .group_by("ordinal")
+        .project_expr("rankTotal", parent_total.clone());
+    let base = SelectQuery::new("School")
+        .count("schools")
+        .project_expr("computed", total.clone())
+        .object_group_by("kind", "kind_id", parent.clone())
+        .limit(1)
+        .comment("Order the selected expression, not its inferred field")
+        .purpose("Keep source and parent statistical ordering at their owner grain");
+    for query in [
+        base.clone().order_expr_desc(total),
+        base.order_desc("computed"),
+    ] {
+        let original = query.clone();
+        for _ in 0..2 {
+            let rows = fetch(&context, query.clone()).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("computed"), Some(&Value::I64(3200)));
+            assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+            assert_eq!(query, original);
+        }
+    }
+    for parent in [
+        parent.clone().order_expr_desc(parent_total).limit(1),
+        parent.order_desc("rankTotal").limit(1),
+    ] {
+        let query = source(parent);
+        let original = query.clone();
+        for _ in 0..2 {
+            let rows = fetch(&context, query.clone()).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+            let Some(Value::Object(kind)) = rows[0].get("kind") else {
+                panic!("missing parent");
+            };
+            assert_eq!(kind.get("rankTotal"), Some(&Value::I64(2)));
+            assert_eq!(query, original);
+        }
+    }
+}
+
+#[test]
+fn expression_measure_order_rejects_ambiguous_or_different_ast_before_sql() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("DROP TABLE legacy_school", [])
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let selected = Expr::sum_expr(Expr::identity(Expr::value(3_i64)));
+    let base = SelectQuery::new("School")
+        .project_expr("first", selected.clone())
+        .limit(1)
+        .comment("Reject an unselected or ambiguous aggregate expression")
+        .purpose("Validate completed result bindings before contacting the database");
+    for (query, message) in [
+        (
+            base.clone()
+                .project_expr("second", selected.clone())
+                .order_expr_desc(selected),
+            "ambiguous statistical order",
+        ),
+        (
+            base.order_expr_desc(Expr::sum_expr(Expr::identity(Expr::value(4_i64)))),
+            "not a selected statistical result",
+        ),
+    ] {
+        let original = query.clone();
+        let error = fetch(&context, query.clone()).unwrap_err();
+        assert!(error.contains(message), "{error}");
+        assert!(
+            !error.contains("no such table"),
+            "SQL ran before validation: {error}"
+        );
+        assert_eq!(query, original);
+    }
+}
+
+#[test]
+fn ordinary_statistics_reject_unselected_order_before_sql() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("DROP TABLE legacy_school", [])
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let base = SelectQuery::new("School")
+        .group_by("kind_id")
+        .sum("capacity", "total")
+        .comment("Reject sorting a completed cell by an unselected observation")
+        .purpose("Validate result bindings before contacting the database");
+    for query in [
+        base.clone().order_desc("id"),
+        base.clone().order_desc("capacity"),
+        base.order_expr_desc(Expr::sum_expr(Expr::column("id"))),
+    ] {
+        let original = query.clone();
+        let error = fetch(&context, query.clone()).unwrap_err();
+        assert!(
+            error.contains("not a selected statistical result"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("no such table"),
+            "SQL ran before result validation: {error}"
+        );
+        assert_eq!(query, original);
+    }
+}
+
+#[test]
+fn ordinary_statistics_order_selected_aliases_and_expressions_without_mutating_query() {
+    let context = runtime_context(executor(), policy(false, false));
+    let base = SelectQuery::new("School")
+        .group_by_expr("bucket", Expr::identity(Expr::column("capacity")))
+        .count("schools")
+        .sum("capacity", "total")
+        .limit(1)
+        .comment("Order only selected ordinary statistical cells")
+        .purpose("Retain aliases, mapped columns and exact selected expressions");
+    for query in [
+        base.clone().order_desc("bucket"),
+        base.clone().order_desc("capacity"),
+        base.clone()
+            .order_expr_desc(Expr::identity(Expr::column("bucket"))),
+        base.clone()
+            .order_expr_desc(Expr::sum_expr(Expr::column("capacity"))),
+        base.order_desc("total"),
+    ] {
+        let original = query.clone();
+        for _ in 0..2 {
+            let rows = fetch(&context, query.clone()).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].get("bucket"), Some(&Value::I64(800)));
+            assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+            assert_eq!(rows[0].get("total"), Some(&Value::I64(3200)));
+            assert!(!rows[0].contains_key("capacity"));
+            assert_eq!(query, original);
+        }
+    }
+}
+
+#[test]
+fn layered_order_rejects_ambiguous_and_unselected_expressions_before_sql() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("DROP TABLE legacy_school", [])
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let ambiguous = SelectQuery::new("Kind")
+        .group_by_expr("a", Expr::identity(Expr::column("ordinal")))
+        .group_by_expr("b", Expr::identity(Expr::column("ordinal")))
+        .order_desc("ordinal")
+        .limit(1);
+    let unselected = SelectQuery::new("Kind")
+        .group_by("label")
+        .order_desc("ordinal")
+        .limit(1);
+    for (parent, expected) in [
+        (ambiguous, "ambiguous statistical order"),
+        (unselected, "not a selected statistical result"),
+    ] {
+        let error = fetch(&context, source(parent)).unwrap_err();
+        assert!(error.contains(expected), "{error}");
+        assert!(
+            !error.contains("no such table"),
+            "SQL ran before order validation: {error}"
+        );
+    }
+}
+
+#[test]
+fn layered_rollup_parent_filter_restricts_source_population() {
+    let rows = execute(
+        &executor(),
+        source(
+            SelectQuery::new("Kind")
+                .group_by("label")
+                .and_filter(Expr::eq("ordinal", 1)),
+        ),
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("__teaql_m0"), Some(&Value::I64(4)));
+    assert_eq!(rows[0].get("__teaql_m1"), Some(&Value::I64(3200)));
+}
+
+#[test]
+fn layered_rollup_multihop_deduplicates_parent_measure_at_its_owner_identity() {
+    let parent = SelectQuery::new("Kind")
+        .aggregate(Aggregate::count("kinds"))
+        .aggregate(Aggregate::sum("ordinal", "ordinalTotal"))
+        .group_by("platform_id")
+        .object_group_by(
+            "platform",
+            "platform_id",
+            SelectQuery::new("Platform").group_by("name"),
+        );
+    let rows = execute(&executor(), source(parent));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("__teaql_d0"), Some(&Value::from("Campus")));
+    assert_eq!(rows[0].get("__teaql_m0"), Some(&Value::I64(5)));
+    assert_eq!(rows[0].get("__teaql_m1"), Some(&Value::I64(3300)));
+    assert_eq!(rows[0].get("__teaql_m3"), Some(&Value::I64(2)));
+    // Repeating kind 1001 once per school incorrectly produces 6.
+    assert_eq!(rows[0].get("__teaql_m4"), Some(&Value::I64(3)));
+}
+
+#[test]
+fn layered_rollup_contradictory_layer_filters_return_no_group() {
+    let query = source(
+        SelectQuery::new("Kind")
+            .group_by("label")
+            .and_filter(Expr::eq("ordinal", 1)),
+    )
+    .and_filter(Expr::lt("capacity", 500));
+    assert!(execute(&executor(), query).is_empty());
+}
+
+#[test]
+fn layered_rollup_empty_scalar_population_keeps_count_zero_sum_and_average_null() {
+    let query = source(SelectQuery::new("Kind").aggregate(Aggregate::count("kinds")))
+        .and_filter(Expr::lt("capacity", 0));
+    let rows = execute(&executor(), query);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("__teaql_m0"), Some(&Value::I64(0)));
+    assert_eq!(rows[0].get("__teaql_m1"), Some(&Value::Null));
+    assert_eq!(rows[0].get("__teaql_m2"), Some(&Value::Null));
+    assert_eq!(rows[0].get("__teaql_m3"), Some(&Value::I64(0)));
+}
+
+#[test]
+fn layered_rollup_null_dimension_joins_its_measure_cell() {
+    let executor = executor();
+    executor
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("UPDATE legacy_kind SET \"Legacy Kind Label\" = NULL", [])
+        .unwrap();
+    let rows = execute(
+        &executor,
+        source(SelectQuery::new("Kind").group_by("label")),
+    );
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("__teaql_d0"), Some(&Value::Null));
+    assert_eq!(rows[0].get("__teaql_m0"), Some(&Value::I64(5)));
+}
+
+fn rollup_object<'a>(
+    row: &'a CompactRow,
+    key: &str,
+) -> &'a std::collections::BTreeMap<String, Value> {
+    let Some(Value::Object(object)) = row.get(key) else {
+        panic!("missing {key}");
+    };
+    object
+}
+
+#[test]
+fn missing_parent_references_are_not_an_existing_null_dimension() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO legacy_school VALUES(6,50,NULL),(7,700,9999);
+         UPDATE legacy_kind SET \"Legacy Kind Label\"=NULL WHERE id=1001;",
+        )
+        .unwrap();
+    let oracle: (i64,i64) = transport.connection().lock().unwrap().query_row(
+        "SELECT COUNT(*),SUM(s.\"Legacy Capacity\") FROM legacy_school s JOIN legacy_kind k ON k.id=s.\"Legacy Kind Key\"", [],
+        |row| Ok((row.get(0)?,row.get(1)?))
+    ).unwrap();
+    assert_eq!(oracle, (5, 3300));
+    let context = runtime_context(transport, policy(false, false));
+    let raw = SelectQuery::new("School")
+        .group_by("kind_id")
+        .count("schools")
+        .sum("capacity", "total")
+        .comment("Retain null and orphan identities when grouping the raw foreign key");
+    let raw_rows = fetch(&context, raw).unwrap();
+    assert_eq!(raw_rows.len(), 4);
+    assert_eq!(
+        raw_rows
+            .iter()
+            .map(|row| row.get("schools").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        7
+    );
+    assert!(
+        raw_rows
+            .iter()
+            .any(|row| row.get("kind_id") == Some(&Value::Null)
+                && row.get("total").and_then(Value::try_i64) == Some(50))
+    );
+    assert!(
+        raw_rows
+            .iter()
+            .any(|row| row.get("kind_id").and_then(Value::try_i64) == Some(9999))
+    );
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .count("types")
+        .sum("ordinal", "ordinalTotal");
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.get("schools").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        oracle.0
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.get("total").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        oracle.1
+    );
+    let cell = rows
+        .iter()
+        .find(|row| rollup_object(row, "kind").get("label") == Some(&Value::Null))
+        .unwrap();
+    assert_eq!(cell.get("schools").and_then(Value::try_i64), Some(4));
+    assert_eq!(cell.get("total").and_then(Value::try_i64), Some(3200));
+    assert_eq!(
+        rollup_object(cell, "kind")
+            .get("types")
+            .and_then(Value::try_i64),
+        Some(1)
+    );
+}
+
+#[test]
+fn every_rollup_hop_requires_an_existing_parent_not_a_non_null_label() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO legacy_kind VALUES(1003,'no root',3,NULL),(1004,'orphan root',4,9999);
+         INSERT INTO legacy_school VALUES(6,50,1003),(7,700,1004);
+         UPDATE legacy_platform SET name=NULL;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let one = fetch(&context, source(SelectQuery::new("Kind").group_by("label"))).unwrap();
+    assert_eq!(one.len(), 3);
+    assert_eq!(
+        one.iter()
+            .map(|row| row.get("schools").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        7
+    );
+    assert_eq!(
+        one.iter()
+            .map(|row| row.get("total").and_then(Value::try_i64).unwrap())
+            .sum::<i64>(),
+        4050
+    );
+    let platform = SelectQuery::new("Platform")
+        .group_by("name")
+        .count("platforms");
+    let parent = SelectQuery::new("Kind")
+        .count("types")
+        .sum("ordinal", "ordinalTotal")
+        .group_by("platform_id")
+        .object_group_by("platform", "platform_id", platform);
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(row.get("schools").and_then(Value::try_i64), Some(5));
+    assert_eq!(row.get("total").and_then(Value::try_i64), Some(3300));
+    let kind = rollup_object(row, "kind");
+    assert_eq!(kind.get("types").and_then(Value::try_i64), Some(2));
+    assert_eq!(kind.get("ordinalTotal").and_then(Value::try_i64), Some(3));
+    let Some(Value::Object(platform)) = kind.get("platform") else {
+        panic!("missing platform");
+    };
+    assert_eq!(platform.get("name"), Some(&Value::Null));
+    assert_eq!(platform.get("platforms").and_then(Value::try_i64), Some(1));
+}
+
+#[test]
+fn filtered_and_missing_parents_keep_empty_group_and_scalar_semantics_distinct() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO legacy_school VALUES(6,50,NULL),(7,700,9999);
+         UPDATE legacy_kind SET \"Legacy Kind Label\"=NULL WHERE id=1002;",
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .count("types")
+        .filter(Expr::eq("ordinal", 2));
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+    assert_eq!(rows[0].get("total").and_then(Value::try_i64), Some(100));
+    assert_eq!(
+        rollup_object(&rows[0], "kind").get("label"),
+        Some(&Value::Null)
+    );
+    assert!(
+        fetch(
+            &context,
+            source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::gte("id", 6))
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let scalar = SelectQuery::new("Kind")
+        .count("types")
+        .sum("ordinal", "ordinalTotal");
+    let rows = fetch(&context, source(scalar).and_filter(Expr::gte("id", 6))).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(0));
+    assert_eq!(rows[0].get("total"), Some(&Value::Null));
+    assert_eq!(rows[0].get("mean"), Some(&Value::Null));
+    let kind = rollup_object(&rows[0], "kind");
+    assert_eq!(kind.get("types").and_then(Value::try_i64), Some(0));
+    assert_eq!(kind.get("ordinalTotal"), Some(&Value::Null));
+}
+
+type StatisticalExecutor = teaql_sql::SqlDataServiceExecutor<
+    SqliteDialect,
+    SqliteMutationExecutor,
+    teaql_runtime::InMemoryMetadataStore,
+>;
+
+#[derive(Clone)]
+struct LayerPolicy {
+    restrict_kind: bool,
+    deny_platform: bool,
+    seen: Arc<Mutex<Vec<(String, String)>>>,
+    scopes: Arc<Mutex<Vec<teaql_core::QueryRequestScope>>>,
+}
+
+impl teaql_runtime::RequestPolicy for LayerPolicy {
+    fn enforce_select(
+        &self,
+        _context: &UserContext,
+        query: &mut SelectQuery,
+    ) -> Result<(), RuntimeError> {
+        self.scopes
+            .lock()
+            .unwrap()
+            .push(query.request_scope().unwrap().clone());
+        self.seen.lock().unwrap().push((
+            query.entity.clone(),
+            query.request_scope().unwrap().comment().to_owned(),
+        ));
+        if query.entity == "Kind" && self.restrict_kind {
+            query.filter = Some(match query.filter.take() {
+                Some(filter) => filter.and_expr(Expr::eq("ordinal", 1)),
+                None => Expr::eq("ordinal", 1),
+            });
+        }
+        if query.entity == "Platform" && self.deny_platform {
+            return Err(RuntimeError::Policy("STATISTICS_PLATFORM_DENIED".into()));
+        }
+        Ok(())
+    }
+}
+
+fn runtime_context(transport: SqliteMutationExecutor, policy: LayerPolicy) -> UserContext {
+    let metadata = descriptors().into_iter().fold(
+        teaql_runtime::InMemoryMetadataStore::new(),
+        |metadata, descriptor| metadata.with_entity(descriptor),
+    );
+    let service =
+        teaql_sql::SqlDataServiceExecutor::new(SqliteDialect, transport, metadata.clone());
+    let mut context = UserContext::new()
+        .with_metadata(metadata)
+        .with_request_policy(policy);
+    context.register_executor(service);
+    context
+}
+
+fn policy(restrict_kind: bool, deny_platform: bool) -> LayerPolicy {
+    LayerPolicy {
+        restrict_kind,
+        deny_platform,
+        seen: Arc::new(Mutex::new(Vec::new())),
+        scopes: Arc::new(Mutex::new(Vec::new())),
+    }
+}
+
+#[test]
+fn layered_rollup_native_operation_and_local_comment_reach_each_policy_scope() {
+    for comment in [None, Some("Group visible kinds")] {
+        let policy = policy(false, false);
+        let scopes = policy.scopes.clone();
+        let context = runtime_context(executor(), policy);
+        let mut parent = SelectQuery::new("Kind").group_by("ordinal");
+        parent.comment = comment.map(str::to_owned);
+        let mut request = source(parent);
+        request.object_group_bys[0].operation = Some(
+            teaql_core::QueryOperation::new(
+                teaql_core::QueryOperationKind::Aggregate,
+                "roll_up_to_kind",
+            )
+            .with_relation("kind"),
+        );
+        let original = request.clone();
+        let executable = teaql_runtime::PurposedSelectQuery::new(
+            request.clone(),
+            original.purpose.as_deref().unwrap(),
+        );
+        let service = context
+            .entity_data_service::<StatisticalExecutor>("School")
+            .unwrap();
+        let rows = futures_executor::block_on(service.fetch_all(&executable)).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(request, original);
+        let scopes = scopes.lock().unwrap();
+        assert_eq!(scopes.len(), 2);
+        let child = &scopes[1];
+        let operation = child.parent_request().unwrap();
+        assert_eq!(
+            operation.operation().unwrap().method(),
+            Some("roll_up_to_kind")
+        );
+        assert_eq!(operation.operation().unwrap().relation(), Some("kind"));
+        assert_eq!(operation.parent_request(), Some(&scopes[0]));
+        assert_eq!(child.root_request(), &scopes[0]);
+        assert_eq!(
+            child
+                .trace_chain()
+                .iter()
+                .map(|n| n.comment.as_str())
+                .collect::<Vec<_>>(),
+            [
+                original.purpose.as_deref().unwrap(),
+                original.comment.as_deref().unwrap(),
+                "roll_up_to_kind()",
+                comment.unwrap_or("load Kind")
+            ]
+        );
+        assert!(original.object_group_bys[0].query.request_scope().is_none());
+    }
+}
+
+#[test]
+fn combined_statistics_log_preserves_each_real_request_branch() {
+    use teaql_runtime::log_formatter::{HumanReaderFormatter, LogFormatter};
+    struct Telemetry(Arc<Mutex<Vec<teaql_runtime::RuntimeDiagnosticEvent>>>);
+    struct Scope;
+    impl teaql_runtime::RuntimeTelemetryScope for Scope {
+        fn correlation(
+            &self,
+        ) -> Option<teaql_data_service::statement_telemetry::SqlExecutionCorrelation> {
+            Some(
+                teaql_data_service::statement_telemetry::SqlExecutionCorrelation {
+                    trace_id: "11111111111111111111111111111111".into(),
+                    span_id: "2222222222222222".into(),
+                },
+            )
+        }
+        fn success(
+            &mut self,
+            _: std::collections::BTreeMap<String, teaql_runtime::RuntimeAttributeValue>,
+        ) {
+        }
+        fn failure(&mut self, _: &str) {}
+    }
+    impl teaql_runtime::RuntimeTelemetry for Telemetry {
+        fn start(
+            &self,
+            _: teaql_runtime::RuntimeOperation,
+        ) -> Box<dyn teaql_runtime::RuntimeTelemetryScope> {
+            Box::new(Scope)
+        }
+        fn records_sql_diagnostics(&self) -> bool {
+            true
+        }
+        fn record_diagnostic(&self, event: teaql_runtime::RuntimeDiagnosticEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let context = runtime_context(executor(), policy(false, false))
+        .with_runtime_telemetry(Arc::new(Telemetry(events.clone())));
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .count("types")
+        .comment("Group visible type population");
+    let independent = SelectQuery::new("Kind")
+        .group_by("id")
+        .count("eligible")
+        .limit(10)
+        .comment("Choose eligible type IDs");
+    let mut query =
+        source(parent).and_filter(Expr::in_subquery("kind_id", kind, independent, "id"));
+    query.object_group_bys[0].operation = Some(
+        teaql_core::QueryOperation::new(
+            teaql_core::QueryOperationKind::Aggregate,
+            "roll_up_to_kind",
+        )
+        .with_relation("kind"),
+    );
+    for _ in 0..2 {
+        context.clear_sql_logs();
+        events.lock().unwrap().clear();
+        let rows = fetch(&context, query.clone()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(5));
+        let logs = context.sql_logs();
+        assert_eq!(
+            logs.len(),
+            1,
+            "one physical statement, not fabricated child statements"
+        );
+        let nodes = logs[0]
+            .log_context
+            .request_tree
+            .as_deref()
+            .expect("actual inline requests retained");
+        let operation = nodes
+            .iter()
+            .find(|node| node.method.as_deref() == Some("roll_up_to_kind"))
+            .unwrap();
+        let parent = nodes
+            .iter()
+            .find(|node| node.detail == "Group visible type population")
+            .unwrap();
+        let independent = nodes
+            .iter()
+            .find(|node| node.detail == "Choose eligible type IDs")
+            .unwrap();
+        assert_eq!(parent.parent_id, Some(operation.id));
+        assert_ne!(independent.parent_id, Some(parent.id));
+        for (index, node) in nodes.iter().enumerate() {
+            assert_eq!(node.id, index);
+            assert!(node.parent_id.is_none_or(|parent| parent < index));
+        }
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1, "one real SQL diagnostic exported");
+        let Some(teaql_runtime::RuntimeAttributeValue::String(exported)) =
+            events[0].attributes.get("teaql.request_tree")
+        else {
+            panic!("real Context telemetry export lost request tree");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(exported).unwrap(),
+            teaql_core::QueryRequestTraceNode::to_json_value(nodes)
+        );
+        let text = HumanReaderFormatter.format_sql_log(&logs[0].trace_path, &logs[0]);
+        for expected in [
+            "Group visible type population",
+            "Choose eligible type IDs",
+            "roll_up_to_kind()",
+        ] {
+            assert!(
+                text.contains(expected),
+                "Missing actual request branch: {expected}"
+            );
+        }
+        println!(
+            "COMBINED_STATISTICS_LOG={}",
+            serde_json::json!({"physicalStatements":logs.len(),
+            "rows":rows.len(), "requestTree":teaql_core::QueryRequestTraceNode::to_json_value(nodes),
+            "text":text})
+        );
+    }
+}
+
+#[test]
+fn independent_grouped_membership_preserves_having_and_one_selected_column() {
+    let context = runtime_context(executor(), policy(false, false));
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    for (threshold, expected) in [(2, 1), (3, 0)] {
+        let independent = SelectQuery::new("Kind")
+            .group_by("id")
+            .sum("ordinal", "ordinalTotal")
+            .having(Expr::eq("ordinalTotal", threshold))
+            .comment("Select independent type statistics by their completed total");
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+            Expr::in_subquery("kind_id", kind.clone(), independent.clone(), "id"),
+        );
+        let rows = fetch(&context, query).unwrap();
+        assert_eq!(rows.len(), expected);
+        if expected == 1 {
+            assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+            assert_eq!(rows[0].get("total").and_then(Value::try_i64), Some(100));
+        }
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+            Expr::not_in_subquery("kind_id", kind.clone(), independent, "id"),
+        );
+        let rows = fetch(&context, query).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("schools").and_then(Value::try_i64),
+            Some(if threshold == 2 { 4 } else { 5 })
+        );
+    }
+}
+
+#[test]
+fn ordinary_wrapper_keeps_nested_statistics_scope_and_denial_before_sql() {
+    for deny in [false, true] {
+        let policy = policy(false, deny);
+        let scopes = policy.scopes.clone();
+        let context = runtime_context(executor(), policy);
+        let kind = descriptors()
+            .into_iter()
+            .find(|entity| entity.name == "Kind")
+            .unwrap();
+        let platform = descriptors()
+            .into_iter()
+            .find(|entity| entity.name == "Platform")
+            .unwrap();
+        let totals = SelectQuery::new("Platform")
+            .group_by("id")
+            .count("eligible")
+            .limit(10)
+            .comment("Read eligible platform statistics");
+        let wrapper = SelectQuery::new("Kind")
+            .project("id")
+            .limit(10)
+            .filter(Expr::in_subquery("platform_id", platform, totals, "id"))
+            .comment("Route through ordinary type identities");
+        let query = source(SelectQuery::new("Kind").group_by("label"))
+            .and_filter(Expr::in_subquery("kind_id", kind, wrapper, "id"));
+        for _ in 0..2 {
+            context.clear_sql_logs();
+            scopes.lock().unwrap().clear();
+            let result = fetch(&context, query.clone());
+            if deny {
+                assert!(result.unwrap_err().contains("STATISTICS_PLATFORM_DENIED"));
+                assert!(
+                    context.sql_logs().is_empty(),
+                    "denied descendant never reaches SQL"
+                );
+            } else {
+                let rows = result.unwrap();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(5));
+                let logs = context.sql_logs();
+                assert_eq!(logs.len(), 1);
+                let nodes = logs[0].log_context.request_tree.as_deref().unwrap();
+                let wrapper_node = nodes
+                    .iter()
+                    .find(|node| node.detail == "Route through ordinary type identities")
+                    .unwrap();
+                let leaf = nodes
+                    .iter()
+                    .find(|node| node.detail == "Read eligible platform statistics")
+                    .unwrap();
+                let operation = &nodes[leaf.parent_id.unwrap()];
+                assert_eq!(operation.parent_id, Some(wrapper_node.id));
+                assert_eq!(wrapper_node.parent_id, Some(1));
+                println!(
+                    "ORDINARY_WRAPPER_STATISTICS_LOG={}",
+                    serde_json::json!({"rows":rows.len(),
+                    "physicalStatements":logs.len(), "requestTree":teaql_core::QueryRequestTraceNode::to_json_value(nodes)})
+                );
+            }
+            let scopes = scopes.lock().unwrap();
+            let wrapper_scope = scopes
+                .iter()
+                .find(|scope| scope.comment() == "Route through ordinary type identities")
+                .unwrap();
+            assert_eq!(
+                wrapper_scope.parent_request(),
+                Some(wrapper_scope.root_request())
+            );
+        }
+    }
+}
+
+#[test]
+fn independent_grouped_membership_receives_its_own_context_policy() {
+    let policy = policy(true, false);
+    let seen = policy.seen.clone();
+    let context = runtime_context(executor(), policy);
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    let independent = SelectQuery::new("Kind")
+        .group_by("id")
+        .sum("ordinal", "ordinalTotal")
+        .having(Expr::eq("ordinalTotal", 2))
+        .comment("Authorize the independent statistical business filter");
+    let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::in_subquery(
+        "kind_id",
+        kind,
+        independent,
+        "id",
+    ));
+    assert!(fetch(&context, query).unwrap().is_empty());
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|(entity, comment)| entity == "Kind"
+                && comment == "Authorize the independent statistical business filter")
+    );
+}
+
+#[test]
+fn independent_grouped_membership_retains_aliases_and_cell_paging() {
+    let context = runtime_context(executor(), policy(false, false));
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    let independent = SelectQuery::new("Kind")
+        .group_by_expr("kindKey", Expr::column("id"))
+        .sum("ordinal", "ordinalTotal")
+        .order_desc("ordinalTotal")
+        .limit(1)
+        .comment("Page completed independent cells before projecting the alias");
+    for negative in [false, true] {
+        let membership = if negative {
+            Expr::not_in_subquery("kind_id", kind.clone(), independent.clone(), "kindKey")
+        } else {
+            Expr::in_subquery("kind_id", kind.clone(), independent.clone(), "kindKey")
+        };
+        let rows = fetch(
+            &context,
+            source(SelectQuery::new("Kind").group_by("label")).and_filter(membership),
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("schools").and_then(Value::try_i64),
+            Some(if negative { 4 } else { 1 })
+        );
+    }
+}
+
+#[test]
+fn independent_scalar_null_membership_is_removed_after_aggregation() {
+    let context = runtime_context(executor(), policy(false, false));
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    let independent = SelectQuery::new("Kind")
+        .filter(Expr::gt("ordinal", 2))
+        .sum("ordinal", "total")
+        .comment("An empty scalar SUM is a null result, not a source field");
+    for negative in [false, true] {
+        let membership = if negative {
+            Expr::not_in_subquery("kind_id", kind.clone(), independent.clone(), "total")
+        } else {
+            Expr::in_subquery("kind_id", kind.clone(), independent.clone(), "total")
+        };
+        let rows = fetch(
+            &context,
+            source(SelectQuery::new("Kind").group_by("label")).and_filter(membership),
+        )
+        .unwrap();
+        if negative {
+            assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(5));
+        } else {
+            assert!(rows.is_empty());
+        }
+    }
+}
+
+#[test]
+fn independent_grouped_membership_rejects_unselected_identity() {
+    let context = runtime_context(executor(), policy(false, false));
+    let kind = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    let independent = SelectQuery::new("Kind").group_by("label").count("types");
+    let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::in_subquery(
+        "kind_id",
+        kind,
+        independent,
+        "id",
+    ));
+    let error = fetch(&context, query).unwrap_err();
+    assert!(error.contains("selected statistical result"), "{error}");
+    assert!(!error.contains("Transport error"));
+}
+
+#[test]
+fn multilayer_membership_selects_a_completed_nested_dimension() {
+    let context = runtime_context(executor(), policy(false, false));
+    let school = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "School")
+        .unwrap();
+    let independent =
+        source(SelectQuery::new("Kind").group_by("id")).having(Expr::gte("schools", 4));
+    for negative in [false, true] {
+        let membership = if negative {
+            Expr::not_in_subquery("kind_id", school.clone(), independent.clone(), "kind.id")
+        } else {
+            Expr::in_subquery("kind_id", school.clone(), independent.clone(), "kind.id")
+        };
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(membership);
+        let rows = fetch(&context, query).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("schools").and_then(Value::try_i64),
+            Some(if negative { 1 } else { 4 })
+        );
+        assert_eq!(
+            rows[0].get("total").and_then(Value::try_i64),
+            Some(if negative { 100 } else { 3200 })
+        );
+    }
+}
+
+#[test]
+fn ordinary_statistics_authorize_a_multilayer_memberships_descendants() {
+    let policy = policy(true, false);
+    let seen = policy.seen.clone();
+    let context = runtime_context(executor(), policy);
+    let school = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "School")
+        .unwrap();
+    let independent = source(
+        SelectQuery::new("Kind")
+            .group_by("id")
+            .comment("Authorize the independent roll-up type"),
+    )
+    .having(Expr::lte("schools", 1));
+    let query = SelectQuery::new("School")
+        .count("schools")
+        .filter(Expr::in_subquery("kind_id", school, independent, "kind.id"))
+        .comment("Count schools using independent roll-up eligibility");
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(0));
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|(entity, comment)| entity == "Kind"
+                && comment == "Authorize the independent roll-up type")
+    );
+}
+
+#[test]
+fn multilayer_membership_keeps_its_page_parameters_and_builder_snapshot() {
+    let context = runtime_context(executor(), policy(false, false));
+    let school = descriptors()
+        .into_iter()
+        .find(|entity| entity.name == "School")
+        .unwrap();
+    let parent = SelectQuery::new("Kind")
+        .group_by("id")
+        .filter(Expr::gte("ordinal", 1));
+    let independent = source(parent)
+        .and_filter(Expr::gte("capacity", 100))
+        .having(Expr::gte("schools", 1))
+        .order_desc("kind.id")
+        .limit(1);
+    let query = source(SelectQuery::new("Kind").group_by("label"))
+        .and_filter(Expr::lte("capacity", 1000))
+        .and_filter(Expr::in_subquery(
+            "kind_id",
+            school,
+            independent.clone(),
+            "kind.id",
+        ));
+    let before = query.clone();
+    let rows = fetch(&context, query.clone()).unwrap();
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+    assert_eq!(rows[0].get("total").and_then(Value::try_i64), Some(100));
+    assert_eq!(query, before);
+    assert_eq!(independent.slice.unwrap().limit, Some(1));
+}
+
+fn decimal_membership_context(first: &str, second: &str) -> (UserContext, EntityDescriptor) {
+    let transport = executor();
+    {
+        let handle = transport.connection();
+        let connection = handle.lock().unwrap();
+        super::decimal_functions::register(&connection).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE legacy_kind;
+            CREATE TABLE legacy_kind(id INTEGER PRIMARY KEY, \"Legacy Kind Label\" TEXT,
+                ordinal DECIMAL_TEXT COLLATE TEAQL_DECIMAL, platform_id INTEGER);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO legacy_kind VALUES(1001,'shared',?1,1),(1002,'shared',?2,1)",
+                [first, second],
+            )
+            .unwrap();
+    }
+    let mut entities = descriptors();
+    let kind = entities
+        .iter_mut()
+        .find(|entity| entity.name == "Kind")
+        .unwrap();
+    kind.properties
+        .iter_mut()
+        .find(|property| property.name == "ordinal")
+        .unwrap()
+        .data_type = DataType::Decimal;
+    let kind = kind.clone();
+    let metadata = entities.into_iter().fold(
+        teaql_runtime::InMemoryMetadataStore::new(),
+        |store, entity| store.with_entity(entity),
+    );
+    let service =
+        teaql_sql::SqlDataServiceExecutor::new(SqliteDialect, transport, metadata.clone());
+    let mut context = UserContext::new().with_metadata(metadata);
+    context.register_executor(service);
+    (context, kind)
+}
+
+#[test]
+fn decimal_statistical_membership_compares_integer_thresholds_in_the_exact_domain() {
+    let (context, kind) = decimal_membership_context("1", "2");
+    let checks = [
+        (BinaryOp::Eq, 2, 1),
+        (BinaryOp::Ne, 2, 4),
+        (BinaryOp::Gt, 1, 1),
+        (BinaryOp::Gte, 2, 1),
+        (BinaryOp::Lt, 2, 4),
+        (BinaryOp::Lte, 1, 4),
+    ];
+    for (op, threshold, count) in checks {
+        let independent = SelectQuery::new("Kind")
+            .group_by("id")
+            .sum("ordinal", "rankTotal")
+            .having(Expr::binary(
+                Expr::column("rankTotal"),
+                op,
+                Expr::value(threshold),
+            ));
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+            Expr::in_subquery("kind_id", kind.clone(), independent, "id"),
+        );
+        assert_eq!(
+            fetch(&context, query).unwrap()[0]
+                .get("schools")
+                .and_then(Value::try_i64),
+            Some(count)
+        );
+    }
+    for condition in [
+        Expr::between("rankTotal", 1, 1),
+        Expr::in_list("rankTotal", [Value::I64(1)]),
+    ] {
+        let independent = SelectQuery::new("Kind")
+            .group_by("id")
+            .sum("ordinal", "rankTotal")
+            .having(condition);
+        let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(
+            Expr::in_subquery("kind_id", kind.clone(), independent, "id"),
+        );
+        assert_eq!(
+            fetch(&context, query).unwrap()[0]
+                .get("schools")
+                .and_then(Value::try_i64),
+            Some(4)
+        );
+    }
+}
+
+#[test]
+fn decimal_statistical_comparison_preserves_neighboring_exact_values_and_rejects_float() {
+    let first = "9007199254740992.000000001";
+    let (context, kind) = decimal_membership_context(first, "9007199254740992.000000002");
+    let threshold = first.parse::<rust_decimal::Decimal>().unwrap();
+    let independent = SelectQuery::new("Kind")
+        .group_by("id")
+        .sum("ordinal", "rankTotal")
+        .having(Expr::gt("rankTotal", Value::Decimal(threshold)));
+    let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::in_subquery(
+        "kind_id",
+        kind.clone(),
+        independent,
+        "id",
+    ));
+    assert_eq!(
+        fetch(&context, query).unwrap()[0]
+            .get("schools")
+            .and_then(Value::try_i64),
+        Some(1)
+    );
+    let independent = SelectQuery::new("Kind")
+        .group_by("id")
+        .sum("ordinal", "rankTotal")
+        .having(Expr::gt("rankTotal", 1.0));
+    let query = source(SelectQuery::new("Kind").group_by("label")).and_filter(Expr::in_subquery(
+        "kind_id",
+        kind,
+        independent,
+        "id",
+    ));
+    let error = fetch(&context, query).unwrap_err();
+    assert!(error.contains("exact numeric operand"), "{error}");
+    assert!(!error.contains("Transport error"));
+}
+
+#[test]
+fn decimal_measure_ordering_and_paging_uses_numeric_not_text_order() {
+    for (first, second, larger) in [
+        ("2", "10", 1002_i64),
+        ("-2", "-10", 1001),
+        (
+            "9007199254740992.000000001",
+            "9007199254740992.000000002",
+            1002,
+        ),
+    ] {
+        let (context, _) = decimal_membership_context(first, second);
+        for order in [
+            teaql_core::OrderBy::desc("total"),
+            teaql_core::OrderBy::desc_expr(Expr::sum_expr(Expr::column("ordinal"))),
+        ] {
+            let query = SelectQuery::new("Kind")
+                .group_by("id")
+                .sum("ordinal", "total")
+                .order_by(order)
+                .limit(1)
+                .comment("Select the numerically largest exact total");
+            let original = query.clone();
+            let rows = fetch(&context, query.clone()).unwrap();
+            assert_eq!(rows[0].get("id").and_then(Value::try_i64), Some(larger));
+            assert_eq!(query, original);
+        }
+    }
+}
+
+#[test]
+fn decimal_parent_cell_page_uses_numeric_measure_order() {
+    let (context, _) = decimal_membership_context("2", "10");
+    let parent = SelectQuery::new("Kind")
+        .group_by("id")
+        .sum("ordinal", "total")
+        .order_desc("total")
+        .limit(1);
+    let query = source(parent);
+    for _ in 0..2 {
+        let rows = fetch(&context, query.clone()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+        let Some(Value::Object(parent)) = rows[0].get("kind") else {
+            panic!("missing kind")
+        };
+        assert_eq!(parent.get("id").and_then(Value::try_i64), Some(1002));
+        assert_eq!(
+            parent.get("total"),
+            Some(&Value::Decimal(Decimal::from(10)))
+        );
+    }
+}
+
+#[test]
+fn decimal_final_nested_measure_page_uses_numeric_order() {
+    let (context, _) = decimal_membership_context("2", "10");
+    let parent = SelectQuery::new("Kind")
+        .group_by("id")
+        .sum("ordinal", "total");
+    let query = source(parent).order_desc("kind.total").limit(1);
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools").and_then(Value::try_i64), Some(1));
+    let Some(Value::Object(parent)) = rows[0].get("kind") else {
+        panic!("missing kind")
+    };
+    assert_eq!(parent.get("id").and_then(Value::try_i64), Some(1002));
+}
+
+#[test]
+fn decimal_sum_overflow_is_rejected_without_echoing_values() {
+    let largest = Decimal::MAX.to_string();
+    for increment in ["1", "0.1"] {
+        let (context, _) = decimal_membership_context(&largest, increment);
+        let parent = SelectQuery::new("Kind")
+            .group_by("label")
+            .sum("ordinal", "total");
+        let error = fetch(&context, source(parent)).unwrap_err();
+        assert!(
+            error.contains("precision") || error.contains("overflow"),
+            "{error}"
+        );
+        assert!(
+            !error.contains(&largest),
+            "overflow disclosed an observation"
+        );
+    }
+}
+
+#[test]
+fn integer_sum_overflow_is_not_silently_converted_to_float() {
+    let transport = executor();
+    transport.connection().lock().unwrap().execute(
+        "UPDATE legacy_school SET \"Legacy Capacity\" = CASE id WHEN 1 THEN ?1 WHEN 2 THEN 1 ELSE 0 END",
+        [i64::MAX],
+    ).unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let error = fetch(&context, source(SelectQuery::new("Kind").group_by("label"))).unwrap_err();
+    assert!(error.contains("overflow"), "{error}");
+    assert!(!error.contains(&i64::MAX.to_string()));
+}
+
+#[test]
+fn unsupported_exact_decimal_functions_fail_before_provider_execution() {
+    let (context, _) = decimal_membership_context("2", "10");
+    for function in [
+        AggregateFunction::Avg,
+        AggregateFunction::Stddev,
+        AggregateFunction::StddevPop,
+        AggregateFunction::VarSamp,
+        AggregateFunction::VarPop,
+        AggregateFunction::BitAnd,
+        AggregateFunction::BitOr,
+        AggregateFunction::BitXor,
+    ] {
+        let parent = SelectQuery::new("Kind")
+            .group_by("label")
+            .aggregate(Aggregate::new(function, "ordinal", "result"));
+        let error = fetch(&context, source(parent)).unwrap_err();
+        let expected = if matches!(
+            function,
+            AggregateFunction::BitAnd | AggregateFunction::BitOr | AggregateFunction::BitXor
+        ) {
+            "bitwise aggregate requires an integer field"
+        } else {
+            "SQLite exact Decimal aggregate"
+        };
+        assert!(error.contains(expected), "{error}");
+        assert!(
+            !error.contains("Transport error"),
+            "unsupported function reached SQLite"
+        );
+    }
+}
+
+fn fetch(context: &UserContext, query: SelectQuery) -> Result<Vec<CompactRow>, String> {
+    let entity = query.entity.clone();
+    let request = teaql_runtime::PurposedSelectQuery::new(
+        query,
+        "Validate Context-scoped layered statistics",
+    );
+    let service = context
+        .entity_data_service::<StatisticalExecutor>(&entity)
+        .unwrap();
+    futures_executor::block_on(service.fetch_all(&request)).map_err(|error| error.to_string())
+}
+
+fn extended(query: SelectQuery, field: &str) -> SelectQuery {
+    query
+        .stddev(field, "stddev")
+        .stddev_pop(field, "stddevPop")
+        .var_samp(field, "variance")
+        .var_pop(field, "variancePop")
+        .bit_and(field, "bitAnd")
+        .bit_or(field, "bitOr")
+        .bit_xor(field, "bitXor")
+}
+
+#[test]
+fn layered_rollup_extended_functions_preserve_source_and_parent_owner_grain() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = extended(
+        SelectQuery::new("Kind").group_by("label").count("kinds"),
+        "ordinal",
+    );
+    let rows = fetch(&context, extended(source(parent), "capacity")).unwrap();
+    assert_eq!(rows.len(), 1);
+    let root = &rows[0];
+    let Some(Value::Object(kind)) = root.get("kind") else {
+        panic!("missing kind")
+    };
+    for (name, expected) in [
+        ("variance", 98000.0),
+        ("variancePop", 78400.0),
+        ("stddev", 98000_f64.sqrt()),
+        ("stddevPop", 280.0),
+    ] {
+        assert!(
+            (root.get(name).and_then(Value::try_f64).unwrap() - expected).abs() < 1e-8,
+            "{name}"
+        );
+    }
+    for (name, expected) in [
+        ("variance", 0.5),
+        ("variancePop", 0.25),
+        ("stddev", 0.5_f64.sqrt()),
+        ("stddevPop", 0.5),
+    ] {
+        assert!(
+            (kind.get(name).and_then(Value::try_f64).unwrap() - expected).abs() < 1e-12,
+            "parent {name}"
+        );
+    }
+    for (name, expected) in [("bitAnd", 32), ("bitOr", 868), ("bitXor", 100)] {
+        assert_eq!(root.get(name).and_then(Value::try_i64), Some(expected));
+    }
+    for (name, expected) in [("bitAnd", 0), ("bitOr", 3), ("bitXor", 3)] {
+        assert_eq!(kind.get(name).and_then(Value::try_i64), Some(expected));
+    }
+    assert_eq!(kind.get("kinds").and_then(Value::try_i64), Some(2));
+}
+
+#[test]
+fn layered_rollup_extended_empty_population_keeps_null_not_identity_values() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = extended(SelectQuery::new("Kind").count("kinds"), "ordinal");
+    let rows = fetch(
+        &context,
+        extended(source(parent), "capacity").and_filter(Expr::lt("id", 0_i64)),
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing kind")
+    };
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(0)));
+    assert_eq!(kind.get("kinds"), Some(&Value::I64(0)));
+    for name in [
+        "variance",
+        "variancePop",
+        "stddev",
+        "stddevPop",
+        "bitAnd",
+        "bitOr",
+        "bitXor",
+    ] {
+        assert_eq!(rows[0].get(name), Some(&Value::Null));
+        assert_eq!(kind.get(name), Some(&Value::Null));
+    }
+}
+
+#[test]
+fn layered_rollup_all_null_source_and_singleton_parent_have_distinct_variance_semantics() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE legacy_school SET \"Legacy Capacity\"=NULL WHERE id=5",
+            [],
+        )
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let parent = extended(
+        SelectQuery::new("Kind").group_by("label").count("kinds"),
+        "ordinal",
+    );
+    let rows = fetch(
+        &context,
+        extended(source(parent), "capacity").and_filter(Expr::eq("id", 5_i64)),
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing kind")
+    };
+    for name in [
+        "variance",
+        "variancePop",
+        "stddev",
+        "stddevPop",
+        "bitAnd",
+        "bitOr",
+        "bitXor",
+    ] {
+        assert_eq!(rows[0].get(name), Some(&Value::Null));
+    }
+    assert_eq!(kind.get("variance"), Some(&Value::Null));
+    assert_eq!(kind.get("stddev"), Some(&Value::Null));
+    assert_eq!(kind.get("variancePop").and_then(Value::try_f64), Some(0.0));
+    assert_eq!(kind.get("stddevPop").and_then(Value::try_f64), Some(0.0));
+}
+
+#[test]
+fn layered_rollup_context_applies_each_population_policy_and_restores_logical_paths() {
+    let policy = policy(true, false);
+    let seen = policy.seen.clone();
+    let context = runtime_context(executor(), policy);
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .comment("Group eligible school types");
+    let rows = fetch(
+        &context,
+        source(parent).limit(10).having(Expr::gt("schools", 2)),
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+    assert_eq!(rows[0].get("total"), Some(&Value::I64(3200)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing typed dimension object");
+    };
+    assert_eq!(kind.get("label"), Some(&Value::from("shared")));
+    assert!(!rows[0].contains_key("kind_id"));
+    assert!(!rows[0].contains_key("__teaql_m0"));
+    assert_eq!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .map(|(entity, _)| entity.as_str())
+            .collect::<Vec<_>>(),
+        ["School", "Kind"]
+    );
+    assert_eq!(seen.lock().unwrap()[1].1, "Group eligible school types");
+}
+
+#[test]
+fn layered_rollup_context_orders_and_pages_final_cells_not_source_rows() {
+    let context = runtime_context(executor(), policy(false, false));
+    let query = source(SelectQuery::new("Kind").group_by("ordinal"))
+        .order_desc("schools")
+        .limit(1)
+        .offset(1);
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+    assert_eq!(rows[0].get("total"), Some(&Value::I64(100)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing dimension");
+    };
+    assert_eq!(kind.get("ordinal"), Some(&Value::I64(2)));
+}
+
+#[test]
+fn layered_rollup_context_having_removes_final_cells() {
+    let context = runtime_context(executor(), policy(false, false));
+    let rows = fetch(
+        &context,
+        source(SelectQuery::new("Kind").group_by("label")).having(Expr::gt("schools", 5)),
+    )
+    .unwrap();
+    assert!(rows.is_empty());
+}
+
+#[test]
+fn ordinary_statistics_having_count_alias_filters_scalar_result() {
+    let context = runtime_context(executor(), policy(false, false));
+    let query = SelectQuery::new("School")
+        .count("schools")
+        .having(Expr::gt("schools", 4))
+        .comment("Filter the selected school count")
+        .purpose("Prove result aliases work without a roll-up");
+    let rows = fetch(&context, query.clone()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
+    assert!(
+        fetch(&context, query.having(Expr::gt("schools", 5)))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn ordinary_statistics_having_alias_composes_with_source_filter_and_aggregate_expression() {
+    let context = runtime_context(executor(), policy(false, false));
+    let query = SelectQuery::new("School")
+        .group_by("kind_id")
+        .aggregate(Aggregate::sum("capacity", "total"))
+        .filter(Expr::gte("capacity", 100))
+        .having(Expr::and([
+            Expr::gt("total", 3000),
+            Expr::binary(Expr::count_all(), BinaryOp::Gt, Expr::value(2)),
+        ]))
+        .comment("Filter completed kind totals using aliases and explicit aggregates")
+        .purpose("Keep HAVING after population filtering and grouping");
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("kind_id"), Some(&Value::I64(1001)));
+    assert_eq!(rows[0].get("total"), Some(&Value::I64(3200)));
+}
+
+#[test]
+fn ordinary_statistics_having_named_dimension_uses_legacy_column_binding() {
+    let context = runtime_context(executor(), policy(false, false));
+    let query = SelectQuery::new("School")
+        .group_by("capacity")
+        .project_expr("bucket", Expr::column("capacity"))
+        .count("schools")
+        .having(Expr::gte("bucket", 800))
+        .comment("Select the named capacity dimension")
+        .purpose("Resolve dimension aliases through logical metadata");
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("bucket"), Some(&Value::I64(800)));
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+}
+
+#[test]
+fn layered_rollup_named_source_dimension_supports_having_and_preserves_owner_grain() {
+    let context = runtime_context(executor(), policy(false, false));
+    let query = source(SelectQuery::new("Kind").group_by("label").count("kinds"))
+        .group_by("capacity")
+        .project_expr("bucket", Expr::column("capacity"))
+        .having(Expr::gte("bucket", 800))
+        .order_desc("bucket");
+    let rows = fetch(&context, query).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("bucket"), Some(&Value::I64(800)));
+    assert_eq!(rows[0].get("capacity"), Some(&Value::I64(800)));
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+    assert_eq!(rows[0].get("total"), Some(&Value::I64(3200)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing kind");
+    };
+    assert_eq!(kind.get("kinds"), Some(&Value::I64(1)));
+}
+
+#[test]
+fn layered_rollup_named_parent_dimension_supports_cell_paging() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("ordinal")
+        .project_expr("rank", Expr::column("ordinal"))
+        .order_desc("rank")
+        .limit(1);
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing kind");
+    };
+    assert_eq!(kind.get("rank"), Some(&Value::I64(2)));
+}
+
+#[test]
+fn layered_rollup_conflicting_alias_fails_before_sql() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("DROP TABLE legacy_school", [])
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let query = source(SelectQuery::new("Kind").group_by("label"))
+        .group_by("capacity")
+        .project_expr("kind.label", Expr::column("capacity"));
+    let error = fetch(&context, query).unwrap_err();
+    assert!(error.contains("statistical result path"), "{error}");
+    assert!(!error.contains("no such table"), "{error}");
+}
+
+#[test]
+fn layered_rollup_context_parent_bindings_do_not_reuse_previous_values() {
+    let context = runtime_context(executor(), policy(false, false));
+    for (ordinal, count) in [(1, 4), (2, 1), (1, 4)] {
+        let rows = fetch(
+            &context,
+            source(
+                SelectQuery::new("Kind")
+                    .group_by("label")
+                    .and_filter(Expr::eq("ordinal", ordinal)),
+            ),
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("schools"), Some(&Value::I64(count)));
+    }
+}
+
+#[test]
+fn layered_rollup_context_denied_parent_stops_before_sql() {
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        .execute("DROP TABLE legacy_school", [])
+        .unwrap();
+    let policy = policy(false, true);
+    let seen = policy.seen.clone();
+    let context = runtime_context(transport, policy);
+    let parent = SelectQuery::new("Kind")
+        .group_by("platform_id")
+        .object_group_by(
+            "platform",
+            "platform_id",
+            SelectQuery::new("Platform").group_by("name"),
+        );
+    let error = fetch(&context, source(parent)).unwrap_err();
+    assert!(error.contains("STATISTICS_PLATFORM_DENIED"), "{error}");
+    assert!(
+        !error.contains("no such table"),
+        "SQL must not run before all population policies"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn layered_rollup_context_multihop_preserves_parent_measure_grain() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .aggregate(Aggregate::sum("ordinal", "ordinalTotal"))
+        .group_by("platform_id")
+        .object_group_by(
+            "platform",
+            "platform_id",
+            SelectQuery::new("Platform").group_by("name"),
+        );
+    let rows = fetch(&context, source(parent)).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing kind result");
+    };
+    assert_eq!(kind.get("ordinalTotal"), Some(&Value::I64(3)));
+    let Some(Value::Object(platform)) = kind.get("platform") else {
+        panic!("missing platform dimension");
+    };
+    assert_eq!(platform.get("name"), Some(&Value::from("Campus")));
+}
+
+fn direct_executor() -> StatisticalExecutor {
+    let metadata = descriptors().into_iter().fold(
+        teaql_runtime::InMemoryMetadataStore::new(),
+        |metadata, descriptor| metadata.with_entity(descriptor),
+    );
+    teaql_sql::SqlDataServiceExecutor::new(SqliteDialect, executor(), metadata)
+}
+
+fn query_request(query: SelectQuery, capture: bool) -> teaql_data_service::QueryRequest {
+    teaql_data_service::QueryRequest {
+        intent: teaql_core::QueryIntent::new(
+            query.comment.clone().unwrap(),
+            query.purpose.clone().unwrap(),
+        )
+        .unwrap(),
+        query,
+        trace_chain: Vec::new(),
+        capture_execution_metadata: capture,
+        capture_debug_query: false,
+    }
+}
+
+#[test]
+fn layered_rollup_native_stream_restores_paths_for_every_chunk() {
+    use futures_util::StreamExt;
+    let executor = direct_executor();
+    let query = source(SelectQuery::new("Kind").group_by("ordinal")).order_desc("schools");
+    let mut stream = teaql_data_service::StreamQueryExecutor::query_stream(
+        &executor,
+        query_request(query, false),
+        1,
+    );
+    let rows = futures_executor::block_on(async {
+        let mut rows = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.unwrap();
+            assert_eq!(chunk.rows.len(), 1);
+            rows.extend(chunk.rows);
+        }
+        rows
+    });
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+    assert_eq!(rows[1].get("schools"), Some(&Value::I64(1)));
+    assert!(rows.iter().all(|row| {
+        row.get("kind")
+            .is_some_and(|value| matches!(value, Value::Object(_)))
+    }));
+}
+
+#[test]
+fn layered_rollup_observed_stream_reports_final_logical_rows() {
+    use futures_util::StreamExt;
+    let executor = direct_executor();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let query = source(SelectQuery::new("Kind").group_by("label")).limit(1);
+    let mut stream = teaql_data_service::StreamQueryExecutor::query_stream_observed(
+        &executor,
+        query_request(query, true),
+        1,
+        Arc::new(move |metadata| observed.lock().unwrap().push(metadata)),
+    );
+    futures_executor::block_on(async {
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.rows[0].get("schools"), Some(&Value::I64(5)));
+        assert!(stream.next().await.is_none());
+    });
+    drop(stream);
+    let events = events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].result_count, Some(1));
+    assert!(
+        events[0]
+            .parameterized_query
+            .as_ref()
+            .unwrap()
+            .contains("__teaql_grain0")
+    );
+}
+
+#[test]
+fn context_entity_stream_prepares_statistical_membership_for_success_cancel_and_denial() {
+    use futures_util::StreamExt;
+    use teaql_data_service::SqlExecutionOutcome;
+    for (complete, deny) in [(true, false), (false, false), (true, true)] {
+        let policy = policy(false, deny);
+        let scopes = policy.scopes.clone();
+        let context = runtime_context(executor(), policy);
+        let kind = descriptors()
+            .into_iter()
+            .find(|entity| entity.name == "Kind")
+            .unwrap();
+        let platform = descriptors()
+            .into_iter()
+            .find(|entity| entity.name == "Platform")
+            .unwrap();
+        let totals = SelectQuery::new("Platform")
+            .group_by("id")
+            .count("eligible")
+            .limit(10)
+            .comment("Read platform statistical eligibility");
+        let wrapper = SelectQuery::new("Kind")
+            .project("id")
+            .limit(10)
+            .filter(Expr::in_subquery("platform_id", platform, totals, "id"))
+            .comment("Route through ordinary type identities");
+        let query = SelectQuery::new("School")
+            .projects(["id", "capacity"])
+            .filter(Expr::in_subquery("kind_id", kind, wrapper, "id"))
+            .limit(20)
+            .stream(1)
+            .comment("Stream eligible school observations");
+        let query = teaql_runtime::PurposedSelectQuery::new(
+            query,
+            "Verify statistical membership at the entity stream boundary",
+        );
+        let service = context
+            .entity_data_service::<StatisticalExecutor>("School")
+            .unwrap();
+        let result = futures_executor::block_on(service.fetch_stream(&query));
+        if deny {
+            match result {
+                Err(error) => assert!(error.to_string().contains("STATISTICS_PLATFORM_DENIED")),
+                Ok(_) => panic!("entity stream bypassed nested statistical policy"),
+            }
+            assert!(
+                context.sql_logs().is_empty(),
+                "denied child must stop before SQL"
+            );
+            assert!(
+                scopes
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|scope| scope.comment() == "Read platform statistical eligibility")
+            );
+            continue;
+        }
+        let mut stream = result.unwrap();
+        let count = futures_executor::block_on(async {
+            let first = stream.next().await.unwrap().unwrap();
+            assert_eq!(first.rows.len(), 1);
+            let mut count = first.rows.len();
+            if complete {
+                while let Some(chunk) = stream.next().await {
+                    count += chunk.unwrap().rows.len();
+                }
+            }
+            count
+        });
+        assert_eq!(count, if complete { 5 } else { 1 });
+        drop(stream);
+        let logs = context.sql_logs();
+        assert_eq!(logs.len(), 1, "one physical stream diagnostic");
+        assert_eq!(
+            logs[0].log_context.execution_outcome,
+            Some(if complete {
+                SqlExecutionOutcome::Success
+            } else {
+                SqlExecutionOutcome::Cancelled
+            })
+        );
+        let nodes = logs[0]
+            .log_context
+            .request_tree
+            .as_deref()
+            .expect("stream retains nested request tree");
+        let wrapper = nodes
+            .iter()
+            .find(|node| node.detail == "Route through ordinary type identities")
+            .unwrap();
+        let leaf = nodes
+            .iter()
+            .find(|node| node.detail == "Read platform statistical eligibility")
+            .unwrap();
+        assert_eq!(wrapper.parent_id, Some(1));
+        assert_eq!(nodes[leaf.parent_id.unwrap()].parent_id, Some(wrapper.id));
+        println!(
+            "CONTEXT_STATISTICAL_MEMBERSHIP_STREAM={}",
+            serde_json::json!({"complete":complete,
+            "rowsConsumed":count,"physicalStatements":logs.len(),"outcome":logs[0].log_context.execution_outcome.unwrap().as_str(),
+            "requestTree":teaql_core::QueryRequestTraceNode::to_json_value(nodes)})
+        );
+    }
+}
+
+#[test]
+fn layered_rollup_decoder_preserves_dots_in_a_measure_alias() {
+    let executor = direct_executor();
+    let query = SelectQuery::new("School")
+        .aggregate(Aggregate::count("school.count"))
+        .group_by("kind_id")
+        .object_group_by(
+            "kind",
+            "kind_id",
+            SelectQuery::new("Kind").group_by("label"),
+        )
+        .comment("Preserve caller supplied alias spelling")
+        .purpose("Verify paths do not split alias text")
+        .limit(1);
+    let result = futures_executor::block_on(teaql_data_service::QueryExecutor::query(
+        &executor,
+        query_request(query, false),
+    ))
+    .unwrap();
+    assert_eq!(result.rows[0].get("school.count"), Some(&Value::I64(5)));
+    assert!(!result.rows[0].contains_key("school"));
+}
+
+#[test]
+fn context_failed_statistics_retains_masked_request_tree_and_failure_outcome() {
+    use teaql_runtime::log_formatter::{HumanReaderFormatter, LogFormatter};
+    let transport = executor();
+    transport
+        .connection()
+        .lock()
+        .unwrap()
+        // The connection is this test's fresh in-memory fixture. A missing
+        // table is deterministic; SQLite can treat an unknown double-quoted
+        // column as a string literal instead of reporting a column error.
+        .execute_batch("DROP TABLE legacy_school")
+        .unwrap();
+    let context = runtime_context(transport, policy(false, false));
+    let canary = "PRIVATE-LABEL-CANARY";
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .filter(Expr::eq("label", canary))
+        .comment(format!("Group types {canary}"));
+    let mut query = source(parent);
+    query.object_group_bys[0].operation = Some(teaql_core::QueryOperation::new(
+        teaql_core::QueryOperationKind::Aggregate,
+        "roll_up_to_kind",
+    ));
+    for round in 1..=2 {
+        context.clear_sql_logs();
+        let error = fetch(&context, query.clone()).unwrap_err();
+        assert!(
+            error.to_lowercase().contains("no such table"),
+            "must exercise the real SQLite driver failure"
+        );
+        let logs = context.sql_logs();
+        assert_eq!(logs.len(), 1);
+        let log = &logs[0];
+        assert_eq!(
+            log.log_context.execution_outcome,
+            Some(teaql_data_service::SqlExecutionOutcome::Failure)
+        );
+        assert_eq!(log.result_count, None);
+        let nodes = log
+            .log_context
+            .request_tree
+            .as_deref()
+            .expect("failed statement retains actual request tree");
+        assert_eq!(nodes.len(), 4);
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.method.as_deref() == Some("roll_up_to_kind"))
+        );
+        let text = HumanReaderFormatter.format_sql_log(&log.trace_path, log);
+        assert!(!text.contains(canary));
+        assert!(text.contains("/* masked */"));
+        println!(
+            "FAILED_STATISTICAL_QUERY_LOG={}",
+            serde_json::json!({"round":round,
+            "physicalStatements":logs.len(),"outcome":log.log_context.execution_outcome.unwrap().as_str(),
+            "requestTree":teaql_core::QueryRequestTraceNode::to_json_value(nodes),"text":text})
+        );
+    }
+}
+
+#[test]
+fn layered_rollup_parent_limit_selects_cells_not_first_parent_id() {
+    let context = runtime_context(executor(), policy(false, false));
+    let rows = fetch(
+        &context,
+        source(SelectQuery::new("Kind").group_by("label").limit(1)),
+    )
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
+}
+
+#[test]
+fn layered_rollup_parent_page_is_computed_after_source_filters() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("ordinal")
+        .order_desc("ordinal")
+        .limit(1);
+    let rows = fetch(&context, source(parent.clone())).unwrap();
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+    let rows = fetch(
+        &context,
+        source(parent).and_filter(Expr::gte("capacity", 800)),
+    )
+    .unwrap();
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(4)));
+    let Some(Value::Object(kind)) = rows[0].get("kind") else {
+        panic!("missing dimension");
+    };
+    assert_eq!(kind.get("ordinal"), Some(&Value::I64(1)));
+}
+
+#[test]
+fn layered_rollup_parent_having_uses_deduplicated_owner_measures() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("label")
+        .aggregate(Aggregate::count("kinds"))
+        .having(Expr::gt("kinds", 1));
+    let rows = fetch(&context, source(parent.clone())).unwrap();
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(5)));
+    assert!(
+        fetch(
+            &context,
+            source(parent).and_filter(Expr::gte("capacity", 800))
+        )
+        .unwrap()
+        .is_empty()
+    );
+}
+
+#[test]
+fn layered_rollup_parent_measure_order_does_not_multiply_by_source_children() {
+    let context = runtime_context(executor(), policy(false, false));
+    let parent = SelectQuery::new("Kind")
+        .group_by("ordinal")
+        .aggregate(Aggregate::sum("ordinal", "ordinalTotal"))
+        .order_desc("ordinalTotal")
+        .limit(1);
+    let rows = fetch(&context, source(parent)).unwrap();
+    // A child-weighted sum incorrectly ranks kind 1001 (4 * 1) over 1002 (1 * 2).
+    assert_eq!(rows[0].get("schools"), Some(&Value::I64(1)));
+}

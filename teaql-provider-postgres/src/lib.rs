@@ -107,12 +107,56 @@ impl SqlDialect for PostgresDialect {
         true
     }
 
+    fn compile_gbk_function(
+        &self,
+        entity: &EntityDescriptor,
+        args: &[Expr],
+        params: &mut teaql_sql::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let operand = self.compile_gbk_text_operand(entity, args, params)?;
+        Ok(format!("convert_to({operand}, 'GBK')"))
+    }
+
+    fn bitwise_parameter_sql(&self, sql: &str) -> String {
+        format!("CAST({sql} AS BIGINT)")
+    }
+
+    fn compile_statistical_operand(
+        &self,
+        entity: &EntityDescriptor,
+        operand: &Expr,
+        data_type: DataType,
+        params: &mut teaql_sql::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let sql = self.compile_expr(entity, operand, params)?;
+        let kind = match data_type {
+            DataType::I64 | DataType::U64 => "BIGINT",
+            DataType::F64 => "DOUBLE PRECISION",
+            DataType::Decimal => "NUMERIC",
+            DataType::Text | DataType::LargeText => "TEXT",
+            DataType::Bool => "BOOLEAN",
+            DataType::Json => "JSONB",
+            DataType::Date => "DATE",
+            DataType::Timestamp => "TIMESTAMPTZ",
+            DataType::Binary => "BYTEA",
+        };
+        Ok(format!("CAST({sql} AS {kind})"))
+    }
+
     fn quote_ident(&self, ident: &str) -> String {
         quote_ident(ident)
     }
 
     fn placeholder(&self, index: usize) -> String {
         format!("${index}")
+    }
+
+    fn quote_result_alias(&self, alias: &str) -> String {
+        if alias.chars().any(|ch| ch.is_ascii_uppercase() || ch == '"') {
+            format!("\"{}\"", alias.replace('"', "\"\""))
+        } else {
+            self.quote_ident(alias)
+        }
     }
 
     fn schema_setup_sqls(&self) -> &'static [&'static str] {
@@ -164,6 +208,7 @@ impl SqlDialect for PostgresDialect {
             DataType::Json => Ok("JSONB".to_owned()),
             DataType::Date => Ok("DATE".to_owned()),
             DataType::Timestamp => Ok("TIMESTAMPTZ".to_owned()),
+            DataType::Binary => Ok("BYTEA".to_owned()),
         }
     }
 
@@ -525,7 +570,10 @@ impl PgMutationExecutor {
         dialect: &PostgresDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
-        validate_schema_identifier_lengths(entities, 63)?;
+        let logical_entities = entities;
+        let physical = teaql_sql::physical_entity_descriptors(entities)?;
+        let entities = physical.iter().collect::<Vec<_>>();
+        validate_schema_identifier_lengths(&entities, 63)?;
         let mut client = self
             .pool
             .get()
@@ -538,9 +586,25 @@ impl PgMutationExecutor {
                 &[],
             )
             .await?;
-        let result = self
-            .ensure_schema_with_client(&transaction, dialect, entities)
-            .await;
+        let result = async {
+            for entity in logical_entities {
+                let mut current = *entity;
+                while let Some(parent) = &current.joined_parent {
+                    if Self::table_exists(&transaction, &current.table_name).await? {
+                        let columns =
+                            Self::table_columns(&transaction, &current.table_name).await?;
+                        teaql_sql::validate_inherited_storage_columns(
+                            current,
+                            columns.keys().map(String::as_str),
+                        )?;
+                    }
+                    current = parent;
+                }
+            }
+            self.ensure_schema_with_client(&transaction, dialect, &entities)
+                .await
+        }
+        .await;
         match result {
             Ok(()) => transaction.commit().await?,
             Err(error) => {
@@ -1085,6 +1149,7 @@ fn ensure_postgres_column_compatibility(
         DataType::Json => matches!(actual.as_str(), "jsonb" | "json"),
         DataType::Date => actual == "date",
         DataType::Timestamp => actual == "timestamp with time zone",
+        DataType::Binary => actual == "bytea",
     };
     if !compatible {
         return Err(MutationExecutorError::Bind(format!(
@@ -1154,6 +1219,9 @@ pub(crate) async fn ensure_postgres_schema_for(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod statistical_binding_tests;
 
 #[cfg(test)]
 mod streaming_tests {
@@ -3148,6 +3216,7 @@ impl tokio_postgres::types::ToSql for PgInteger {
             tokio_postgres::types::Type::INT2 => i16::try_from(self.0)?.to_sql(ty, out),
             tokio_postgres::types::Type::INT4 => i32::try_from(self.0)?.to_sql(ty, out),
             tokio_postgres::types::Type::INT8 => self.0.to_sql(ty, out),
+            tokio_postgres::types::Type::NUMERIC => Decimal::from(self.0).to_sql(ty, out),
             _ => Err(format!("integer cannot be encoded as PostgreSQL type {ty}").into()),
         }
     }
@@ -3158,6 +3227,7 @@ impl tokio_postgres::types::ToSql for PgInteger {
             tokio_postgres::types::Type::INT2
                 | tokio_postgres::types::Type::INT4
                 | tokio_postgres::types::Type::INT8
+                | tokio_postgres::types::Type::NUMERIC
         )
     }
 
@@ -3236,6 +3306,7 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             Some(dt) => args.add(dt),
             None => args.add(v.clone()),
         },
+        Value::Binary(v) => args.add(v.clone()),
         Value::Json(v) => {
             let j_val: serde_json::Value =
                 serde_json::to_value(v).map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
@@ -3254,6 +3325,7 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             DataType::Json => args.add(Option::<serde_json::Value>::None),
             DataType::Date => args.add(Option::<NaiveDate>::None),
             DataType::Timestamp => args.add(PgNull),
+            DataType::Binary => args.add(Option::<Vec<u8>>::None),
         },
     }
     Ok(())
@@ -3351,6 +3423,16 @@ fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecu
             args.add(values);
         }
         Value::Null => return Err(MutationExecutorError::UnsupportedValue("null list")),
+        Value::Binary(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::Binary(bytes) => Ok(bytes.clone()),
+                    _ => Err(MutationExecutorError::UnsupportedValue("mixed binary list")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values);
+        }
         Value::Json(_) => return Err(MutationExecutorError::UnsupportedValue("json list")),
         Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object list")),
         Value::List(_) => return Err(MutationExecutorError::UnsupportedValue("nested list")),
@@ -3365,6 +3447,10 @@ fn decode_pg_values(row: &tokio_postgres::Row) -> Result<Vec<Value>, MutationExe
         let type_name = column.type_().name();
 
         let value = match type_name {
+            "bytea" => {
+                let v: Option<Vec<u8>> = row.try_get(index)?;
+                v.map(Value::Binary).unwrap_or(Value::Null)
+            }
             "bool" | "boolean" => {
                 let v: Option<bool> = row.try_get(index)?;
                 match v {

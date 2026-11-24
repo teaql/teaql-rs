@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod audit_move_tests;
 mod base;
 mod cache;
 mod context;
@@ -8,10 +10,13 @@ mod graph_readback_tests;
 mod helpers;
 mod relation;
 mod resolved;
+mod statistics;
 mod types;
 
 pub use cache::{AggregationCacheBackend, InMemoryAggregationCache};
 pub use executor::GraphTransactionBoundary;
 pub use types::{EntityDataService, RelationLoadPlan};
 
+#[cfg(test)]
+pub(crate) use helpers::default_aggregate_value;
 pub(crate) use types::{ContextDataService, RuntimeDataService, UserContextMetadata};

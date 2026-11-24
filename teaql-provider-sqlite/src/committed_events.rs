@@ -919,6 +919,9 @@ fn decode_model_value(
         )?));
     }
     match property.data_type {
+        DataType::Binary => Err(CommittedEventError::InvalidEnvelope(
+            "Binary field is outside the committed event wire profile",
+        )),
         DataType::Bool => value
             .as_bool()
             .map(|value| SqliteValue::Integer(i64::from(value)))
@@ -1871,6 +1874,21 @@ mod tests {
     }
 
     #[test]
+    fn modeled_binary_value_requires_a_committed_wire_encoding() {
+        let context = UserContext::new();
+        let descriptor = EntityDescriptor::new("Order");
+        let property = PropertyDescriptor::new("attachment", DataType::Binary);
+        let result =
+            decode_model_value(&context, &descriptor, &property, &serde_json::json!([1, 2]));
+        assert!(matches!(
+            result,
+            Err(CommittedEventError::InvalidEnvelope(
+                "Binary field is outside the committed event wire profile"
+            ))
+        ));
+    }
+
+    #[test]
     fn modeled_decimal_bounds_accept_equivalent_trailing_zeros() {
         let property = PropertyDescriptor::new("amount", DataType::Decimal)
             .numeric_precision(19)
@@ -1897,11 +1915,10 @@ mod tests {
     }
 
     #[test]
-    fn model_checked_target_rejects_sqlite_real_coercion_of_exact_decimal() {
+    fn model_checked_target_preserves_exact_sqlite_decimal_text() {
         futures_executor::block_on(async {
             let (executor, context) = model_target().await;
             for (decimal, reason) in [
-                ("0.1", "target did not retain committed field value"),
                 (
                     "123456789012345.6789",
                     "Decimal lacks or exceeds modeled precision or scale",
@@ -1911,11 +1928,7 @@ mod tests {
                     "Decimal lacks or exceeds modeled precision or scale",
                 ),
             ] {
-                let mut inexact = order_set(1);
-                let mut body: JsonValue = serde_json::from_str(&inexact.payload_json).unwrap();
-                body["mutations"][0]["fields"]["amount"] = serde_json::json!(decimal);
-                inexact.payload_json = body.to_string();
-                inexact.payload_sha256 = digest(inexact.payload_json.as_bytes());
+                let inexact = with_committed_amount(order_set(1), decimal);
                 assert!(matches!(
                     executor
                         .apply_model_checked_committed_set(&context, &inexact)
@@ -1949,14 +1962,15 @@ mod tests {
                 );
             }
 
+            let exact = with_committed_amount(order_set(1), "0.1");
             assert_eq!(
                 executor
-                    .apply_model_checked_committed_set(&context, &order_set(1))
+                    .apply_model_checked_committed_set(&context, &exact)
                     .await
                     .unwrap(),
                 InboxOutcome::Applied { checkpoint: 1 }
             );
-            let storage: (String, i64) = executor
+            let storage: (String, String) = executor
                 .lock()
                 .unwrap()
                 .query_row(
@@ -1965,8 +1979,64 @@ mod tests {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .unwrap();
-            assert_eq!(storage, ("integer".into(), 0));
+            assert_eq!(storage, ("text".into(), "0.1".into()));
         });
+    }
+
+    #[test]
+    fn model_checked_target_rejects_legacy_sqlite_real_coercion() {
+        futures_executor::block_on(async {
+            let (executor, context) = model_target().await;
+            {
+                let connection = executor.lock().unwrap();
+                let schema: String = connection
+                    .query_row(
+                        "SELECT sql FROM sqlite_schema WHERE name = 'replica_order'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let legacy_schema = schema.replacen(
+                    "DECIMAL_TEXT(19,7) COLLATE TEAQL_DECIMAL CHECK (amount IS NULL OR teaql_decimal_valid(amount))",
+                    "NUMERIC",
+                    1,
+                );
+                assert_ne!(legacy_schema, schema, "{schema}");
+                connection.execute("DROP TABLE replica_order", []).unwrap();
+                connection.execute(&legacy_schema, []).unwrap();
+            }
+            let inexact = with_committed_amount(order_set(1), "0.1");
+            assert!(matches!(
+                executor
+                    .apply_model_checked_committed_set(&context, &inexact)
+                    .await,
+                Err(CommittedEventError::InvalidEnvelope(
+                    "target did not retain committed field value"
+                ))
+            ));
+            let connection = executor.lock().unwrap();
+            for table in [
+                "replica_order",
+                "teaql_event_inbox",
+                "teaql_event_checkpoint",
+                "teaql_event_applied_payload",
+            ] {
+                let count: i64 = connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(count, 0, "{table}");
+            }
+        });
+    }
+
+    fn with_committed_amount(mut set: OutboxRecord, amount: &str) -> OutboxRecord {
+        let mut body: JsonValue = serde_json::from_str(&set.payload_json).unwrap();
+        body["mutations"][0]["fields"]["amount"] = serde_json::json!(amount);
+        set.payload_json = body.to_string();
+        set.payload_sha256 = digest(set.payload_json.as_bytes());
+        set
     }
 
     #[test]

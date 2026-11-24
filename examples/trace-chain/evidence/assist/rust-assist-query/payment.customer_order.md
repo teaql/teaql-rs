@@ -5,7 +5,6 @@
 KSML entity: `Payment`  
 KSML field: `Customer Order`  
 Type: `Customer Order`
-
 | Capability | Generated API |
 | --- | --- |
 | Select | `select_customer_order()`, `select_customer_order_with(Q::customer_orders_minimal())` |

@@ -33,6 +33,8 @@ run_example() {
 
 run_example "conformance" "$repo_dir/examples/conformance/Cargo.toml" \
   "PASS Rust minimum runtime conformance: 8/8"
+python3 "$repo_dir/examples/context-derived/verify-local.py"
+node "$repo_dir/examples/boolean-boundaries/verify-local.cjs"
 run_example "security-foundations" "$repo_dir/examples/Cargo.toml" \
   "PASS Rust security foundations: opaque reference is portable and purpose-bound" \
   "security_foundations"
@@ -181,4 +183,4 @@ if [[ -n "${TEAQL_CODEGEN_DIR:-}" ]]; then
 else
   bash "$repo_dir/examples/shared-load-state/verify.sh"
 fi
-printf 'PASS Rust runtime examples: 15/15\n'
+printf 'PASS Rust runtime examples: 16/16\n'

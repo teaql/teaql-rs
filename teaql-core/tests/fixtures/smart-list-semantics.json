@@ -1,0 +1,34 @@
+{
+  "schema": "teaql.smart-list-semantics/v1",
+  "states": [
+    {"name": "unloaded", "loaded": false, "rows": [], "total": null},
+    {"name": "loaded-empty-unknown", "loaded": true, "rows": [], "total": null},
+    {"name": "loaded-empty-zero", "loaded": true, "rows": [], "total": 0},
+    {"name": "page", "loaded": true, "rows": [1, 2], "total": 5}
+  ],
+  "metadata": {
+    "aggregations": {"count": 5, "nullable": null, "nested": {"values": [1, 2]}},
+    "summary": {"label": "orders", "active": true, "nested": {"values": [3]}},
+    "facets": {"empty": [], "status": [{"status": "paid", "count": 3}]},
+    "decimal": {"type": "decimal", "value": "9007199254740993.125"}
+  },
+  "transform": {
+    "rows": [1, 2, 3], "total": 9,
+    "mapTimesTen": [10, 20, 30], "filterOdd": [1, 3], "flatMapTwice": [1, 1, 2, 2, 3, 3],
+    "safeMissingIndexes": [-1, 3, 100]
+  },
+  "merge": {
+    "target": [{"key": "a", "value": 1}, {"key": "a", "value": 2}, {"key": "b", "value": 3}],
+    "incoming": [{"key": "a", "value": 4}, {"key": "c", "value": 5}, {"key": "c", "value": 6}, {"key": "d", "value": 7}],
+    "expected": [{"key": "a", "value": 1}, {"key": "a", "value": 4}, {"key": "b", "value": 3}, {"key": "c", "value": 6}, {"key": "d", "value": 7}]
+  },
+  "identity": {
+    "rows": [{"id": 0, "version": 1}, {"id": null, "version": 2}, {"id": 1, "version": 3}, {"id": 1, "version": 4}, {"id": "1", "version": 5}, {"id": "", "version": 6}],
+    "ids": [0, null, 1, 1, "1", ""], "versions": [1, 2, 3, 4, 5, 6], "indexedPositions": [0, 3, 4, 5]
+  },
+  "sqlite": {
+    "rows": [{"id": 1, "status": "paid", "amount": "10.25"}, {"id": 2, "status": "open", "amount": "2.50"}, {"id": 3, "status": "paid", "amount": "7.25"}],
+    "total": 3, "pageLimit": 1, "pageOffset": 1, "pageIds": [2], "emptyStatus": "missing",
+    "sumAmount": "20.00", "statusCounts": {"paid": 2, "open": 1}
+  }
+}

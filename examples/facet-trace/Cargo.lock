@@ -252,6 +252,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -614,9 +623,9 @@ checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.38.2"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -640,6 +649,25 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
+
+[[package]]
+name = "num-bigint"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-integer"
+version = "0.1.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "num-traits"
@@ -820,9 +848,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.40.2"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags",
  "chrono",
@@ -1013,8 +1041,9 @@ dependencies = [
 
 [[package]]
 name = "teaql-core"
-version = "5.0.7"
+version = "8.2.0"
 dependencies = [
+ "base64",
  "bytes",
  "chrono",
  "futures-core",
@@ -1026,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-data-service"
-version = "5.0.7"
+version = "8.2.0"
 dependencies = [
  "futures-core",
  "teaql-core",
@@ -1034,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-macros"
-version = "5.0.7"
+version = "8.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1043,12 +1072,14 @@ dependencies = [
 
 [[package]]
 name = "teaql-provider-sqlite"
-version = "5.0.7"
+version = "8.2.0"
 dependencies = [
  "async-stream",
  "chrono",
+ "encoding_rs",
  "futures-core",
  "futures-util",
+ "num-bigint",
  "rusqlite",
  "rust_decimal",
  "serde_json",
@@ -1061,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-runtime"
-version = "5.0.7"
+version = "8.2.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1071,6 +1102,8 @@ dependencies = [
  "futures-util",
  "hkdf",
  "hmac",
+ "num-bigint",
+ "num-traits",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -1087,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "teaql-sql"
-version = "5.0.7"
+version = "8.2.0"
 dependencies = [
  "futures-core",
  "futures-util",

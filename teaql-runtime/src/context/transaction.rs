@@ -199,11 +199,14 @@ where
         if let Some(ledger) = audited.entity().entity_runtime_state() {
             self.track_ledger(&self.attempted_ledgers, ledger);
         }
-        let (entity, ledger) = crate::save_audited_ledger_entity_with_executor(
+        // Bound this composition point: the generic graph/SQL save future is
+        // large in debug builds. Keeping it inline multiplies the caller's
+        // transaction and task-local frames and can overflow a default stack.
+        let (entity, ledger) = Box::pin(crate::save_audited_ledger_entity_with_executor(
             audited,
             self.context,
             self.transaction(),
-        )
+        ))
         .await?;
         if let Some(ledger) = ledger {
             self.track_ledger(&self.flushed_ledgers, ledger);

@@ -223,9 +223,11 @@ fn committed_target_does_not_replay_positively_wired_business_effects() {
             )
             .await
             .unwrap();
+        // Checker Fix initializes its own business time, in addition to the
+        // explicit clock read above.
         assert_eq!(
             effects.counts(),
-            [1; 8],
+            [1, 1, 1, 2, 1, 1, 1, 1],
             "positive control counts: {NAMES:?}"
         );
         effects.clear();

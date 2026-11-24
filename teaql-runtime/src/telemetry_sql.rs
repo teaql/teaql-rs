@@ -62,7 +62,15 @@ impl crate::UserContext {
         F: std::future::Future<Output = Result<teaql_core::SmartList<T>, E>> + 'a,
     {
         if self.runtime_telemetry_is_noop() {
-            return futures_util::future::Either::Left(future);
+            let owner = std::ptr::from_ref(self) as usize;
+            return futures_util::future::Either::Left(GENERATED_EXECUTION_OWNER.scope(
+                owner,
+                self.observe_local_result(
+                    "QUERY",
+                    future,
+                    crate::runtime_logging::error_type_category::<E>,
+                ),
+            ));
         }
         let future = Box::pin(future);
         futures_util::future::Either::Right(Box::pin(async move {
@@ -91,6 +99,7 @@ impl crate::UserContext {
                 as Arc<dyn SqlStatementTelemetry>
         })
     }
+    #[cfg(test)]
     pub(crate) fn observe_query_request<
         'a,
         T: 'a,
@@ -101,25 +110,59 @@ impl crate::UserContext {
         entity: &'a str,
         future: F,
     ) -> impl std::future::Future<Output = Result<T, E>> + 'a {
-        if self.runtime_telemetry_is_noop()
-            || GENERATED_EXECUTION_OWNER
-                .try_with(|owner| *owner == std::ptr::from_ref(self) as usize)
-                .unwrap_or(false)
+        self.observe_query_request_with_category(
+            entity,
+            future,
+            crate::runtime_logging::error_type_category::<E>,
+        )
+    }
+
+    pub(crate) fn observe_data_service_request<'a, T: 'a, E: 'a, F>(
+        &'a self,
+        entity: &'a str,
+        future: F,
+    ) -> impl std::future::Future<Output = Result<T, crate::DataServiceError<E>>> + 'a
+    where
+        F: std::future::Future<Output = Result<T, crate::DataServiceError<E>>> + 'a,
+    {
+        self.observe_query_request_with_category(
+            entity,
+            future,
+            crate::runtime_logging::data_service_error_category::<E>,
+        )
+    }
+
+    fn observe_query_request_with_category<'a, T: 'a, E: 'a, F>(
+        &'a self,
+        entity: &'a str,
+        future: F,
+        classify: fn(&E) -> &'static str,
+    ) -> impl std::future::Future<Output = Result<T, E>> + 'a
+    where
+        F: std::future::Future<Output = Result<T, E>> + 'a,
+    {
+        if GENERATED_EXECUTION_OWNER
+            .try_with(|owner| *owner == std::ptr::from_ref(self) as usize)
+            .unwrap_or(false)
         {
-            return futures_util::future::Either::Left(future);
+            return futures_util::future::Either::Left(futures_util::future::Either::Left(future));
         }
-        // Only an enabled path allocates. No-op callers retain their original future
-        // instead of embedding it in several nested async state-machine branches.
+        if self.runtime_telemetry_is_noop() {
+            return futures_util::future::Either::Left(futures_util::future::Either::Right(
+                self.observe_local_result("QUERY", future, classify),
+            ));
+        }
+        // Only the SDK path allocates a scope/boxed business future.
         let future = Box::pin(future);
         futures_util::future::Either::Right(Box::pin(async move {
-            let scope = self.start_runtime_operation(
+            let scope = self.start_classified_runtime_operation(
                 RuntimeOperation::new("query", format!("{entity}.request"))
                     .attribute("teaql.entity.type", entity),
             );
             let result = scope.run(self.observe_sql_statements(future)).await;
             match &result {
                 Ok(_) => scope.success(BTreeMap::new()),
-                Err(_) => scope.failure("query_error"),
+                Err(error) => scope.failure_with_category("query_error", classify(error)),
             }
             result
         }))
@@ -204,6 +247,14 @@ impl crate::UserContext {
             "teaql.mutation_lineage".into(),
             path(&state.mutation_lineage).into(),
         );
+        if let Some(nodes) = entry.log_context.request_tree.as_deref() {
+            attributes.insert(
+                "teaql.request_tree".into(),
+                teaql_core::QueryRequestTraceNode::to_json_value(nodes)
+                    .to_string()
+                    .into(),
+            );
+        }
         if let Some(count) = entry.result_count {
             attributes.insert("teaql.sql.result_count".into(), count.into());
         }

@@ -14,6 +14,35 @@ mod hard_limit_tests {
     use super::*;
 
     #[test]
+    fn root_list_ceiling_must_not_invent_nested_pages() {
+        let mut query = SelectQuery::new("Parent")
+            .relation_query("children", SelectQuery::new("Child"))
+            .relation_query("recent", SelectQuery::new("Child").limit(3));
+        query.child_enhancements.push(SelectQuery::new("Subtype"));
+        let prepared = query.prepare_for_list().unwrap();
+        assert_eq!(prepared.slice.unwrap().limit, Some(10_000));
+        assert!(
+            prepared.relations[0]
+                .query
+                .as_ref()
+                .unwrap()
+                .slice
+                .is_none()
+        );
+        assert_eq!(
+            prepared.relations[1]
+                .query
+                .as_ref()
+                .unwrap()
+                .slice
+                .unwrap()
+                .limit,
+            Some(3)
+        );
+        assert!(prepared.child_enhancements[0].slice.is_none());
+    }
+
+    #[test]
     fn list_limit_defaults_rejects_and_allows_explicit_override() {
         assert_eq!(
             SelectQuery::new("Order")
@@ -110,6 +139,29 @@ impl NamedExpr {
             expr,
         }
     }
+
+    /// Classification only; the statistical binder validates arity and types.
+    pub fn is_aggregate(&self) -> bool {
+        let mut expression = &self.expr;
+        for _ in 0..=64 {
+            match expression {
+                Expr::Function {
+                    function: crate::ExprFunction::Identity,
+                    args,
+                } if args.len() == 1 => expression = &args[0],
+                Expr::Function { function, .. } => {
+                    return !matches!(
+                        function,
+                        crate::ExprFunction::Identity
+                            | crate::ExprFunction::Soundex
+                            | crate::ExprFunction::Gbk
+                    );
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +169,56 @@ pub struct OrderBy {
     pub field: String,
     pub expr: Option<Expr>,
     pub direction: SortDirection,
+}
+
+#[cfg(test)]
+mod aggregate_expression_tests {
+    use super::*;
+    #[test]
+    fn repeated_named_measure_keeps_the_first_expression_like_java() {
+        let query = SelectQuery::new("Owner")
+            .aggregate_expression(NamedExpr::new("total", Expr::sum_expr(Expr::value(3_i64))));
+        assert!(query.requires_statistical_plan());
+        let duplicate = query
+            .clone()
+            .aggregate_expression(NamedExpr::new("total", Expr::sum_expr(Expr::value(9_i64))));
+        assert_eq!(duplicate, query);
+        let field = SelectQuery::new("Owner").sum("amount", "total");
+        assert_eq!(
+            field
+                .clone()
+                .aggregate_expression(NamedExpr::new("total", Expr::sum_expr(Expr::value(9_i64)))),
+            field
+        );
+    }
+    #[test]
+    fn grouping_aliases_do_not_hide_conflicting_measure_aliases() {
+        let query = SelectQuery::new("Owner")
+            .group_by_expr("same", Expr::column("id"))
+            .aggregate_expression(NamedExpr::new("same", Expr::count_all()));
+        assert_eq!(query.expr_projection.len(), 2);
+        let owner = crate::EntityDescriptor::new("Owner")
+            .property(crate::PropertyDescriptor::new("id", crate::DataType::I64).id());
+        assert!(crate::aggregation_plan::StatisticalPlan::build(&query, |_| Some(&owner)).is_err());
+    }
+    #[test]
+    fn aggregate_classification_does_not_misclassify_scalar_grouping() {
+        for expr in [
+            Expr::column("id"),
+            Expr::identity(Expr::column("id")),
+            Expr::soundex(Expr::column("name")),
+        ] {
+            assert!(!NamedExpr::new("scalar", expr).is_aggregate());
+        }
+        assert!(NamedExpr::new("measure", Expr::identity(Expr::count_all())).is_aggregate());
+        let parent = SelectQuery::new("Parent")
+            .aggregate_expression(NamedExpr::new("owners", Expr::count_all()));
+        assert!(
+            SelectQuery::new("Child")
+                .object_group_by("parent", "parent_id", parent)
+                .has_layered_statistics()
+        );
+    }
 }
 
 impl OrderBy {
@@ -164,6 +266,7 @@ impl OrderBy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggregateFunction {
     Count,
+    CountDistinct,
     Sum,
     Avg,
     Min,
@@ -203,6 +306,10 @@ impl Aggregate {
 
     pub fn count_field(field: impl Into<String>, alias: impl Into<String>) -> Self {
         Self::new(AggregateFunction::Count, field, alias)
+    }
+
+    pub fn count_distinct(field: impl Into<String>, alias: impl Into<String>) -> Self {
+        Self::new(AggregateFunction::CountDistinct, field, alias)
     }
 
     pub fn sum(field: impl Into<String>, alias: impl Into<String>) -> Self {
@@ -335,6 +442,8 @@ pub struct ObjectGroupBy {
     pub property_name: String,
     pub storage_field: String,
     pub query: SelectQuery,
+    /// Trusted generator-supplied Q spelling, not caller-provided query JSON.
+    pub operation: Option<crate::QueryOperation>,
 }
 
 impl ObjectGroupBy {
@@ -347,7 +456,13 @@ impl ObjectGroupBy {
             property_name: property_name.into(),
             storage_field: storage_field.into(),
             query,
+            operation: None,
         }
+    }
+
+    pub fn with_operation(mut self, operation: crate::QueryOperation) -> Self {
+        self.operation = Some(operation);
+        self
     }
 }
 
@@ -443,10 +558,19 @@ impl Default for StreamConfig {
     }
 }
 
+/// Optional process-local provenance shares one pointer in the query body.
+/// Copy-on-write keeps builder changes isolated without growing every async
+/// query frame when a new kind of internal provenance is introduced.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct QueryProvenance {
+    request_scope: Option<crate::QueryRequestScope>,
+    navigation_origin: Option<Arc<String>>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectQuery {
-    // Private, clone-preserved execution capability. Remote decoders cannot set it.
-    request_scope: Option<crate::QueryRequestScope>,
+    // Private capabilities: never populated by remote request decoders.
+    provenance: Option<Arc<QueryProvenance>>,
     /// Safety ceiling for a fully materialized outer query.
     pub hard_limit: u64,
     pub entity: String,
@@ -497,10 +621,49 @@ pub struct SelectQuery {
 }
 
 impl SelectQuery {
+    /// Aggregate expression projections use the same typed owner-grain plan as
+    /// field aggregates inside a roll-up. Scalar projections are not aggregates.
+    pub fn has_aggregate_projection(&self) -> bool {
+        self.expr_projection.iter().any(NamedExpr::is_aggregate)
+    }
+
+    /// Java addAggregate: an existing aggregate alias keeps its first value.
+    /// Dimensions are a separate namespace; their collisions remain errors.
+    pub fn aggregate_expression(mut self, aggregate: NamedExpr) -> Self {
+        if self
+            .aggregates
+            .iter()
+            .any(|existing| existing.alias == aggregate.alias)
+            || self
+                .expr_projection
+                .iter()
+                .any(|existing| existing.alias == aggregate.alias && existing.is_aggregate())
+        {
+            return self;
+        }
+        self.expr_projection.push(aggregate);
+        self
+    }
+
+    pub fn requires_statistical_plan(&self) -> bool {
+        self.has_aggregate_projection() || self.has_layered_statistics()
+    }
+
+    /// A grouped parent changes the final statistical grain. It cannot be
+    /// hydrated through the ordinary entity-ID detail enhancement path.
+    pub fn has_layered_statistics(&self) -> bool {
+        self.object_group_bys.iter().any(|group| {
+            !group.query.group_by.is_empty()
+                || !group.query.aggregates.is_empty()
+                || group.query.has_aggregate_projection()
+                || !group.query.object_group_bys.is_empty()
+        })
+    }
+
     pub fn new(entity: impl Into<String>) -> Self {
         Self {
             hard_limit: 10_000,
-            request_scope: None,
+            provenance: None,
             entity: entity.into(),
             projection: Vec::new(),
             expr_projection: Vec::new(),
@@ -535,20 +698,26 @@ impl SelectQuery {
     }
 
     pub fn request_scope(&self) -> Option<&crate::QueryRequestScope> {
-        self.request_scope.as_ref()
+        self.provenance.as_ref()?.request_scope.as_ref()
     }
 
     #[doc(hidden)]
     pub fn with_request_scope(mut self, scope: crate::QueryRequestScope) -> Self {
         self.comment = Some(scope.intent().comment().to_owned());
         self.purpose = Some(scope.purpose().to_owned());
-        self.request_scope = Some(scope);
+        Arc::make_mut(self.provenance.get_or_insert_with(Default::default)).request_scope =
+            Some(scope);
         self
     }
 
     #[doc(hidden)]
     pub fn clear_request_scope(&mut self) {
-        self.request_scope = None;
+        if let Some(provenance) = &mut self.provenance {
+            Arc::make_mut(provenance).request_scope = None;
+            if provenance.navigation_origin.is_none() {
+                self.provenance = None;
+            }
+        }
     }
 
     pub fn project(mut self, field: impl Into<String>) -> Self {
@@ -610,6 +779,19 @@ impl SelectQuery {
     pub fn filter(mut self, filter: Expr) -> Self {
         self.filter = Some(filter);
         self
+    }
+
+    pub(crate) fn mark_navigation_origin(&mut self, relation: &str) {
+        Arc::make_mut(self.provenance.get_or_insert_with(Default::default)).navigation_origin =
+            Some(Arc::new(relation.to_owned()));
+    }
+
+    pub(crate) fn navigation_origin(&self) -> Option<&str> {
+        self.provenance
+            .as_ref()?
+            .navigation_origin
+            .as_deref()
+            .map(String::as_str)
     }
 
     pub fn and_filter(mut self, filter: Expr) -> Self {
@@ -683,6 +865,11 @@ impl SelectQuery {
         self
     }
 
+    pub fn group_by_expr(self, alias: impl Into<String>, expression: Expr) -> Self {
+        let alias = alias.into();
+        self.group_by(alias.clone()).project_expr(alias, expression)
+    }
+
     pub fn aggregate(mut self, aggregate: Aggregate) -> Self {
         self.aggregates.push(aggregate);
         self
@@ -694,6 +881,10 @@ impl SelectQuery {
 
     pub fn count_field(self, field: impl Into<String>, alias: impl Into<String>) -> Self {
         self.aggregate(Aggregate::count_field(field, alias))
+    }
+
+    pub fn count_distinct(self, field: impl Into<String>, alias: impl Into<String>) -> Self {
+        self.aggregate(Aggregate::count_distinct(field, alias))
     }
 
     pub fn sum(self, field: impl Into<String>, alias: impl Into<String>) -> Self {
@@ -827,14 +1018,14 @@ impl SelectQuery {
         self
     }
 
-    /// Apply and validate list-materialization limits. This is intentionally not
-    /// used by streaming execution.
+    /// Bound this materialized result, never its contributing nested populations.
+    /// An explicit nested Top-N remains part of that query's business semantics.
     pub fn prepare_for_list(mut self) -> Result<Self, String> {
-        self.apply_list_limit(self.hard_limit, true)?;
+        self.apply_list_limit(self.hard_limit)?;
         Ok(self)
     }
 
-    fn apply_list_limit(&mut self, ceiling: u64, outer: bool) -> Result<(), String> {
+    fn apply_list_limit(&mut self, ceiling: u64) -> Result<(), String> {
         let slice = self.slice.get_or_insert(Slice {
             limit: None,
             offset: 0,
@@ -848,15 +1039,6 @@ impl SelectQuery {
             None => slice.limit = Some(ceiling),
             _ => {}
         }
-        for relation in &mut self.relations {
-            if let Some(query) = relation.query.as_mut() {
-                query.apply_list_limit(10_000, false)?;
-            }
-        }
-        for query in &mut self.child_enhancements {
-            query.apply_list_limit(10_000, false)?;
-        }
-        let _ = outer;
         Ok(())
     }
 

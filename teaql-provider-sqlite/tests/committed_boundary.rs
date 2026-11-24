@@ -1,7 +1,7 @@
 //! Signed canonical-frame checks. Infrastructure unit fixture, not application saves.
 use futures_executor::block_on;
 use rusqlite::Connection;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use teaql_core::{DataType, EntityDescriptor, PropertyDescriptor};

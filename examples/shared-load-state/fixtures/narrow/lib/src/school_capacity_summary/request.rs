@@ -46,8 +46,8 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     pub(crate) fn new() -> Self {
         Self {
             query: SelectQuery::new("SchoolCapacitySummary")
-                .project("id")
-                .project("version"),
+                .project(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key)
+                .project(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key),
             relation_selections: Vec::new(),
             relation_filters: Vec::new(),
             child_enhancements: Vec::new(),
@@ -167,7 +167,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
             self.query,
             &self.query_options,
             &self.child_enhancements,
-        ))?;
+        ))?.with_facet_diagnostics(&self.query_options);
         context.fetch_compact_smart_list("SchoolCapacitySummary", &query).await
     }
 
@@ -251,7 +251,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
             &self.child_enhancements,
         ).limit(1);
         query.relations.clear();
-        let query = authorize_query(query)?;
+        let query = authorize_query(query)?.with_facet_diagnostics(&self.query_options);
         let rows = context.fetch_compact_rows("SchoolCapacitySummary", &query).await?;
         Ok(!rows.is_empty())
     }
@@ -301,7 +301,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
 
     pub fn deleted_rows_only(mut self) -> Self {
         self.query.filter = remove_default_live_filter(self.query.filter);
-        self.query = self.query.and_filter(Expr::lte("version", 0_i64));
+        self.query = self.query.and_filter(Expr::lte(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key, 0_i64));
         self
     }
 
@@ -614,12 +614,12 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn select_self(mut self) -> Self {
-        self.query = self.query.project("id");
-        self.query = self.query.project("name");
-        self.query = self.query.project("total_capacity");
-        self.query = self.query.project("school_count");
-        self.query = self.query.project("version");
-        self.query = self.query.project("platform_id");
+        self.query = self.query.project(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key);
+        self.query = self.query.project(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key);
+        self.query = self.query.project(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key);
+        self.query = self.query.project(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key);
+        self.query = self.query.project(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key);
+        self.query = self.query.project(crate::SchoolCapacitySummary::__TEAQL_FIELD_platform.query_key);
         self
     }
 
@@ -757,15 +757,15 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn group_by_id(self) -> Self {
-        self.group_by("id")
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key)
     }
 
     pub fn group_by_id_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("id");
+        let mut request = self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("id"));
+            .project_expr(alias, Expr::column(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key));
         request
     }
 
@@ -774,8 +774,8 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("id")
-            .aggregate_with_function("id", alias, function)
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key)
+            .aggregate_with_function(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, alias, function)
     }
 
     pub fn count_id(self) -> Self {
@@ -783,7 +783,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn count_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("id", alias)
+        self.aggregate_count_field(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn sum_id(self) -> Self {
@@ -791,7 +791,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn sum_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("id", alias)
+        self.aggregate_sum(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn avg_id(self) -> Self {
@@ -799,7 +799,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn avg_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("id", alias)
+        self.aggregate_avg(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn min_id(self) -> Self {
@@ -807,7 +807,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn min_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("id", alias)
+        self.aggregate_min(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, alias)
     }
 
     pub fn max_id(self) -> Self {
@@ -815,7 +815,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn max_id_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("id", alias)
+        self.aggregate_max(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, alias)
     }
 
 
@@ -825,7 +825,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "id",
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -837,69 +837,123 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "id",
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
-    pub fn with_id_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("id", value));
+    pub fn with_id_is(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::eq(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
         self
     }
 
 
 
-    pub fn with_id_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("id", value));
+    pub fn with_id_is_not(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::ne(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_greater_than(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::gt(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_greater_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::gte(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_less_than(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::lt(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_less_than_or_equal_to(mut self, value: impl Into<u64>) -> Self {
+        self.query = self.query.and_filter(Expr::lte(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, Into::<u64>::into(value)));
+        self
+    }
+
+    pub fn with_id_between(
+        mut self,
+        lower: impl Into<u64>,
+        upper: impl Into<u64>,
+    ) -> Self {
+        self.query = self.query.and_filter(Expr::between(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key, Into::<u64>::into(lower), Into::<u64>::into(upper)));
+        self
+    }
+
+    pub fn with_id_between_range<T>(mut self, range: DateRange<T>) -> Self
+    where
+        T: Into<u64>,
+    {
+        self.query = self.query.and_filter(Expr::between(
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key,
+            Into::<u64>::into(range.start),
+            Into::<u64>::into(range.end),
+        ));
         self
     }
 
     pub fn with_id_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<u64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "id",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<u64>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_id_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<u64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "id",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<u64>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
+    pub fn with_id_is_unknown(mut self) -> Self {
+        self.query = self.query.and_filter(Expr::is_null(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key));
+        self
+    }
+
+
+
+    pub fn with_id_is_known(mut self) -> Self {
+        self.query = self.query.and_filter(Expr::is_not_null(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key));
+        self
+    }
+
+
     pub fn order_by_id_asc(mut self) -> Self {
-        self.query = self.query.order_asc("id");
+        self.query = self.query.order_asc(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_desc(mut self) -> Self {
-        self.query = self.query.order_desc("id");
+        self.query = self.query.order_desc(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("id");
+        self.query = self.query.order_gbk_asc(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key);
         self
     }
 
     pub fn order_by_id_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("id");
+        self.query = self.query.order_gbk_desc(crate::SchoolCapacitySummary::__TEAQL_FIELD_id.query_key);
         self
     }
 
 
     pub fn select_name(mut self) -> Self {
-        self.query = self.query.project("name");
+        self.query = self.query.project(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key);
         self
     }
 
@@ -919,15 +973,15 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn group_by_name(self) -> Self {
-        self.group_by("name")
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key)
     }
 
     pub fn group_by_name_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("name");
+        let mut request = self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("name"));
+            .project_expr(alias, Expr::column(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key));
         request
     }
 
@@ -936,8 +990,8 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("name")
-            .aggregate_with_function("name", alias, function)
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key)
+            .aggregate_with_function(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, alias, function)
     }
 
     pub fn count_name(self) -> Self {
@@ -945,7 +999,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn count_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("name", alias)
+        self.aggregate_count_field(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn sum_name(self) -> Self {
@@ -953,7 +1007,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn sum_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("name", alias)
+        self.aggregate_sum(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn avg_name(self) -> Self {
@@ -961,7 +1015,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn avg_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("name", alias)
+        self.aggregate_avg(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn min_name(self) -> Self {
@@ -969,7 +1023,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn min_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("name", alias)
+        self.aggregate_min(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn max_name(self) -> Self {
@@ -977,7 +1031,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn max_name_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("name", alias)
+        self.aggregate_max(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, alias)
     }
 
     pub fn unselect_name(mut self) -> Self {
@@ -993,7 +1047,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "name",
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1005,99 +1059,99 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "name",
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
-    pub fn with_name_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("name", value));
+    pub fn with_name_is(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::eq(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
 
 
-    pub fn with_name_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("name", value));
+    pub fn with_name_is_not(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::ne(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
-    pub fn with_name_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
+    pub fn with_name_greater_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
-    pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("name", value));
+    pub fn with_name_greater_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gte(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
-    pub fn with_name_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
+    pub fn with_name_less_than(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
-    pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("name", value));
+    pub fn with_name_less_than_or_equal_to(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lte(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_name_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<String>,
+        upper: impl Into<String>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("name", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, Into::<String>::into(lower), Into::<String>::into(upper)));
         self
     }
 
     pub fn with_name_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<String>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "name",
-            range.start,
-            range.end,
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key,
+            Into::<String>::into(range.start),
+            Into::<String>::into(range.end),
         ));
         self
     }
 
     pub fn with_name_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "name",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_name_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<String>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "name",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<String>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_name_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::contain("name", value));
+        self.query = self.query.and_filter(Expr::contain(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_not_containing(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::not_contain("name", value));
+        self.query = self.query.and_filter(Expr::not_contain(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
     pub fn with_name_starting_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::begin_with("name", value));
+        self.query = self.query.and_filter(Expr::begin_with(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
@@ -1107,7 +1161,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn with_name_ending_with(mut self, value: impl Into<String>) -> Self {
-        self.query = self.query.and_filter(Expr::end_with("name", value));
+        self.query = self.query.and_filter(Expr::end_with(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, value));
         self
     }
 
@@ -1116,56 +1170,56 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         self
     }
 
-    pub fn with_name_sounding_like(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::sound_like("name", value));
+    pub fn with_name_sounding_like(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::sound_like(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
-    pub fn with_name_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("name", value));
+    pub fn with_name_before(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::lt(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
-    pub fn with_name_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("name", value));
+    pub fn with_name_after(mut self, value: impl Into<String>) -> Self {
+        self.query = self.query.and_filter(Expr::gt(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key, Into::<String>::into(value)));
         self
     }
 
     pub fn with_name_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("name"));
+        self.query = self.query.and_filter(Expr::is_null(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key));
         self
     }
 
 
 
     pub fn with_name_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("name"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key));
         self
     }
 
 
     pub fn order_by_name_asc(mut self) -> Self {
-        self.query = self.query.order_asc("name");
+        self.query = self.query.order_asc(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key);
         self
     }
 
     pub fn order_by_name_desc(mut self) -> Self {
-        self.query = self.query.order_desc("name");
+        self.query = self.query.order_desc(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key);
         self
     }
 
     pub fn order_by_name_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("name");
+        self.query = self.query.order_gbk_asc(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key);
         self
     }
 
     pub fn order_by_name_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("name");
+        self.query = self.query.order_gbk_desc(crate::SchoolCapacitySummary::__TEAQL_FIELD_name.query_key);
         self
     }
 
 
     pub fn select_total_capacity(mut self) -> Self {
-        self.query = self.query.project("total_capacity");
+        self.query = self.query.project(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key);
         self
     }
 
@@ -1193,19 +1247,19 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.aggregate_with_function("total_capacity", alias, function)
+        self.aggregate_with_function(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, alias, function)
     }
 
     pub fn group_by_total_capacity(self) -> Self {
-        self.group_by("total_capacity")
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key)
     }
 
     pub fn group_by_total_capacity_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("total_capacity");
+        let mut request = self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("total_capacity"));
+            .project_expr(alias, Expr::column(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key));
         request
     }
 
@@ -1214,8 +1268,8 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("total_capacity")
-            .aggregate_with_function("total_capacity", alias, function)
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key)
+            .aggregate_with_function(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, alias, function)
     }
 
     pub fn count_total_capacity(self) -> Self {
@@ -1223,7 +1277,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn count_total_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("total_capacity", alias)
+        self.aggregate_count_field(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, alias)
     }
 
     pub fn sum_total_capacity(self) -> Self {
@@ -1231,7 +1285,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn sum_total_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("total_capacity", alias)
+        self.aggregate_sum(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, alias)
     }
 
     pub fn avg_total_capacity(self) -> Self {
@@ -1239,7 +1293,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn avg_total_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("total_capacity", alias)
+        self.aggregate_avg(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, alias)
     }
 
     pub fn min_total_capacity(self) -> Self {
@@ -1247,7 +1301,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn min_total_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("total_capacity", alias)
+        self.aggregate_min(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, alias)
     }
 
     pub fn max_total_capacity(self) -> Self {
@@ -1255,7 +1309,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn max_total_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("total_capacity", alias)
+        self.aggregate_max(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, alias)
     }
 
     pub fn standard_deviation_total_capacity(self) -> Self {
@@ -1263,7 +1317,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn standard_deviation_total_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_stddev("total_capacity", alias)
+        self.aggregate_stddev(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, alias)
     }
 
     pub fn square_root_of_population_standard_deviation_total_capacity(self) -> Self {
@@ -1271,7 +1325,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn square_root_of_population_standard_deviation_total_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_stddev_pop("total_capacity", alias)
+        self.aggregate_stddev_pop(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, alias)
     }
 
     pub fn sample_variance_total_capacity(self) -> Self {
@@ -1279,7 +1333,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn sample_variance_total_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_var_samp("total_capacity", alias)
+        self.aggregate_var_samp(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, alias)
     }
 
     pub fn sample_population_variance_total_capacity(self) -> Self {
@@ -1287,7 +1341,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn sample_population_variance_total_capacity_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_var_pop("total_capacity", alias)
+        self.aggregate_var_pop(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, alias)
     }
 
     pub fn unselect_total_capacity(mut self) -> Self {
@@ -1303,7 +1357,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "total_capacity",
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1315,133 +1369,133 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "total_capacity",
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
-    pub fn with_total_capacity_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("total_capacity", value));
+    pub fn with_total_capacity_is(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::eq(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, Into::<i64>::into(value)));
         self
     }
 
 
 
-    pub fn with_total_capacity_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("total_capacity", value));
+    pub fn with_total_capacity_is_not(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::ne(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_total_capacity_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("total_capacity", value));
+    pub fn with_total_capacity_greater_than(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::gt(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_total_capacity_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("total_capacity", value));
+    pub fn with_total_capacity_greater_than_or_equal_to(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::gte(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_total_capacity_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("total_capacity", value));
+    pub fn with_total_capacity_less_than(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::lt(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_total_capacity_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("total_capacity", value));
+    pub fn with_total_capacity_less_than_or_equal_to(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::lte(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, Into::<i64>::into(value)));
         self
     }
 
     pub fn with_total_capacity_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<i64>,
+        upper: impl Into<i64>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("total_capacity", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, Into::<i64>::into(lower), Into::<i64>::into(upper)));
         self
     }
 
     pub fn with_total_capacity_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<i64>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "total_capacity",
-            range.start,
-            range.end,
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key,
+            Into::<i64>::into(range.start),
+            Into::<i64>::into(range.end),
         ));
         self
     }
 
     pub fn with_total_capacity_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<i64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "total_capacity",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<i64>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_total_capacity_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<i64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "total_capacity",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<i64>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
-    pub fn with_total_capacity_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("total_capacity", value));
+    pub fn with_total_capacity_before(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::lt(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_total_capacity_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("total_capacity", value));
+    pub fn with_total_capacity_after(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::gt(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key, Into::<i64>::into(value)));
         self
     }
 
     pub fn with_total_capacity_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("total_capacity"));
+        self.query = self.query.and_filter(Expr::is_null(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key));
         self
     }
 
 
 
     pub fn with_total_capacity_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("total_capacity"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key));
         self
     }
 
 
     pub fn order_by_total_capacity_asc(mut self) -> Self {
-        self.query = self.query.order_asc("total_capacity");
+        self.query = self.query.order_asc(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key);
         self
     }
 
     pub fn order_by_total_capacity_desc(mut self) -> Self {
-        self.query = self.query.order_desc("total_capacity");
+        self.query = self.query.order_desc(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key);
         self
     }
 
     pub fn order_by_total_capacity_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("total_capacity");
+        self.query = self.query.order_gbk_asc(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key);
         self
     }
 
     pub fn order_by_total_capacity_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("total_capacity");
+        self.query = self.query.order_gbk_desc(crate::SchoolCapacitySummary::__TEAQL_FIELD_total_capacity.query_key);
         self
     }
 
 
     pub fn select_school_count(mut self) -> Self {
-        self.query = self.query.project("school_count");
+        self.query = self.query.project(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key);
         self
     }
 
@@ -1469,19 +1523,19 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.aggregate_with_function("school_count", alias, function)
+        self.aggregate_with_function(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, alias, function)
     }
 
     pub fn group_by_school_count(self) -> Self {
-        self.group_by("school_count")
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key)
     }
 
     pub fn group_by_school_count_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("school_count");
+        let mut request = self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("school_count"));
+            .project_expr(alias, Expr::column(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key));
         request
     }
 
@@ -1490,8 +1544,8 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("school_count")
-            .aggregate_with_function("school_count", alias, function)
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key)
+            .aggregate_with_function(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, alias, function)
     }
 
     pub fn count_school_count(self) -> Self {
@@ -1499,7 +1553,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn count_school_count_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("school_count", alias)
+        self.aggregate_count_field(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, alias)
     }
 
     pub fn sum_school_count(self) -> Self {
@@ -1507,7 +1561,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn sum_school_count_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("school_count", alias)
+        self.aggregate_sum(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, alias)
     }
 
     pub fn avg_school_count(self) -> Self {
@@ -1515,7 +1569,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn avg_school_count_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("school_count", alias)
+        self.aggregate_avg(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, alias)
     }
 
     pub fn min_school_count(self) -> Self {
@@ -1523,7 +1577,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn min_school_count_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("school_count", alias)
+        self.aggregate_min(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, alias)
     }
 
     pub fn max_school_count(self) -> Self {
@@ -1531,7 +1585,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn max_school_count_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("school_count", alias)
+        self.aggregate_max(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, alias)
     }
 
     pub fn standard_deviation_school_count(self) -> Self {
@@ -1539,7 +1593,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn standard_deviation_school_count_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_stddev("school_count", alias)
+        self.aggregate_stddev(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, alias)
     }
 
     pub fn square_root_of_population_standard_deviation_school_count(self) -> Self {
@@ -1547,7 +1601,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn square_root_of_population_standard_deviation_school_count_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_stddev_pop("school_count", alias)
+        self.aggregate_stddev_pop(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, alias)
     }
 
     pub fn sample_variance_school_count(self) -> Self {
@@ -1555,7 +1609,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn sample_variance_school_count_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_var_samp("school_count", alias)
+        self.aggregate_var_samp(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, alias)
     }
 
     pub fn sample_population_variance_school_count(self) -> Self {
@@ -1563,7 +1617,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn sample_population_variance_school_count_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_var_pop("school_count", alias)
+        self.aggregate_var_pop(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, alias)
     }
 
     pub fn unselect_school_count(mut self) -> Self {
@@ -1579,7 +1633,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Self {
         self.query = self.query.and_filter(field_operator_expr(
-            "school_count",
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         ));
@@ -1591,140 +1645,140 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
     ) -> Expr {
         field_operator_expr(
-            "school_count",
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key,
             operator,
             values.into_iter().map(Into::into).collect(),
         )
     }
 
-    pub fn with_school_count_is(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::eq("school_count", value));
+    pub fn with_school_count_is(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::eq(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, Into::<i64>::into(value)));
         self
     }
 
 
 
-    pub fn with_school_count_is_not(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::ne("school_count", value));
+    pub fn with_school_count_is_not(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::ne(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_school_count_greater_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("school_count", value));
+    pub fn with_school_count_greater_than(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::gt(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_school_count_greater_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gte("school_count", value));
+    pub fn with_school_count_greater_than_or_equal_to(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::gte(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_school_count_less_than(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("school_count", value));
+    pub fn with_school_count_less_than(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::lt(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_school_count_less_than_or_equal_to(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lte("school_count", value));
+    pub fn with_school_count_less_than_or_equal_to(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::lte(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, Into::<i64>::into(value)));
         self
     }
 
     pub fn with_school_count_between(
         mut self,
-        lower: impl Into<teaql_core::Value>,
-        upper: impl Into<teaql_core::Value>,
+        lower: impl Into<i64>,
+        upper: impl Into<i64>,
     ) -> Self {
-        self.query = self.query.and_filter(Expr::between("school_count", lower, upper));
+        self.query = self.query.and_filter(Expr::between(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, Into::<i64>::into(lower), Into::<i64>::into(upper)));
         self
     }
 
     pub fn with_school_count_between_range<T>(mut self, range: DateRange<T>) -> Self
     where
-        T: Into<teaql_core::Value>,
+        T: Into<i64>,
     {
         self.query = self.query.and_filter(Expr::between(
-            "school_count",
-            range.start,
-            range.end,
+            crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key,
+            Into::<i64>::into(range.start),
+            Into::<i64>::into(range.end),
         ));
         self
     }
 
     pub fn with_school_count_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<i64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::in_list(
             "school_count",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<i64>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
     pub fn with_school_count_not_in(
         mut self,
-        values: impl IntoIterator<Item = impl Into<teaql_core::Value>>,
+        values: impl IntoIterator<Item = impl Into<i64>>,
     ) -> Self {
         self.query = self.query.and_filter(Expr::not_in_list(
             "school_count",
-            values.into_iter().map(Into::into),
+            values.into_iter().map(Into::<i64>::into).map(teaql_core::Value::from),
         ));
         self
     }
 
-    pub fn with_school_count_before(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::lt("school_count", value));
+    pub fn with_school_count_before(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::lt(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, Into::<i64>::into(value)));
         self
     }
 
-    pub fn with_school_count_after(mut self, value: impl Into<teaql_core::Value>) -> Self {
-        self.query = self.query.and_filter(Expr::gt("school_count", value));
+    pub fn with_school_count_after(mut self, value: impl Into<i64>) -> Self {
+        self.query = self.query.and_filter(Expr::gt(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key, Into::<i64>::into(value)));
         self
     }
 
     pub fn with_school_count_is_unknown(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("school_count"));
+        self.query = self.query.and_filter(Expr::is_null(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key));
         self
     }
 
 
 
     pub fn with_school_count_is_known(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("school_count"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key));
         self
     }
 
 
     pub fn order_by_school_count_asc(mut self) -> Self {
-        self.query = self.query.order_asc("school_count");
+        self.query = self.query.order_asc(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key);
         self
     }
 
     pub fn order_by_school_count_desc(mut self) -> Self {
-        self.query = self.query.order_desc("school_count");
+        self.query = self.query.order_desc(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key);
         self
     }
 
     pub fn order_by_school_count_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("school_count");
+        self.query = self.query.order_gbk_asc(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key);
         self
     }
 
     pub fn order_by_school_count_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("school_count");
+        self.query = self.query.order_gbk_desc(crate::SchoolCapacitySummary::__TEAQL_FIELD_school_count.query_key);
         self
     }
 
     pub fn group_by_version(self) -> Self {
-        self.group_by("version")
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key)
     }
 
     pub fn group_by_version_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("version");
+        let mut request = self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("version"));
+            .project_expr(alias, Expr::column(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key));
         request
     }
 
@@ -1733,8 +1787,8 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("version")
-            .aggregate_with_function("version", alias, function)
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key)
+            .aggregate_with_function(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key, alias, function)
     }
 
     pub fn count_version(self) -> Self {
@@ -1742,7 +1796,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn count_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("version", alias)
+        self.aggregate_count_field(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn sum_version(self) -> Self {
@@ -1750,7 +1804,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn sum_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_sum("version", alias)
+        self.aggregate_sum(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn avg_version(self) -> Self {
@@ -1758,7 +1812,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn avg_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_avg("version", alias)
+        self.aggregate_avg(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn min_version(self) -> Self {
@@ -1766,7 +1820,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn min_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_min("version", alias)
+        self.aggregate_min(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn max_version(self) -> Self {
@@ -1774,30 +1828,30 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn max_version_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_max("version", alias)
+        self.aggregate_max(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key, alias)
     }
 
     pub fn order_by_version_asc(mut self) -> Self {
-        self.query = self.query.order_asc("version");
+        self.query = self.query.order_asc(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_desc(mut self) -> Self {
-        self.query = self.query.order_desc("version");
+        self.query = self.query.order_desc(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_asc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_asc("version");
+        self.query = self.query.order_gbk_asc(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key);
         self
     }
 
     pub fn order_by_version_desc_using_gbk(mut self) -> Self {
-        self.query = self.query.order_gbk_desc("version");
+        self.query = self.query.order_gbk_desc(crate::SchoolCapacitySummary::__TEAQL_FIELD_version.query_key);
         self
     }
     pub fn filter_by_platform(mut self, value: impl EntityReference) -> Self {
-        self.query = self.query.and_filter(Expr::eq("platform_id", value.entity_id_value()));
+        self.query = self.query.and_filter(Expr::eq(crate::SchoolCapacitySummary::__TEAQL_FIELD_platform.query_key, value.entity_id_value()));
         self
     }
 
@@ -1828,26 +1882,26 @@ impl<R> SchoolCapacitySummaryRequest<R> {
 
 
     pub fn have_platform(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_not_null("platform_id"));
+        self.query = self.query.and_filter(Expr::is_not_null(crate::SchoolCapacitySummary::__TEAQL_FIELD_platform.query_key));
         self
     }
 
     pub fn have_no_platform(mut self) -> Self {
-        self.query = self.query.and_filter(Expr::is_null("platform_id"));
+        self.query = self.query.and_filter(Expr::is_null(crate::SchoolCapacitySummary::__TEAQL_FIELD_platform.query_key));
         self
     }
 
 
     pub fn group_by_platform(self) -> Self {
-        self.group_by("platform_id")
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_platform.query_key)
     }
 
     pub fn group_by_platform_as(self, alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        let mut request = self.group_by("platform_id");
+        let mut request = self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_platform.query_key);
         request.query = request
             .query
-            .project_expr(alias, Expr::column("platform_id"));
+            .project_expr(alias, Expr::column(crate::SchoolCapacitySummary::__TEAQL_FIELD_platform.query_key));
         request
     }
 
@@ -1856,12 +1910,12 @@ impl<R> SchoolCapacitySummaryRequest<R> {
         alias: impl Into<String>,
         function: AggregateFunction,
     ) -> Self {
-        self.group_by("platform_id")
-            .aggregate_with_function("platform_id", alias, function)
+        self.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_platform.query_key)
+            .aggregate_with_function(crate::SchoolCapacitySummary::__TEAQL_FIELD_platform.query_key, alias, function)
     }
 
     pub fn group_by_platform_with(mut self, request: impl Into<QuerySelection>) -> Self {
-        self.query = self.query.group_by("platform_id");
+        self.query = self.query.group_by(crate::SchoolCapacitySummary::__TEAQL_FIELD_platform.query_key);
         self.query_options.object_group_bys.push(ObjectGroupBy::new(
             "platform",
             "platform_id",
@@ -1894,7 +1948,7 @@ impl<R> SchoolCapacitySummaryRequest<R> {
     }
 
     pub fn count_platform_as(self, alias: impl Into<String>) -> Self {
-        self.aggregate_count_field("platform_id", alias)
+        self.aggregate_count_field(crate::SchoolCapacitySummary::__TEAQL_FIELD_platform.query_key, alias)
     }
 
     pub fn unselect_platform(mut self) -> Self {
@@ -1985,17 +2039,18 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolCapacitySummaryRequest<R>
         self
     }
 
-    pub fn new_entity<C>(&self, context: &C) -> crate::SchoolCapacitySummary
+    pub fn new_entity<C>(&self, context: &C) -> Result<crate::SchoolCapacitySummary, RuntimeError>
     where
         C: crate::TeaqlRuntime + ?Sized,
     {
         self.require_comment();
+        // Reserve identity before allocating mutation state. A failed reservation
+        // must not escape as an entity or fall back to a different allocator.
+        let id = context.user_context().next_id(crate::SchoolCapacitySummary::ENTITY_NAME)?;
         let mut entity = crate::SchoolCapacitySummary::runtime_new(context.user_context().entity_runtime_state());
-        if let Ok(id) = context.user_context().next_id(crate::SchoolCapacitySummary::ENTITY_NAME) {
-            entity.update_id(id);
-        }
+        entity.update_id(id);
         teaql_core::Entity::mark_as_new(&mut entity);
-        entity
+        Ok(entity)
     }
 
     fn into_inner_with_trace(mut self) -> SchoolCapacitySummaryRequest<R> {
@@ -2016,7 +2071,11 @@ impl<R: teaql_core::Entity> crate::PurposedQuery<SchoolCapacitySummaryRequest<R>
                 .comment
                 .as_deref()
                 .is_some_and(|comment| !comment.trim().is_empty()),
-            "query comment must not be empty"
+            "{}",
+            teaql_core::RequestIntentError {
+                request_kind: teaql_core::RequestKind::Query,
+                field: "comment",
+            }
         );
     }
 

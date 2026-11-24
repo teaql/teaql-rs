@@ -406,9 +406,22 @@ fn relation_file_sinks() {
             .as_nanos()
     ));
     std::fs::create_dir(&directory).unwrap();
-    for (debug, cached) in [(false, false), (true, false), (false, true), (true, true)] {
-        let ordinary = directory.join(format!("ordinary-{debug}-cached-{cached}.log"));
-        let sensitive = directory.join(format!("explicit-{debug}-cached-{cached}.log"));
+    for (presentation, debug, cached) in [
+        ("json", false, false),
+        ("json", true, false),
+        ("json", false, true),
+        ("json", true, true),
+        ("human", false, false),
+        ("human", true, false),
+        ("human", false, true),
+        ("human", true, true),
+    ] {
+        let ordinary = directory.join(format!(
+            "ordinary-{presentation}-{debug}-cached-{cached}.log"
+        ));
+        let sensitive = directory.join(format!(
+            "explicit-{presentation}-{debug}-cached-{cached}.log"
+        ));
         let expected_sql = if cached { "FROM orders" } else { "FROM items" };
         let expected_purpose = if cached {
             "why: cached parent"
@@ -426,7 +439,7 @@ fn relation_file_sinks() {
             .env("TEAQL_LOG_ENDPOINT", &ordinary)
             .env("TEAQL_SQL_DEBUG_ENDPOINT", &sensitive)
             .env("TEAQL_SQL_LOG", "_full_with_payload")
-            .env("TEAQL_LOG_FORMAT", "debug")
+            .env("TEAQL_LOG_FORMAT", presentation)
             .env(
                 "TEAQL_RELATION_CACHE_FIXTURE",
                 if cached { "yes" } else { "no" },
@@ -460,12 +473,18 @@ fn relation_file_sinks() {
             assert!(sensitive.contains(BUSINESS));
             assert!(sensitive.contains(expected_sql));
             assert!(sensitive.contains("EXPLICIT OPT-IN"));
-            let failed_child = sensitive
-                .lines()
-                .find(|line| {
+            let failed_child = if presentation == "human" {
+                // Human diagnostics put the SQL on continuation lines. Keep
+                // the failure outcome and descendant statement in one block.
+                sensitive
+                    .split("\n[")
+                    .find(|block| block.contains("outcome=failure") && block.contains(expected_sql))
+            } else {
+                sensitive.lines().find(|line| {
                     line.contains("execution_outcome: Some(Failure)") && line.contains(expected_sql)
                 })
-                .expect("actual failed child must be logged");
+            }
+            .expect("actual failed child must be logged");
             assert!(
                 failed_child.contains(&format!("{expected_purpose} {BUSINESS} [REDACTED]")),
                 "debug child intent must use current field classification"
