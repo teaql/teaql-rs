@@ -2,97 +2,20 @@
 
 # Rust Query Field Assist — `scalar_type_probe.type_platform`
 
-KSML entity: `scalar_type_probe`
-
-KSML field: `type_platform`
-
-Type: `reference to type_platform`
+KSML entity: `Scalar Type Probe`  
+KSML field: `Type Platform`  
+Type: `Type Platform`
 
 | Capability | Generated API |
 | --- | --- |
 | Select | `select_type_platform()`, `select_type_platform_with(Q::type_platforms_minimal())` |
 | Filter nested request | `with_type_platform_matching(request)`, `without_type_platform_matching(request)` |
 | Presence | `have_type_platform()`, `have_no_type_platform()` |
-| Order by reference ID | `order_by_type_platform_asc()`, `order_by_type_platform_desc()` |
+| Order | `order_by_type_platform_id_asc()`, `order_by_type_platform_id_desc()` |
 | Group | `group_by_type_platform()`, `group_by_type_platform_as(alias)` |
-| Group expression | `group_by_type_platform_with_function(alias, function)` |
-| Aggregate expression | `add_aggregate(named_expression)` |
-| Filter statistical results | `having(expr)`; repeated calls combine with AND |
-| Order statistical results | `add_order_by_ascending(result_key)`, `add_order_by_descending(result_key)` |
-| Count non-null references | `count_type_platform()`, `count_type_platform_as(alias)` |
-| Group parent request | `group_by_type_platform_with(request)` |
-| Group with details | `group_by_type_platform_with_details()`, `group_by_type_platform_with_details_from(request)` |
-| Configure parent for roll-up | `roll_up_to_type_platform()`, `roll_up_to_type_platform_with(request)` |
-| Count distinct non-null references | `count_distinct_type_platform()`, `count_distinct_type_platform_as(alias)` |
 | Facet | `facet_by_type_platform_as(name, request)`, `facet_by_type_platform_as_with_options(name, request, include_all_facets)` |
 Apply methods before `.purpose(...)`; execution still requires non-empty
 `.comment(...)`, `.purpose(...)`, and exactly one context argument.
-
-Grouped projections use `.execute_for_rows(&context)`, not entity-shaped
-`.execute_for_list(&context)`. Each result is a `CompactRow`: read the dimension
-with `row.get("type_platform_id")` and a measure with `row.get(alias)`.
-Physical database column names are resolved through metadata; do not use them as
-logical query fields.
-`group_by_type_platform_as(alias)` replaces the default result key with
-the supplied alias, matching Java. The raw field is not returned as an additional
-key unless it is also explicitly grouped. Read the value with `row.get(alias)`.
-Use `add_aggregate(teaql_core::NamedExpr::new(alias, expression))` for an aggregate
-AST, matching Java `addAggregate(SimpleNamedExpression)`. An existing aggregate
-alias retains its first expression, just as in Java; use a different alias for
-another measure. For this field, an
-unchanged distinct input is
-`teaql_core::Expr::count_distinct(teaql_core::Expr::identity(teaql_core::Expr::column("type_platform_id")))`.
-Scalar inputs are bound by metadata before SQL and evaluated at the request's
-own object grain; parent values are not repeated for every source child.
-Numeric SUM/AVG/statistical inputs must be numeric; bitwise inputs must be
-integers. Nested aggregates and subqueries are not scalar inputs. Parameters,
-nulls and exact Decimal values retain their domains. Execute the original source
-request for roll-up, using `execute_for_rows`, and keep its typed parent live.
-The generated field ordering methods still order this selected grouping key.
-Pass `teaql_core::ExprFunction::Identity` to
-`group_by_type_platform_with_function(alias, function)` to group by this
-field's unchanged value under the supplied alias (Java `AggrFunction.SELF`).
-This preserves the field's metadata type and null grouping key; it does not
-convert numeric, date, Boolean or reference values to text.
-SOUNDEX requires text; use Identity or ordinary grouping for this field.
-GBK also requires text input.
-Aggregate functions are not scalar grouping transforms and are rejected.
-
-Use `having(teaql_core::Expr::gt("selected_measure_alias", value))` for predicates
-on completed statistical cells, not a field filter on the source rows. A parent
-request's HAVING is applied to its own grouped cells before its ordering/page;
-configure it on the typed parent returned by roll-up.
-For a measure alias or nested result path, use `add_order_by_ascending(result_key)`
-or `add_order_by_descending(result_key)` before `limit(...)`. The key must be an
-already selected statistical result, not a physical column or SQL fragment.
-These methods preserve the live parent configuration and match Java's
-`addOrderByAscending` / `addOrderByDescending`, with Rust builder ownership.
-Grouped details add an object at `row.get("type_platform")` and retain
-the scalar FK at `row.get("type_platform_id")`.
-
-`roll_up_to_type_platform()` borrows the source request and returns a
-typed `TypePlatformRequest`, following Java navigation.
-Configure that parent with its own field Assist, then execute the original source
-statistics request. Parent filters and projections remain linked even while its
-handle is alive; no closure or finalization call is required. An explicit
-`.clone()` takes an independent snapshot.
-The selected Rust 7.1 runtime also supports grouped/aggregate parent requests and
-repeated navigation: navigating the same relation again replaces only its previous
-navigation binding, including on a cloned request. Independent business filters
-remain in effect, and the original request is not rebound by changes to its clone.
-It also supports
-multi-hop roll-up. Parent-local measures retain their own entity identity grain;
-they are not counted once per source child. A grouped parent's result keys replace
-the intermediate FK dimension; inspect the parent object at
-`row.get("type_platform")`, not the intermediate ID as a final group key.
-For example:
-
-```rust
-let mut source = Q::scalar_type_probes().count_as("n").limit(20);
-let parent = source.roll_up_to_type_platform();
-// Configure parent using its own field Assist, then execute source with
-// comment, purpose, and execute_for_rows(&context).
-```
 
 
 ---
