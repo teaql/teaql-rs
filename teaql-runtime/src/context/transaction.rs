@@ -68,6 +68,30 @@ impl UserContext {
             .execute(operation)
             .await
     }
+
+    /// Execute transaction work whose callback must remain `Send` across await points.
+    ///
+    /// Async service SPIs commonly require a `Send` future. Callers in that boundary should
+    /// choose this method explicitly. The ordinary [`Self::execute_in_transaction`] remains
+    /// available for provider cursors and other deliberately thread-local transaction work.
+    pub async fn execute_in_send_transaction<'context, E, T, F>(
+        &'context self,
+        operation: F,
+    ) -> Result<T, RuntimeError>
+    where
+        E: TransactionExecutor + Send + Sync + 'static,
+        for<'transaction> E::Tx<'transaction>: Send + Sync,
+        F: for<'scope> FnOnce(
+            &'scope TransactionScope<'context, E>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<T, RuntimeError>> + Send + 'scope>,
+        >,
+    {
+        self.start_transaction::<E>()
+            .await?
+            .execute_send(operation)
+            .await
+    }
 }
 
 impl<'context, E> TransactionScope<'context, E>
@@ -106,11 +130,26 @@ where
     }
 
     /// Execute a provider-neutral query on the transaction-owned connection.
-    pub async fn query(&self, request: QueryRequest) -> Result<QueryResult, RuntimeError>
+    pub async fn query(&self, mut request: QueryRequest) -> Result<QueryResult, RuntimeError>
     where
         E::Tx<'context>: QueryExecutor,
     {
-        let result = QueryExecutor::query(self.transaction(), request)
+        if self.context.records_sql_diagnostics() {
+            request.capture_execution_metadata = true;
+        }
+        let observer = (self.context.sql_log_options().select
+            || self.context.records_sql_diagnostics())
+        .then(|| {
+            std::sync::Arc::new(|metadata| self.context.record_metadata_log(&metadata))
+                as teaql_data_service::ExecutionObserver<'_>
+        });
+        let result = self
+            .context
+            .observe_sql_statements(QueryExecutor::query_observed(
+                self.transaction(),
+                request,
+                observer,
+            ))
             .await
             .map_err(|error| RuntimeError::Transaction(error.to_string()))?;
         self.context.record_metadata_log(&result.metadata);
@@ -122,7 +161,19 @@ where
     where
         E::Tx<'context>: MutationExecutor,
     {
-        let result = MutationExecutor::mutate(self.transaction(), request)
+        let observer = (self.context.sql_log_options().mutation
+            || self.context.records_sql_diagnostics())
+        .then(|| {
+            std::sync::Arc::new(|metadata| self.context.record_metadata_log(&metadata))
+                as teaql_data_service::ExecutionObserver<'_>
+        });
+        let result = self
+            .context
+            .observe_sql_statements(MutationExecutor::mutate_observed(
+                self.transaction(),
+                request,
+                observer,
+            ))
             .await
             .map_err(|error| RuntimeError::Transaction(error.to_string()))?;
         self.context.record_metadata_log(&result.metadata);
@@ -139,11 +190,14 @@ where
         T: crate::LedgerEntity + Send + 'static,
         E::Tx<'context>: QueryExecutor + MutationExecutor + Send + Sync,
     {
-        let (entity, ledger) = crate::save_audited_ledger_entity_with_executor(
+        // Bound this composition point: the generic graph/SQL save future is
+        // large in debug builds. Keeping it inline multiplies the caller's
+        // transaction and task-local frames and can overflow a default stack.
+        let (entity, ledger) = Box::pin(crate::save_audited_ledger_entity_with_executor(
             audited,
             self.context,
             self.transaction(),
-        )
+        ))
         .await?;
         if let Some(ledger) = ledger {
             let mut ledgers = self
@@ -158,7 +212,7 @@ where
     }
 
     /// Run a callback and complete this transaction deterministically.
-    pub async fn execute<T, F>(mut self, operation: F) -> Result<T, RuntimeError>
+    pub async fn execute<T, F>(self, operation: F) -> Result<T, RuntimeError>
     where
         E::Tx<'context>: Send + Sync,
         F: for<'scope> FnOnce(
@@ -166,7 +220,37 @@ where
         )
             -> Pin<Box<dyn Future<Output = Result<T, RuntimeError>> + 'scope>>,
     {
-        match operation(&self).await {
+        let context = self.context;
+        let (result, audits) =
+            crate::commit_audit::collect(context, async { operation(&self).await }).await;
+        let value = self.complete(result).await?;
+        crate::commit_audit::deliver(context, audits)?;
+        Ok(value)
+    }
+
+    /// Run a `Send` callback and complete this transaction deterministically.
+    pub async fn execute_send<T, F>(self, operation: F) -> Result<T, RuntimeError>
+    where
+        E::Tx<'context>: Send + Sync,
+        F: for<'scope> FnOnce(
+            &'scope TransactionScope<'context, E>,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<T, RuntimeError>> + Send + 'scope>,
+        >,
+    {
+        let context = self.context;
+        let (result, audits) =
+            crate::commit_audit::collect(context, async { operation(&self).await }).await;
+        let value = self.complete(result).await?;
+        crate::commit_audit::deliver(context, audits)?;
+        Ok(value)
+    }
+
+    async fn complete<T>(mut self, result: Result<T, RuntimeError>) -> Result<T, RuntimeError>
+    where
+        E::Tx<'context>: Send + Sync,
+    {
+        match result {
             Ok(value) => {
                 let transaction = self
                     .transaction

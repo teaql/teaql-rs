@@ -17,12 +17,22 @@ fn conflict_id(id: &teaql_core::Value) -> String {
         .unwrap_or_else(|| format!("{id:?}"))
 }
 
-fn sql_statement_trace(mut lineage: Vec<TraceNode>, entity: &str) -> Vec<TraceNode> {
-    if !lineage
-        .iter()
-        .any(|frame| frame.kind == TraceKind::Entity && frame.entity_type == entity)
+fn sql_statement_trace(
+    mut lineage: Vec<TraceNode>,
+    entity: &str,
+    id: Option<u64>,
+) -> Vec<TraceNode> {
+    // The physical command owns the affected identity. An ancestor with the
+    // same type is not the statement target, and known IDs must not be lost.
+    if let Some(last) = lineage
+        .iter_mut()
+        .rev()
+        .find(|frame| frame.kind == TraceKind::Entity)
+        && last.entity_type == entity
     {
-        lineage.push(TraceNode::typed(TraceKind::Entity, entity, None, ""));
+        last.entity_id = id;
+    } else {
+        lineage.push(TraceNode::typed(TraceKind::Entity, entity, id, ""));
     }
     lineage
 }
@@ -32,8 +42,45 @@ where
     M: MetadataStore,
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Sync,
 {
+    async fn mutate_observed(
+        &self,
+        request: MutationRequest,
+        observer: Option<teaql_data_service::ExecutionObserver<'_>>,
+    ) -> Result<teaql_data_service::MutationResult, E::Error> {
+        let future = self.executor.mutate_observed(request, observer);
+        match self.metadata.sql_statement_telemetry() {
+            Some(factory) => {
+                teaql_data_service::statement_telemetry::with_sql_statement_telemetry(
+                    factory, future,
+                )
+                .await
+            }
+            None => future.await,
+        }
+    }
     pub(crate) fn new(metadata: &'a M, executor: &'a E) -> Self {
-        Self { metadata, executor }
+        Self {
+            metadata,
+            executor,
+            mutation_intent: None,
+            mutation_privacy: None,
+        }
+    }
+
+    pub(crate) fn with_mutation_intent(mut self, intent: teaql_core::MutationIntent) -> Self {
+        self.mutation_intent = Some(intent);
+        self
+    }
+
+    fn required_mutation_intent(
+        &self,
+    ) -> Result<teaql_core::MutationIntent, DataServiceError<E::Error>> {
+        self.mutation_intent.clone().ok_or_else(|| {
+            DataServiceError::Runtime(RuntimeError::from(teaql_core::RequestIntentError {
+                request_kind: teaql_core::RequestKind::Mutation,
+                field: "comment",
+            }))
+        })
     }
 
     pub(crate) async fn fetch_all(
@@ -43,13 +90,18 @@ where
         let request = QueryRequest {
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
-            comment: query.comment.clone(),
+            intent: teaql_core::QueryIntent::from_optional(
+                query.comment.as_deref(),
+                query.purpose.as_deref(),
+            )
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?,
             capture_debug_query: self.metadata.capture_query_debug(),
             capture_execution_metadata: self.metadata.capture_execution_metadata(),
         };
         let res = self
             .executor
-            .query(request)
+            .query_observed(request, self.metadata.query_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
         Ok(res.rows)
@@ -62,13 +114,18 @@ where
         let request = QueryRequest {
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
-            comment: query.comment.clone(),
+            intent: teaql_core::QueryIntent::from_optional(
+                query.comment.as_deref(),
+                query.purpose.as_deref(),
+            )
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?,
             capture_debug_query: self.metadata.capture_query_debug(),
             capture_execution_metadata: self.metadata.capture_execution_metadata(),
         };
         let res = self
             .executor
-            .query(request)
+            .query_observed(request, self.metadata.query_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -85,13 +142,18 @@ where
         let request = QueryRequest {
             query: query.clone(),
             trace_chain: query.trace_chain.clone(),
-            comment: query.comment.clone(),
+            intent: teaql_core::QueryIntent::from_optional(
+                query.comment.as_deref(),
+                query.purpose.as_deref(),
+            )
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?,
             capture_debug_query: self.metadata.capture_query_debug(),
             capture_execution_metadata: self.metadata.capture_execution_metadata(),
         };
         let result = self
             .executor
-            .query(request)
+            .query_observed(request, self.metadata.query_diagnostic_observer())
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&result.metadata);
@@ -120,11 +182,23 @@ where
         command: &InsertCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
         let mut command = command.clone();
-        command.trace_chain = sql_statement_trace(command.trace_chain, &command.entity);
-        let request = MutationRequest::Insert(command);
+        command.trace_chain = sql_statement_trace(
+            command.trace_chain,
+            &command.entity,
+            command
+                .values
+                .get("id")
+                .and_then(teaql_core::Value::try_u64),
+        );
+        let request = MutationRequest::with_intent(
+            teaql_data_service::MutationCommand::Insert(command),
+            self.required_mutation_intent()?,
+        );
         let res = self
-            .executor
-            .mutate(request)
+            .mutate_observed(
+                request.with_diagnostic_redactions(self.mutation_privacy.clone()),
+                self.metadata.mutation_diagnostic_observer(),
+            )
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -135,12 +209,23 @@ where
         &self,
         command: &UpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        crate::mutation_version::updated(&command.entity, command.expected_version)
+            .map_err(DataServiceError::Runtime)?;
         let mut sql_command = command.clone();
-        sql_command.trace_chain = sql_statement_trace(sql_command.trace_chain, &sql_command.entity);
-        let request = MutationRequest::Update(sql_command);
+        sql_command.trace_chain = sql_statement_trace(
+            sql_command.trace_chain,
+            &sql_command.entity,
+            sql_command.id.try_u64(),
+        );
+        let request = MutationRequest::with_intent(
+            teaql_data_service::MutationCommand::Update(sql_command),
+            self.required_mutation_intent()?,
+        );
         let res = self
-            .executor
-            .mutate(request)
+            .mutate_observed(
+                request.with_diagnostic_redactions(self.mutation_privacy.clone()),
+                self.metadata.mutation_diagnostic_observer(),
+            )
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -162,12 +247,25 @@ where
         &self,
         command: &DeleteCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        if command.soft_delete {
+            crate::mutation_version::deleted(&command.entity, command.expected_version)
+                .map_err(DataServiceError::Runtime)?;
+        }
         let mut sql_command = command.clone();
-        sql_command.trace_chain = sql_statement_trace(sql_command.trace_chain, &sql_command.entity);
-        let request = MutationRequest::Delete(sql_command);
+        sql_command.trace_chain = sql_statement_trace(
+            sql_command.trace_chain,
+            &sql_command.entity,
+            sql_command.id.try_u64(),
+        );
+        let request = MutationRequest::with_intent(
+            teaql_data_service::MutationCommand::Delete(sql_command),
+            self.required_mutation_intent()?,
+        );
         let res = self
-            .executor
-            .mutate(request)
+            .mutate_observed(
+                request.with_diagnostic_redactions(self.mutation_privacy.clone()),
+                self.metadata.mutation_diagnostic_observer(),
+            )
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -197,11 +295,23 @@ where
             if i < command.trace_chains.len() {
                 insert_cmd.trace_chain = command.trace_chains[i].clone();
             }
-            insert_cmd.trace_chain =
-                sql_statement_trace(insert_cmd.trace_chain, &insert_cmd.entity);
+            insert_cmd.trace_chain = sql_statement_trace(
+                insert_cmd.trace_chain,
+                &insert_cmd.entity,
+                insert_cmd
+                    .values
+                    .get("id")
+                    .and_then(teaql_core::Value::try_u64),
+            );
             let res = self
-                .executor
-                .mutate(MutationRequest::Insert(insert_cmd))
+                .mutate_observed(
+                    MutationRequest::with_intent(
+                        teaql_data_service::MutationCommand::Insert(insert_cmd),
+                        self.required_mutation_intent()?,
+                    )
+                    .with_diagnostic_redactions(self.mutation_privacy.clone()),
+                    self.metadata.mutation_diagnostic_observer(),
+                )
                 .await
                 .map_err(DataServiceError::Executor)?;
             self.metadata.record_metadata_log(&res.metadata);
@@ -214,6 +324,10 @@ where
         &self,
         command: &teaql_core::BatchUpdateCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        for version in &command.batch_expected_versions {
+            crate::mutation_version::updated(&command.entity, *version)
+                .map_err(DataServiceError::Runtime)?;
+        }
         let mut affected = 0;
         for (i, val) in command.batch_values.iter().enumerate() {
             let mut update_cmd =
@@ -235,12 +349,21 @@ where
             if i < command.trace_chains.len() {
                 update_cmd.trace_chain = command.trace_chains[i].clone();
             }
-            update_cmd.trace_chain =
-                sql_statement_trace(update_cmd.trace_chain, &update_cmd.entity);
+            update_cmd.trace_chain = sql_statement_trace(
+                update_cmd.trace_chain,
+                &update_cmd.entity,
+                update_cmd.id.try_u64(),
+            );
             let expected_version = update_cmd.expected_version;
             let res = self
-                .executor
-                .mutate(MutationRequest::Update(update_cmd))
+                .mutate_observed(
+                    MutationRequest::with_intent(
+                        teaql_data_service::MutationCommand::Update(update_cmd),
+                        self.required_mutation_intent()?,
+                    )
+                    .with_diagnostic_redactions(self.mutation_privacy.clone()),
+                    self.metadata.mutation_diagnostic_observer(),
+                )
                 .await
                 .map_err(DataServiceError::Executor)?;
             self.metadata.record_metadata_log(&res.metadata);
@@ -273,12 +396,23 @@ where
         &self,
         command: &RecoverCommand,
     ) -> Result<u64, DataServiceError<E::Error>> {
+        crate::mutation_version::recovered(&command.entity, command.expected_version)
+            .map_err(DataServiceError::Runtime)?;
         let mut sql_command = command.clone();
-        sql_command.trace_chain = sql_statement_trace(sql_command.trace_chain, &sql_command.entity);
-        let request = MutationRequest::Recover(sql_command);
+        sql_command.trace_chain = sql_statement_trace(
+            sql_command.trace_chain,
+            &sql_command.entity,
+            sql_command.id.try_u64(),
+        );
+        let request = MutationRequest::with_intent(
+            teaql_data_service::MutationCommand::Recover(sql_command),
+            self.required_mutation_intent()?,
+        );
         let res = self
-            .executor
-            .mutate(request)
+            .mutate_observed(
+                request.with_diagnostic_redactions(self.mutation_privacy.clone()),
+                self.metadata.mutation_diagnostic_observer(),
+            )
             .await
             .map_err(DataServiceError::Executor)?;
         self.metadata.record_metadata_log(&res.metadata);
@@ -338,5 +472,42 @@ where
             total += self.recover(command).await?;
         }
         Ok(total)
+    }
+}
+
+#[cfg(test)]
+mod statement_trace_tests {
+    use super::*;
+
+    #[test]
+    fn physical_statement_identity_is_assigned_without_changing_audit_lineage() {
+        let reason = TraceNode::typed(TraceKind::AuditReason, "Order", Some(1), "submit order");
+        let trace = sql_statement_trace(vec![reason.clone()], "Payment", Some(1));
+        assert_eq!(
+            trace,
+            [
+                reason.clone(),
+                TraceNode::typed(TraceKind::Entity, "Payment", Some(1), "")
+            ]
+        );
+        assert_eq!(
+            sql_statement_trace(trace.clone(), "Payment", Some(1)),
+            trace
+        );
+        let next = sql_statement_trace(trace, "Shipment", Some(1));
+        assert_eq!(next[0], reason);
+        assert_eq!(
+            next.last().unwrap(),
+            &TraceNode::typed(TraceKind::Entity, "Shipment", Some(1), "")
+        );
+        let enriched = sql_statement_trace(
+            vec![TraceNode::typed(TraceKind::Entity, "Payment", None, "")],
+            "Payment",
+            Some(7),
+        );
+        assert_eq!(
+            enriched,
+            [TraceNode::typed(TraceKind::Entity, "Payment", Some(7), "")]
+        );
     }
 }

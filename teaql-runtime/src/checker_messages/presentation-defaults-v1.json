@@ -1,0 +1,95 @@
+{
+  "schema": "teaql.checker-presentation/v1",
+  "locales": {
+    "en": {
+      "currentObject": "current object",
+      "utf16": "UTF-16 code units",
+      "scalar": "Unicode scalar values",
+      "byte": "bytes"
+    },
+    "zh-CN": {
+      "currentObject": "当前对象",
+      "utf16": "个 UTF-16 代码单元",
+      "scalar": "个 Unicode 标量值",
+      "byte": "字节"
+    },
+    "zh-TW": {
+      "currentObject": "目前物件",
+      "utf16": "個 UTF-16 程式碼單元",
+      "scalar": "個 Unicode 純量值",
+      "byte": "位元組"
+    },
+    "ja": {
+      "currentObject": "現在のオブジェクト",
+      "utf16": "UTF-16コード単位",
+      "scalar": "Unicodeスカラー値",
+      "byte": "バイト"
+    },
+    "ko": {
+      "currentObject": "현재 객체",
+      "utf16": "UTF-16 코드 단위",
+      "scalar": "유니코드 스칼라 값",
+      "byte": "바이트"
+    },
+    "de": {
+      "currentObject": "aktuelles Objekt",
+      "utf16": "UTF-16-Codeeinheiten",
+      "scalar": "Unicode-Skalarwerte",
+      "byte": "Bytes"
+    },
+    "fr": {
+      "currentObject": "objet actuel",
+      "utf16": "unités de code UTF-16",
+      "scalar": "valeurs scalaires Unicode",
+      "byte": "octets"
+    },
+    "es": {
+      "currentObject": "objeto actual",
+      "utf16": "unidades de código UTF-16",
+      "scalar": "valores escalares Unicode",
+      "byte": "bytes"
+    },
+    "pt": {
+      "currentObject": "objeto atual",
+      "utf16": "unidades de código UTF-16",
+      "scalar": "valores escalares Unicode",
+      "byte": "bytes"
+    },
+    "ar": {
+      "currentObject": "الكائن الحالي",
+      "utf16": "وحدات ترميز UTF-16",
+      "scalar": "قيم Unicode القياسية",
+      "byte": "بايت"
+    },
+    "th": {
+      "currentObject": "ออบเจ็กต์ปัจจุบัน",
+      "utf16": "หน่วยรหัส UTF-16",
+      "scalar": "ค่าสเกลาร์ Unicode",
+      "byte": "ไบต์"
+    },
+    "id": {
+      "currentObject": "objek saat ini",
+      "utf16": "unit kode UTF-16",
+      "scalar": "nilai skalar Unicode",
+      "byte": "bita"
+    },
+    "fil": {
+      "currentObject": "kasalukuyang bagay",
+      "utf16": "yunit ng code na UTF-16",
+      "scalar": "scalar na halaga ng Unicode",
+      "byte": "byte"
+    },
+    "uk": {
+      "currentObject": "поточний об’єкт",
+      "utf16": "кодових одиниць UTF-16",
+      "scalar": "скалярних значень Unicode",
+      "byte": "байтів"
+    },
+    "vi": {
+      "currentObject": "đối tượng hiện tại",
+      "utf16": "đơn vị mã UTF-16",
+      "scalar": "giá trị vô hướng Unicode",
+      "byte": "byte"
+    }
+  }
+}

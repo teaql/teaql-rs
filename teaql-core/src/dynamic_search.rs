@@ -285,7 +285,12 @@ fn emit(
     for warning in warnings {
         if let Some(ref mut sink) = warn {
             sink(warning);
-        } else if let Ok(json) = serde_json::to_string(warning) {
+        } else if let Ok(json) = serde_json::to_string(&serde_json::json!({
+            "code": warning.code,
+            "entity": warning.entity,
+            "clause": warning.clause,
+            "fieldPath": "<omitted>",
+        })) {
             eprintln!("{json}");
         }
     }

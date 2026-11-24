@@ -56,11 +56,11 @@ pub fn decode_value_tokens(
             }
         },
         Some("i64") => quote! {
-            match #value_expr {
-                ::teaql_core::Value::I64(v) => *v,
-                ::teaql_core::Value::U64(v) => i64::try_from(*v)
-                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: u64 out of i64 range", #field_name)))?,
-                other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
+            match (#value_expr).try_i64() {
+                Some(value) => value,
+                None => return Err(::teaql_core::EntityError::new(
+                    #entity_name, format!("invalid field {}: expected an exact signed 64-bit integer", #field_name)
+                )),
             }
         },
         Some("i16") => quote! {
@@ -82,13 +82,11 @@ pub fn decode_value_tokens(
             }
         },
         Some("u64") => quote! {
-            match #value_expr {
-                ::teaql_core::Value::U64(v) => *v,
-                ::teaql_core::Value::I64(v) => u64::try_from(*v)
-                    .map_err(|_| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: negative i64 cannot map to u64", #field_name)))?,
-                ::teaql_core::Value::Decimal(v) => ::teaql_core::Value::Decimal(*v).try_u64()
-                    .ok_or_else(|| ::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: decimal cannot map exactly to u64", #field_name)))?,
-                other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
+            match (#value_expr).try_u64() {
+                Some(value) => value,
+                None => return Err(::teaql_core::EntityError::new(
+                    #entity_name, format!("invalid field {}: expected an exact unsigned 64-bit integer", #field_name)
+                )),
             }
         },
         Some("u16") => quote! {
@@ -147,6 +145,14 @@ pub fn decode_value_tokens(
             match #value_expr {
                 ::teaql_core::Value::Text(v) => v.clone(),
                 other => return Err(::teaql_core::EntityError::new(#entity_name, format!("invalid field {}: {:?}", #field_name, other))),
+            }
+        },
+        Some("NaiveTime") => quote! {
+            match (#value_expr).try_time() {
+                Some(value) => value,
+                None => return Err(::teaql_core::EntityError::new(
+                    #entity_name, format!("invalid field {}: expected an ISO local time", #field_name)
+                )),
             }
         },
         Some("NaiveDate") => quote! {
@@ -302,6 +308,50 @@ pub fn into_relation_value_tokens(
         };
     }
 
+    quote! { Some(::teaql_core::Value::Null) }
+}
+
+pub fn into_relation_json_value_tokens(
+    ty: &Type,
+    value_expr: proc_macro2::TokenStream,
+    loaded: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    if option_inner_type(ty).is_some() {
+        let entity = if option_inner_type(ty).and_then(box_inner_type).is_some() {
+            quote! { *entity }
+        } else {
+            quote! { entity }
+        };
+        return quote! {
+            match #value_expr {
+                Some(entity) => Some(::teaql_core::Value::Json(::teaql_core::Entity::into_json(#entity))),
+                None if #loaded => Some(::teaql_core::Value::Null),
+                None => None,
+            }
+        };
+    }
+    if vec_inner_type(ty).is_some() {
+        return quote! {
+            {
+                let items = #value_expr;
+                if !items.is_empty() || #loaded {
+                    Some(::teaql_core::Value::List(items.into_iter().map(|entity|
+                        ::teaql_core::Value::Json(::teaql_core::Entity::into_json(entity))).collect()))
+                } else { None }
+            }
+        };
+    }
+    if smart_list_inner_type(ty).is_some() {
+        return quote! {
+            {
+                let list = #value_expr;
+                if list.is_loaded || !list.data.is_empty() {
+                    Some(::teaql_core::Value::List(list.data.into_iter().map(|entity|
+                        ::teaql_core::Value::Json(::teaql_core::Entity::into_json(entity))).collect()))
+                } else { None }
+            }
+        };
+    }
     quote! { Some(::teaql_core::Value::Null) }
 }
 

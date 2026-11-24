@@ -107,12 +107,56 @@ impl SqlDialect for PostgresDialect {
         true
     }
 
+    fn compile_gbk_function(
+        &self,
+        entity: &EntityDescriptor,
+        args: &[Expr],
+        params: &mut teaql_sql::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let operand = self.compile_gbk_text_operand(entity, args, params)?;
+        Ok(format!("convert_to({operand}, 'GBK')"))
+    }
+
+    fn bitwise_parameter_sql(&self, sql: &str) -> String {
+        format!("CAST({sql} AS BIGINT)")
+    }
+
+    fn compile_statistical_operand(
+        &self,
+        entity: &EntityDescriptor,
+        operand: &Expr,
+        data_type: DataType,
+        params: &mut teaql_sql::SqlBindings,
+    ) -> Result<String, SqlCompileError> {
+        let sql = self.compile_expr(entity, operand, params)?;
+        let kind = match data_type {
+            DataType::I64 | DataType::U64 => "BIGINT",
+            DataType::F64 => "DOUBLE PRECISION",
+            DataType::Decimal => "NUMERIC",
+            DataType::Text | DataType::LargeText => "TEXT",
+            DataType::Bool => "BOOLEAN",
+            DataType::Json => "JSONB",
+            DataType::Date => "DATE",
+            DataType::Timestamp => "TIMESTAMPTZ",
+            DataType::Binary => "BYTEA",
+        };
+        Ok(format!("CAST({sql} AS {kind})"))
+    }
+
     fn quote_ident(&self, ident: &str) -> String {
         quote_ident(ident)
     }
 
     fn placeholder(&self, index: usize) -> String {
         format!("${index}")
+    }
+
+    fn quote_result_alias(&self, alias: &str) -> String {
+        if alias.chars().any(|ch| ch.is_ascii_uppercase() || ch == '"') {
+            format!("\"{}\"", alias.replace('"', "\"\""))
+        } else {
+            self.quote_ident(alias)
+        }
     }
 
     fn schema_setup_sqls(&self) -> &'static [&'static str] {
@@ -164,6 +208,7 @@ impl SqlDialect for PostgresDialect {
             DataType::Json => Ok("JSONB".to_owned()),
             DataType::Date => Ok("DATE".to_owned()),
             DataType::Timestamp => Ok("TIMESTAMPTZ".to_owned()),
+            DataType::Binary => Ok("BYTEA".to_owned()),
         }
     }
 
@@ -185,7 +230,7 @@ impl SqlDialect for PostgresDialect {
         left: &Expr,
         op: BinaryOp,
         right: &Expr,
-        params: &mut Vec<Value>,
+        params: &mut teaql_sql::SqlBindings,
     ) -> Result<String, SqlCompileError> {
         match op {
             BinaryOp::InLarge | BinaryOp::NotInLarge => {
@@ -400,9 +445,10 @@ impl SqlTransport for PgMutationExecutor {
             .map(|column| column.name().to_owned())
             .collect::<Vec<_>>()
             .into();
+        let columns = teaql_core::CompactRowLayout::new(columns);
         rows.iter()
             .map(|row| {
-                Ok(teaql_core::CompactRow::new(
+                Ok(teaql_core::CompactRow::with_layout(
                     columns.clone(),
                     decode_pg_values(row)?,
                 ))
@@ -429,10 +475,11 @@ impl teaql_sql::StreamingSqlTransport for PgMutationExecutor {
             let params = args.as_refs();
             let statement = client.prepare_cached(&query.sql).await?;
             let columns: std::sync::Arc<[String]> = statement.columns().iter().map(|column| column.name().to_owned()).collect::<Vec<_>>().into();
+            let columns = teaql_core::CompactRowLayout::new(columns);
             let rows = client.query_raw(&statement, params).await?;
             futures_util::pin_mut!(rows);
             let mut chunk = Vec::with_capacity(chunk_size); let mut index = 0;
-            while let Some(row) = rows.try_next().await? { chunk.push(teaql_core::CompactRow::new(columns.clone(), decode_pg_values(&row)?)); if chunk.len()==chunk_size { yield teaql_data_service::StreamChunk { rows: std::mem::take(&mut chunk), chunk_index:index, is_last:false }; index+=1; } }
+            while let Some(row) = rows.try_next().await? { chunk.push(teaql_core::CompactRow::with_layout(columns.clone(), decode_pg_values(&row)?)); if chunk.len()==chunk_size { yield teaql_data_service::StreamChunk { rows: std::mem::take(&mut chunk), chunk_index:index, is_last:false }; index+=1; } }
             if !chunk.is_empty() { yield teaql_data_service::StreamChunk { rows:chunk, chunk_index:index, is_last:true }; }
         })
     }
@@ -457,9 +504,10 @@ impl SqlTransport for PgTransactionExecutor {
             .map(|column| column.name().to_owned())
             .collect::<Vec<_>>()
             .into();
+        let columns = teaql_core::CompactRowLayout::new(columns);
         rows.iter()
             .map(|row| {
-                Ok(teaql_core::CompactRow::new(
+                Ok(teaql_core::CompactRow::with_layout(
                     columns.clone(),
                     decode_pg_values(row)?,
                 ))
@@ -522,7 +570,10 @@ impl PgMutationExecutor {
         dialect: &PostgresDialect,
         entities: &[&EntityDescriptor],
     ) -> Result<(), MutationExecutorError> {
-        validate_schema_identifier_lengths(entities, 63)?;
+        let logical_entities = entities;
+        let physical = teaql_sql::physical_entity_descriptors(entities)?;
+        let entities = physical.iter().collect::<Vec<_>>();
+        validate_schema_identifier_lengths(&entities, 63)?;
         let mut client = self
             .pool
             .get()
@@ -535,9 +586,25 @@ impl PgMutationExecutor {
                 &[],
             )
             .await?;
-        let result = self
-            .ensure_schema_with_client(&transaction, dialect, entities)
-            .await;
+        let result = async {
+            for entity in logical_entities {
+                let mut current = *entity;
+                while let Some(parent) = &current.joined_parent {
+                    if Self::table_exists(&transaction, &current.table_name).await? {
+                        let columns =
+                            Self::table_columns(&transaction, &current.table_name).await?;
+                        teaql_sql::validate_inherited_storage_columns(
+                            current,
+                            columns.keys().map(String::as_str),
+                        )?;
+                    }
+                    current = parent;
+                }
+            }
+            self.ensure_schema_with_client(&transaction, dialect, &entities)
+                .await
+        }
+        .await;
         match result {
             Ok(()) => transaction.commit().await?,
             Err(error) => {
@@ -1082,6 +1149,7 @@ fn ensure_postgres_column_compatibility(
         DataType::Json => matches!(actual.as_str(), "jsonb" | "json"),
         DataType::Date => actual == "date",
         DataType::Timestamp => actual == "timestamp with time zone",
+        DataType::Binary => actual == "bytea",
     };
     if !compatible {
         return Err(MutationExecutorError::Bind(format!(
@@ -1153,10 +1221,14 @@ pub(crate) async fn ensure_postgres_schema_for(
 }
 
 #[cfg(test)]
+mod statistical_binding_tests;
+
+#[cfg(test)]
 mod streaming_tests {
     use super::*;
     use futures_util::StreamExt;
     use teaql_core::RelationDescriptor;
+    use teaql_data_service::QueryRequest;
     use teaql_sql::{SqlTransaction, SqlTransactionTransport, SqlTransport, StreamingSqlTransport};
 
     // Live ensure_schema tests share the provider's teaql_id_space table.
@@ -1172,6 +1244,154 @@ mod streaming_tests {
                 tokio_postgres::NoTls,
             )
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn live_query_and_mutation_logs_mask_field_values_when_configured() {
+        let Ok(url) = std::env::var("TEAQL_TEST_POSTGRES_URL") else {
+            assert!(
+                !std::env::var("TEAQL_REQUIRE_LIVE_DB")
+                    .is_ok_and(|flag| flag.eq_ignore_ascii_case("true")),
+                "TEAQL_TEST_POSTGRES_URL is required for live provider tests"
+            );
+            return;
+        };
+        let _guard = LIVE_SCHEMA_FIXTURE_LOCK.lock().await;
+        let pool = configured_pool(url);
+        let transport = PgMutationExecutor::new(pool.clone());
+        let table = format!(
+            "teaql_mask_probe_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let ddl = |sql: &str| CompiledQuery {
+            log_context: Default::default(),
+            sql: sql.to_owned(),
+            params: vec![],
+            comment: None,
+        };
+        transport
+            .execute_sql(&ddl(&format!(
+                "CREATE TABLE {table}(id BIGINT PRIMARY KEY, version BIGINT NOT NULL, display_name TEXT, status TEXT)"
+            )))
+            .await
+            .unwrap();
+
+        let entity = EntityDescriptor::new("MaskProbe")
+            .table_name(&table)
+            .property(PropertyDescriptor::new("id", DataType::U64).id().not_null())
+            .property(
+                PropertyDescriptor::new("version", DataType::I64)
+                    .version()
+                    .not_null(),
+            )
+            .property(PropertyDescriptor::new("display_name", DataType::Text))
+            .property(PropertyDescriptor::new("status", DataType::Text))
+            .audit_mask_fields(vec!["display_name".into()]);
+        let metadata = teaql_runtime::InMemoryMetadataStore::new().with_entity(entity);
+        let executor = teaql_sql::SqlDataServiceExecutor::new(
+            PostgresDialect,
+            transport.clone(),
+            metadata.clone(),
+        );
+        let mut context = UserContext::new().with_metadata(metadata);
+        context.register_executor(executor);
+
+        context
+            .execute_in_transaction::<teaql_sql::SqlDataServiceExecutor<
+                PostgresDialect,
+                PgMutationExecutor,
+                teaql_runtime::InMemoryMetadataStore,
+            >, _, _>(|scope| {
+                Box::pin(async move {
+                    let insert = InsertCommand::new("MaskProbe")
+                        .value("id", 1_u64)
+                        .value("version", 1_i64)
+                        .value("display_name", "Riverside")
+                        .value("status", "ACTIVE");
+                    scope
+                        .mutate(
+                            teaql_data_service::MutationCommand::Insert(insert)
+                                .request("audited provider conformance test")
+                                .unwrap(),
+                        )
+                        .await?;
+                    let query = SelectQuery::new("MaskProbe")
+                        .filter(Expr::and([
+                            Expr::eq("display_name", "Riverside"),
+                            Expr::eq("status", "ACTIVE"),
+                        ]))
+                        .limit(10)
+                        .comment("what: verify live masked readback");
+                    let mut trace = query.trace_chain.clone();
+                    trace.push(teaql_core::TraceNode::typed(
+                        teaql_core::TraceKind::Purpose,
+                        "MaskProbe",
+                        None,
+                        "why: prove provider log privacy",
+                    ));
+                    let result = scope
+                        .query(QueryRequest {
+                            query,
+                            trace_chain: trace,
+                            intent: teaql_core::QueryIntent::new(
+                                "what: verify live masked readback",
+                                "why: prove provider log privacy",
+                            )
+                            .unwrap(),
+                            capture_debug_query: true,
+                            capture_execution_metadata: true,
+                        })
+                        .await?;
+                    assert_eq!(result.rows.len(), 1);
+                    assert_eq!(
+                        result.rows[0].get("display_name"),
+                        Some(&Value::from("Riverside"))
+                    );
+                    Ok(())
+                })
+            })
+            .await
+            .unwrap();
+
+        let logs = context.sql_logs();
+        for operation in [
+            teaql_runtime::SqlLogOperation::Insert,
+            teaql_runtime::SqlLogOperation::Select,
+        ] {
+            let log = logs
+                .iter()
+                // Inserts also generate a real SELECT readback. Observe the
+                // explicit filtered query here; its field parameters, not the
+                // identity-only readback parameters, must be masked.
+                .find(|log| {
+                    log.operation == operation
+                        && (operation != teaql_runtime::SqlLogOperation::Select
+                            || log.comment.as_deref() == Some("what: verify live masked readback"))
+                })
+                .expect("live SQL log");
+            assert!(
+                log.debug_sql.contains("Ri*****de"),
+                "{operation:?} must mask the field"
+            );
+            assert!(
+                log.debug_sql.contains("ACTIVE"),
+                "{operation:?} must retain plain fields"
+            );
+            assert!(!format!("{log:?}").contains("Riverside"));
+        }
+        assert!(
+            logs.iter()
+                .any(|log| log.purpose.as_deref() == Some("why: prove provider log privacy"))
+        );
+        assert!(!format!("{logs:?}").contains("Riverside"));
+        transport
+            .execute_sql(&ddl(&format!("DROP TABLE {table}")))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1241,6 +1461,7 @@ mod streaming_tests {
         let pool = configured_pool(url);
         let executor = PgMutationExecutor::new(pool);
         let query = CompiledQuery {
+            log_context: Default::default(),
             sql: "SELECT id FROM (VALUES (1), (2), (3), (4), (5)) AS fixture(id) ORDER BY id"
                 .to_owned(),
             params: vec![],
@@ -1266,6 +1487,7 @@ mod streaming_tests {
         ] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: sql.to_owned(),
                     params: vec![],
                     comment: None,
@@ -1277,6 +1499,7 @@ mod streaming_tests {
         let rolled_back = executor.begin_sql().await.unwrap();
         rolled_back
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "INSERT INTO teaql_transaction_runtime_fixture(id) VALUES ($1)".to_owned(),
                 params: vec![Value::I64(1)],
                 comment: None,
@@ -1288,6 +1511,7 @@ mod streaming_tests {
         let committed = executor.begin_sql().await.unwrap();
         committed
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "INSERT INTO teaql_transaction_runtime_fixture(id) VALUES ($1)".to_owned(),
                 params: vec![Value::I64(2)],
                 comment: None,
@@ -1298,6 +1522,7 @@ mod streaming_tests {
 
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT id FROM teaql_transaction_runtime_fixture ORDER BY id".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1324,6 +1549,7 @@ mod streaming_tests {
         let executor = PgMutationExecutor::new(pool);
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_boolean_runtime_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1332,6 +1558,7 @@ mod streaming_tests {
             .unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "CREATE TABLE teaql_boolean_runtime_fixture(id BIGINT, required_flag BOOLEAN NOT NULL, optional_flag BOOLEAN)".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1345,6 +1572,7 @@ mod streaming_tests {
         ] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: "INSERT INTO teaql_boolean_runtime_fixture VALUES ($1, $2, $3)".to_owned(),
                     params: vec![Value::I64(id), required_flag, optional_flag],
                     comment: None,
@@ -1354,6 +1582,7 @@ mod streaming_tests {
         }
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT required_flag, optional_flag FROM teaql_boolean_runtime_fixture ORDER BY id".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1367,6 +1596,7 @@ mod streaming_tests {
         assert_eq!(rows[2].get("optional_flag"), Some(&Value::Null));
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_boolean_runtime_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1387,6 +1617,7 @@ mod streaming_tests {
         ] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: sql.to_owned(),
                     params: vec![],
                     comment: None,
@@ -1395,11 +1626,13 @@ mod streaming_tests {
                 .unwrap();
         }
         executor.execute_sql(&CompiledQuery {
+            log_context: Default::default(),
             sql: "INSERT INTO teaql_generic_null_runtime_fixture(id, paid_at, established_date, note, amount, active) VALUES ($1, $2, $3, $4, $5, $6)".to_owned(),
             params: vec![Value::I64(1), Value::Null, Value::Null, Value::Null, Value::Null, Value::Null],
             comment: None,
         }).await.unwrap();
         let rows = executor.fetch_all_compact_sql(&CompiledQuery {
+            log_context: Default::default(),
             sql: "SELECT paid_at, established_date, note, amount, active FROM teaql_generic_null_runtime_fixture WHERE id = $1".to_owned(),
             params: vec![Value::I64(1)],
             comment: None,
@@ -1410,6 +1643,7 @@ mod streaming_tests {
         }
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_generic_null_runtime_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -1431,6 +1665,7 @@ mod streaming_tests {
         ] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: sql.to_owned(),
                     params: vec![],
                     comment: None,
@@ -1441,6 +1676,7 @@ mod streaming_tests {
         for id in [1_i64, i64::from(i32::MAX)] {
             executor
                 .execute_sql(&CompiledQuery {
+                    log_context: Default::default(),
                     sql: "INSERT INTO teaql_int4_binding_fixture(id) VALUES ($1)".to_owned(),
                     params: vec![Value::I64(id)],
                     comment: None,
@@ -1450,6 +1686,7 @@ mod streaming_tests {
         }
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT id FROM teaql_int4_binding_fixture WHERE id = ANY($1) ORDER BY id"
                     .to_owned(),
                 params: vec![Value::List(vec![
@@ -1465,6 +1702,7 @@ mod streaming_tests {
 
         let overflow = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT id FROM teaql_int4_binding_fixture WHERE id = $1".to_owned(),
                 params: vec![Value::I64(i64::from(i32::MAX) + 1)],
                 comment: None,
@@ -1473,6 +1711,7 @@ mod streaming_tests {
         assert!(overflow.is_err());
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_int4_binding_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -2592,14 +2831,16 @@ mod streaming_tests {
         let executor = PgMutationExecutor::new(pool);
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE IF EXISTS teaql_temporal_runtime_fixture".to_owned(),
                 params: vec![],
                 comment: None,
             })
             .await
             .unwrap();
-        executor.execute_sql(&CompiledQuery { sql: "CREATE TABLE teaql_temporal_runtime_fixture(id BIGINT, d DATE, t TIMESTAMPTZ(3), t_local TIMESTAMP(3))".to_owned(), params: vec![], comment: None }).await.unwrap();
+        executor.execute_sql(&CompiledQuery { log_context: Default::default(), sql: "CREATE TABLE teaql_temporal_runtime_fixture(id BIGINT, d DATE, t TIMESTAMPTZ(3), t_local TIMESTAMP(3))".to_owned(), params: vec![], comment: None }).await.unwrap();
         let prepared = CompiledQuery {
+            log_context: Default::default(),
             sql: "INSERT INTO teaql_temporal_runtime_fixture VALUES ($1, $2, $3, TIMESTAMP '1960-01-02 03:04:05.678')".to_owned(),
             params: vec![
                 Value::I64(1),
@@ -2611,6 +2852,7 @@ mod streaming_tests {
         executor.execute_sql(&prepared).await.unwrap();
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: prepared
                     .debug_sql(DatabaseKind::PostgreSql)
                     .replace("VALUES (1,", "VALUES (2,"),
@@ -2621,6 +2863,7 @@ mod streaming_tests {
             .unwrap();
         let rows = executor
             .fetch_all_compact_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "SELECT d, t, t_local FROM teaql_temporal_runtime_fixture ORDER BY id"
                     .to_owned(),
                 params: vec![],
@@ -2631,6 +2874,7 @@ mod streaming_tests {
         assert_eq!(rows[0], rows[1]);
         executor
             .execute_sql(&CompiledQuery {
+                log_context: Default::default(),
                 sql: "DROP TABLE teaql_temporal_runtime_fixture".to_owned(),
                 params: vec![],
                 comment: None,
@@ -2972,6 +3216,7 @@ impl tokio_postgres::types::ToSql for PgInteger {
             tokio_postgres::types::Type::INT2 => i16::try_from(self.0)?.to_sql(ty, out),
             tokio_postgres::types::Type::INT4 => i32::try_from(self.0)?.to_sql(ty, out),
             tokio_postgres::types::Type::INT8 => self.0.to_sql(ty, out),
+            tokio_postgres::types::Type::NUMERIC => Decimal::from(self.0).to_sql(ty, out),
             _ => Err(format!("integer cannot be encoded as PostgreSQL type {ty}").into()),
         }
     }
@@ -2982,6 +3227,7 @@ impl tokio_postgres::types::ToSql for PgInteger {
             tokio_postgres::types::Type::INT2
                 | tokio_postgres::types::Type::INT4
                 | tokio_postgres::types::Type::INT8
+                | tokio_postgres::types::Type::NUMERIC
         )
     }
 
@@ -3060,6 +3306,7 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             Some(dt) => args.add(dt),
             None => args.add(v.clone()),
         },
+        Value::Binary(v) => args.add(v.clone()),
         Value::Json(v) => {
             let j_val: serde_json::Value =
                 serde_json::to_value(v).map_err(|e| MutationExecutorError::Bind(e.to_string()))?;
@@ -3078,6 +3325,7 @@ fn bind_pg(args: &mut PgArgs, value: &Value) -> Result<(), MutationExecutorError
             DataType::Json => args.add(Option::<serde_json::Value>::None),
             DataType::Date => args.add(Option::<NaiveDate>::None),
             DataType::Timestamp => args.add(PgNull),
+            DataType::Binary => args.add(Option::<Vec<u8>>::None),
         },
     }
     Ok(())
@@ -3175,6 +3423,16 @@ fn bind_pg_list(args: &mut PgArgs, values: &[Value]) -> Result<(), MutationExecu
             args.add(values);
         }
         Value::Null => return Err(MutationExecutorError::UnsupportedValue("null list")),
+        Value::Binary(_) => {
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    Value::Binary(bytes) => Ok(bytes.clone()),
+                    _ => Err(MutationExecutorError::UnsupportedValue("mixed binary list")),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            args.add(values);
+        }
         Value::Json(_) => return Err(MutationExecutorError::UnsupportedValue("json list")),
         Value::Object(_) => return Err(MutationExecutorError::UnsupportedValue("object list")),
         Value::List(_) => return Err(MutationExecutorError::UnsupportedValue("nested list")),
@@ -3189,6 +3447,10 @@ fn decode_pg_values(row: &tokio_postgres::Row) -> Result<Vec<Value>, MutationExe
         let type_name = column.type_().name();
 
         let value = match type_name {
+            "bytea" => {
+                let v: Option<Vec<u8>> = row.try_get(index)?;
+                v.map(Value::Binary).unwrap_or(Value::Null)
+            }
             "bool" | "boolean" => {
                 let v: Option<bool> = row.try_get(index)?;
                 match v {

@@ -53,6 +53,8 @@ pub struct RawAuditEvent {
     /// Annotation trace chain from the graph save scope chain.
     pub trace_chain: Vec<teaql_core::TraceNode>,
     pub bootstrap_audit: Option<BootstrapAuditIdentity>,
+    pub mutation_governance: Option<crate::MutationGovernanceSnapshot>,
+    pub(crate) diagnostic_redactions: Option<Arc<teaql_data_service::SqlIntentRedactions>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +67,54 @@ pub struct BootstrapAuditIdentity {
 }
 
 impl RawAuditEvent {
+    pub(crate) fn map_field_names(&mut self, resolve: impl Fn(&str) -> String) {
+        let mut names = std::collections::BTreeMap::new();
+        for field in self
+            .values
+            .keys()
+            .chain(self.old_values.iter().flat_map(|values| values.keys()))
+            .chain(self.new_values.iter().flat_map(|values| values.keys()))
+            .chain(self.updated_fields.iter())
+            .chain(self.changes.iter().map(|change| &change.field))
+        {
+            names.entry(field.clone()).or_insert_with(|| resolve(field));
+        }
+        let mut targets = std::collections::BTreeMap::<String, usize>::new();
+        for target in names.values() {
+            *targets.entry(target.clone()).or_default() += 1;
+        }
+        // If a direct provider caller supplied both aliases, retain both
+        // original keys rather than silently losing one in an audit record.
+        for (source, target) in &mut names {
+            if targets.get(target).copied().unwrap_or_default() > 1 {
+                *target = source.clone();
+            }
+        }
+        let remap = |values: &mut Record| {
+            *values = std::mem::take(values)
+                .into_iter()
+                .map(|(field, value)| (names.get(&field).cloned().unwrap_or(field), value))
+                .collect();
+        };
+        remap(&mut self.values);
+        if let Some(values) = &mut self.old_values {
+            remap(values);
+        }
+        if let Some(values) = &mut self.new_values {
+            remap(values);
+        }
+        for field in &mut self.updated_fields {
+            if let Some(name) = names.get(field) {
+                *field = name.clone();
+            }
+        }
+        for change in &mut self.changes {
+            if let Some(name) = names.get(&change.field) {
+                change.field = name.clone();
+            }
+        }
+    }
+
     pub fn created(entity: impl Into<String>, values: Record) -> Self {
         let changes = values
             .iter()
@@ -82,6 +132,8 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -98,6 +150,8 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -120,6 +174,8 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -138,6 +194,8 @@ impl RawAuditEvent {
             changes: Vec::new(),
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -178,16 +236,20 @@ impl RawAuditEvent {
             changes: Vec::new(),
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
+    /// Build a recovery audit without inventing a wrapped successor version.
+    /// Invalid lifecycle states and exhausted version space are explicit errors.
     pub fn recovered_with_old_values(
         entity: impl Into<String>,
         id: Value,
         expected_version: i64,
         old_values: Option<Record>,
-    ) -> Self {
-        let recovered_version = -expected_version + 1;
+    ) -> Result<Self, teaql_core::mutation_version::MutationVersionError> {
+        let recovered_version = teaql_core::mutation_version::recovered(expected_version)?;
         let mut new_values = old_values.clone().unwrap_or_default();
         new_values.insert("id".to_owned(), id.clone());
         new_values.insert("version".to_owned(), Value::I64(recovered_version));
@@ -199,7 +261,36 @@ impl RawAuditEvent {
             Some(&new_values),
             &["version".to_owned()],
         );
+        Ok(event)
+    }
+
+    /// Recovery may carry reviewed scalar corrections without becoming a
+    /// second update or losing the original recovery audit kind.
+    pub fn recovered_with_changes(
+        entity: impl Into<String>,
+        id: Value,
+        expected_version: i64,
+        old_values: Option<Record>,
+        values: Record,
+    ) -> Result<Self, teaql_core::mutation_version::MutationVersionError> {
+        let mut event = Self::recovered_with_old_values(entity, id, expected_version, old_values)?;
+        if values.is_empty() {
+            return Ok(event);
+        }
+        event.updated_fields = values.keys().cloned().collect();
+        event.updated_fields.push("version".into());
+        event.values.extend(values.clone());
         event
+            .new_values
+            .as_mut()
+            .expect("recovery snapshot")
+            .extend(values);
+        event.changes = Self::changes_for_fields(
+            event.old_values.as_ref(),
+            event.new_values.as_ref(),
+            &event.updated_fields,
+        );
+        Ok(event)
     }
 
     /// A new table was created during schema bootstrap.
@@ -227,6 +318,8 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -255,6 +348,8 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -283,6 +378,8 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -313,6 +410,8 @@ impl RawAuditEvent {
             changes,
             trace_chain: Vec::new(),
             bootstrap_audit: None,
+            mutation_governance: None,
+            diagnostic_redactions: None,
         }
     }
 
@@ -338,7 +437,58 @@ impl RawAuditEvent {
         audit_mask_fields: &[String],
         audit_value_max_len: Option<usize>,
     ) -> SafeAuditEvent {
+        self.build_safe_event_inner(
+            audit_mask_fields,
+            crate::log_privacy::plaintext_enabled(),
+            |field, value| {
+                build_safe_audit_field(field, value, audit_mask_fields, audit_value_max_len)
+            },
+        )
+    }
+
+    pub(crate) fn build_runtime_log_event(
+        &self,
+        audit_mask_fields: &[String],
+        audit_value_max_len: Option<usize>,
+    ) -> SafeAuditEvent {
+        self.build_safe_event_inner(audit_mask_fields, false, |field, value| {
+            build_safe_audit_field_inner(
+                field,
+                value,
+                audit_mask_fields,
+                audit_value_max_len,
+                false,
+            )
+        })
+    }
+
+    fn build_safe_event_inner(
+        &self,
+        audit_mask_fields: &[String],
+        allow: bool,
+        project: impl Fn(&str, Option<&str>) -> SafeAuditField,
+    ) -> SafeAuditEvent {
         let mut safe_fields = Vec::new();
+        let mut secrets = Vec::new();
+        if let Some(source) = &self.diagnostic_redactions {
+            source.extend_secrets(allow, &mut secrets);
+        }
+        for change in &self.changes {
+            if crate::log_privacy::credential_name(&change.field)
+                || (!allow
+                    && (audit_mask_fields.contains(&change.field) || change.field.starts_with('#')))
+                || change
+                    .old_value
+                    .iter()
+                    .chain(change.new_value.iter())
+                    .any(crate::log_privacy::has_credentials)
+            {
+                for value in change.old_value.iter().chain(change.new_value.iter()) {
+                    crate::log_privacy::collect_strings(value, &mut secrets);
+                }
+            }
+        }
+        secrets.sort_by_key(|value| std::cmp::Reverse(value.len()));
         for change in &self.changes {
             if change.field.starts_with('_') {
                 continue;
@@ -346,46 +496,57 @@ impl RawAuditEvent {
             // For audit, if it's masked or we just want the new/old values, we should represent it stringified.
             // Usually we care about the new value in SafeAuditEvent. Or maybe we want to represent the change.
             // Based on design doc, we stringify the value and apply masks.
-            let raw_val_str = change.new_value.as_ref().map(|v| format!("{:?}", v));
-            let safe_field = build_safe_audit_field(
-                &change.field,
-                raw_val_str.as_deref(),
-                audit_mask_fields,
-                audit_value_max_len,
-            );
+            let raw_val_str = change.new_value.as_ref().map(|v| match v {
+                Value::Text(text) => text.clone(),
+                Value::I64(number) => number.to_string(),
+                Value::U64(number) => number.to_string(),
+                _ => format!("{:?}", v),
+            });
+            let mut safe_field = project(&change.field, raw_val_str.as_deref());
+            if change
+                .old_value
+                .iter()
+                .chain(change.new_value.iter())
+                .any(crate::log_privacy::has_credentials)
+            {
+                safe_field.value = Some("[REDACTED]".into());
+                safe_field.masked = true;
+                safe_field.output_length = Some("[REDACTED]".len());
+                safe_field.truncated = false;
+            } else if let Some(value) = &mut safe_field.value
+                && (safe_field.masked || (change.field != "id" && change.field != "version"))
+            {
+                crate::log_privacy::scrub(value, &secrets);
+                safe_field.output_length = Some(value.chars().count());
+            }
             safe_fields.push(safe_field);
         }
-
+        let mut trace_chain = self.trace_chain.clone();
+        let mut intent_values = secrets;
+        if let Some(id) = self.values.get("id") {
+            crate::log_privacy::collect_strings(id, &mut intent_values);
+        }
+        intent_values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        crate::log_privacy::scrub_trace(&mut trace_chain, &intent_values);
+        let bootstrap_audit = self.bootstrap_audit.clone().map(|mut identity| {
+            crate::log_privacy::scrub(&mut identity.actor, &intent_values);
+            crate::log_privacy::scrub(&mut identity.reason, &intent_values);
+            identity
+        });
         SafeAuditEvent {
             kind: self.kind,
             entity: self.entity.clone(),
+            entity_id: match self.values.get("id") {
+                Some(Value::U64(id)) if *id > 0 => Some(*id),
+                Some(Value::I64(id)) if *id > 0 => Some(*id as u64),
+                _ => None,
+            },
             fields: safe_fields,
-            trace_chain: self.trace_chain.clone(),
+            trace_chain,
+            bootstrap_audit,
+            mutation_governance: self.mutation_governance.clone(),
         }
     }
-}
-
-pub fn mask_audit_value(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    let len = chars.len();
-
-    if len == 0 {
-        return String::new();
-    }
-
-    if chars.iter().all(|c| c.is_ascii_digit()) {
-        return "*".repeat(len);
-    }
-
-    if len < 8 {
-        return "*".repeat(len);
-    }
-
-    let prefix: String = chars[0..2].iter().collect();
-    let suffix: String = chars[len - 2..len].iter().collect();
-    let middle = "*".repeat(len - 4);
-
-    format!("{}{}{}", prefix, middle, suffix)
 }
 
 pub fn limit_audit_value(value: &str, max_len: usize) -> (String, bool) {
@@ -417,6 +578,22 @@ pub fn build_safe_audit_field(
     audit_mask_fields: &[String],
     audit_value_max_len: Option<usize>,
 ) -> SafeAuditField {
+    build_safe_audit_field_inner(
+        field_name,
+        raw_value,
+        audit_mask_fields,
+        audit_value_max_len,
+        crate::log_privacy::plaintext_enabled(),
+    )
+}
+
+fn build_safe_audit_field_inner(
+    field_name: &str,
+    raw_value: Option<&str>,
+    audit_mask_fields: &[String],
+    audit_value_max_len: Option<usize>,
+    allow_plaintext: bool,
+) -> SafeAuditField {
     match raw_value {
         None => SafeAuditField {
             name: field_name.to_string(),
@@ -430,11 +607,16 @@ pub fn build_safe_audit_field(
         },
         Some(raw) => {
             let raw_length = raw.chars().count();
-            let should_mask = audit_mask_fields.iter().any(|f| f == field_name);
+            let credential = crate::log_privacy::credential_name(field_name);
+            let should_mask = credential
+                || ((audit_mask_fields.iter().any(|f| f == field_name)
+                    || field_name.starts_with('#'))
+                    && !allow_plaintext);
 
-            let mut value = match should_mask {
-                true => mask_audit_value(raw),
-                false => raw.to_string(),
+            let mut value = match (credential, should_mask) {
+                (true, _) => "[REDACTED]".to_owned(),
+                (false, true) => mask_audit_value(raw),
+                (false, false) => raw.to_string(),
             };
 
             let mut truncated = false;
@@ -458,6 +640,21 @@ pub fn build_safe_audit_field(
             }
         }
     }
+}
+
+/// Mask policy-marked business values, not authentication credentials.
+/// Length means Unicode scalar values; numeric IDs use ASCII digits only.
+pub(crate) fn mask_audit_value(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() < 8 || chars.iter().all(char::is_ascii_digit) {
+        return "*".repeat(chars.len());
+    }
+    format!(
+        "{}{}{}",
+        chars[..2].iter().collect::<String>(),
+        "*".repeat(chars.len() - 4),
+        chars[chars.len() - 2..].iter().collect::<String>()
+    )
 }
 
 pub trait RawAuditEventSink: Send + Sync {
@@ -509,8 +706,16 @@ pub struct SafeAuditField {
 pub struct SafeAuditEvent {
     pub kind: RawAuditEventKind,
     pub entity: String,
+    /// Positive integer target identity, independent of changed fields and
+    /// responsibility lineage. Schema events have no target ID. Never infer
+    /// this from a parent reason or an old snapshot.
+    pub entity_id: Option<u64>,
     pub fields: Vec<SafeAuditField>,
     pub trace_chain: Vec<teaql_core::TraceNode>,
+    /// Framework bootstrap attribution, projected under the same privacy rules
+    /// as the safe lineage. Ordinary application mutations leave this absent.
+    pub bootstrap_audit: Option<BootstrapAuditIdentity>,
+    pub mutation_governance: Option<crate::MutationGovernanceSnapshot>,
 }
 
 pub trait SafeAuditEventSink: Send + Sync {
@@ -519,4 +724,104 @@ pub trait SafeAuditEventSink: Send + Sync {
         context: &crate::UserContext,
         event: &SafeAuditEvent,
     ) -> Result<(), crate::RuntimeError>;
+}
+
+#[cfg(test)]
+mod field_name_tests {
+    use super::RawAuditEvent;
+    use std::collections::BTreeMap;
+    use teaql_core::Value;
+
+    #[test]
+    fn recovery_with_corrections_has_one_version_and_complete_audit_changes() {
+        let old = BTreeMap::from([
+            ("id".into(), Value::U64(1)),
+            ("version".into(), Value::I64(-6)),
+            ("name".into(), Value::from("Old")),
+        ]);
+        let event = RawAuditEvent::recovered_with_changes(
+            "School",
+            Value::U64(1),
+            -6,
+            Some(old),
+            BTreeMap::from([("name".into(), Value::from("Corrected"))]),
+        )
+        .unwrap();
+        assert_eq!(event.kind, super::RawAuditEventKind::Recovered);
+        assert_eq!(
+            event.new_values.as_ref().unwrap().get("version"),
+            Some(&Value::I64(7))
+        );
+        assert_eq!(
+            event.new_values.as_ref().unwrap().get("name"),
+            Some(&Value::from("Corrected"))
+        );
+        assert_eq!(event.changes.len(), 2);
+    }
+
+    #[test]
+    fn version_lifecycle_recovery_audit_is_fallible_before_event_emission() {
+        for version in [i64::MIN, i64::MIN + 1, 0, 1] {
+            assert!(
+                RawAuditEvent::recovered_with_old_values("Probe", Value::U64(1), version, None)
+                    .is_err()
+            );
+        }
+        let event =
+            RawAuditEvent::recovered_with_old_values("Probe", Value::U64(1), i64::MIN + 2, None)
+                .unwrap();
+        assert_eq!(
+            event.new_values.unwrap().get("version"),
+            Some(&Value::I64(i64::MAX))
+        );
+    }
+
+    #[test]
+    fn audit_rekeys_all_views_without_losing_alias_collisions() {
+        let mut event = RawAuditEvent::updated_with_old_values(
+            "School",
+            BTreeMap::from([("school_type_id".into(), Value::U64(1001))]),
+            Some(BTreeMap::from([(
+                "school_type_id".into(),
+                Value::U64(1002),
+            )])),
+            BTreeMap::from([("school_type_id".into(), Value::U64(1001))]),
+            vec!["school_type_id".into()],
+        );
+        event.map_field_names(|field| {
+            if field == "school_type_id" {
+                "school_type".into()
+            } else {
+                field.into()
+            }
+        });
+        assert_eq!(event.values.get("school_type"), Some(&Value::U64(1001)));
+        assert_eq!(
+            event.old_values.as_ref().unwrap().get("school_type"),
+            Some(&Value::U64(1002))
+        );
+        assert_eq!(event.updated_fields, ["school_type"]);
+        assert_eq!(event.changes[0].field, "school_type");
+
+        let mut collision = RawAuditEvent::created(
+            "School",
+            BTreeMap::from([
+                ("school_type".into(), Value::U64(1001)),
+                ("school_type_id".into(), Value::U64(1002)),
+            ]),
+        );
+        collision.map_field_names(|field| {
+            if field == "school_type_id" {
+                "school_type".into()
+            } else {
+                field.into()
+            }
+        });
+        assert_eq!(collision.values.len(), 2);
+        assert_eq!(collision.values.get("school_type"), Some(&Value::U64(1001)));
+        assert_eq!(
+            collision.values.get("school_type_id"),
+            Some(&Value::U64(1002))
+        );
+    }
 }

@@ -1,5 +1,19 @@
+mod bindings;
+mod statistical;
+pub use statistical::{compile_statistical_plan, decode_statistical_rows};
 mod dialect;
+mod having;
+mod inheritance;
+mod integer_operand;
+pub use bindings::SqlBindings;
+pub use inheritance::{physical_entity_descriptors, validate_inherited_storage_columns};
+#[cfg(test)]
+mod binding_tests;
+mod diagnostic_execution;
+mod diagnostic_stream;
 mod executor;
+#[cfg(test)]
+mod log_rendering_tests;
 mod types;
 
 pub use dialect::{
@@ -11,7 +25,7 @@ pub use executor::{
     SqlDataServiceExecutor, SqlDataServiceTransaction, SqlExecutorError, SqlTransaction,
     SqlTransactionTransport, SqlTransport, StreamingSqlTransport,
 };
-pub use types::{CompiledQuery, DatabaseKind, SqlCompileError};
+pub use types::{CompiledQuery, DatabaseKind, SqlCompileError, render_sql_value, render_sql_with};
 
 #[cfg(test)]
 mod tests {
@@ -42,7 +56,7 @@ mod tests {
             &self,
             entity: &teaql_core::EntityDescriptor,
             args: &[teaql_core::Expr],
-            params: &mut Vec<teaql_core::Value>,
+            params: &mut crate::SqlBindings,
         ) -> Result<String, crate::SqlCompileError> {
             let [arg] = args else {
                 return Err(crate::SqlCompileError::InvalidFunctionArguments(
@@ -72,6 +86,46 @@ mod tests {
                     .not_null(),
             )
             .property(PropertyDescriptor::new("name", DataType::Text).column_name("name"))
+            .audit_mask_fields(vec![])
+    }
+
+    fn tenant_entity() -> EntityDescriptor {
+        entity().property(
+            PropertyDescriptor::new("tenant_id", DataType::U64)
+                .column_name("tenant_id")
+                .not_null(),
+        )
+    }
+
+    #[test]
+    fn grouped_mapped_properties_return_logical_keys_and_explicit_aliases() {
+        let descriptor = entity().property(
+            PropertyDescriptor::new("kind_id", DataType::I64).column_name("Legacy Kind Key"),
+        );
+        let query = SelectQuery::new("Order")
+            .group_by("kind_id")
+            .project_expr("kindKey", Expr::column("kind_id"))
+            .count("n");
+        let compiled = TestDialect.compile_select(&descriptor, &query).unwrap();
+        assert_eq!(
+            compiled.sql,
+            "SELECT \"Legacy Kind Key\" AS \"kind_id\", \"Legacy Kind Key\" AS \"kindKey\", COUNT(*) AS \"n\" FROM \"orders\" GROUP BY \"Legacy Kind Key\""
+        );
+    }
+
+    #[test]
+    fn grouping_without_aggregates_does_not_select_unrelated_entity_fields() {
+        let descriptor = entity().property(
+            PropertyDescriptor::new("kind_id", DataType::I64).column_name("Legacy Kind Key"),
+        );
+        let query = SelectQuery::new("Order")
+            .project("id")
+            .project("name")
+            .group_by("kind_id");
+        assert_eq!(
+            TestDialect.compile_select(&descriptor, &query).unwrap().sql,
+            "SELECT \"Legacy Kind Key\" AS \"kind_id\" FROM \"orders\" GROUP BY \"Legacy Kind Key\""
+        );
     }
 
     #[test]
@@ -247,6 +301,12 @@ mod tests {
         assert_eq!(
             query,
             CompiledQuery {
+                log_context: teaql_data_service::SqlLogContext {
+                    database_kind: Some("postgresql".into()),
+                    parameter_policies: vec![teaql_data_service::SqlParameterLogPolicy::Plain],
+                    generated_sql: true,
+                    ..Default::default()
+                },
                 sql: "SELECT \"id\", \"name\" FROM \"orders\" WHERE (\"name\" = $1) ORDER BY \"id\" DESC LIMIT 10 OFFSET 5".to_owned(),
                 params: vec![Value::from("A")],
                 comment: None,
@@ -278,6 +338,33 @@ mod tests {
             "SELECT * FROM (SELECT \"id\", \"order_id\", \"name\", ROW_NUMBER() OVER (PARTITION BY \"order_id\" ORDER BY \"id\" DESC) AS \"__teaql_partition_rank\" FROM \"orderline\" WHERE (\"order_id\" IN ($1, $2))) AS \"__teaql_partitioned\" WHERE \"__teaql_partition_rank\" > 1 AND \"__teaql_partition_rank\" <= 4 ORDER BY \"__teaql_partition_rank\""
         );
         assert_eq!(query.params, vec![Value::U64(11), Value::U64(12)]);
+    }
+
+    #[test]
+    fn partitioned_grouping_preserves_having_before_window_slice() {
+        let query = TestDialect
+            .compile_select(
+                &line_entity(),
+                &SelectQuery::new("OrderLine")
+                    .group_by("order_id")
+                    .group_by("name")
+                    .count("n")
+                    .filter(Expr::eq("name", "retained"))
+                    .having(Expr::binary(
+                        Expr::count_all(),
+                        BinaryOp::Gt,
+                        Expr::value(1_i64),
+                    ))
+                    .order_by(OrderBy::asc("name"))
+                    .page(1, 3)
+                    .partition_by("order_id"),
+            )
+            .unwrap();
+        assert_eq!(
+            query.sql,
+            "SELECT * FROM (SELECT \"order_id\", \"name\", COUNT(*) AS \"n\", ROW_NUMBER() OVER (PARTITION BY \"order_id\" ORDER BY \"name\" ASC) AS \"__teaql_partition_rank\" FROM \"orderline\" WHERE (\"name\" = $1) GROUP BY \"order_id\", \"name\" HAVING (COUNT(*) > $2)) AS \"__teaql_partitioned\" WHERE \"__teaql_partition_rank\" > 1 AND \"__teaql_partition_rank\" <= 4 ORDER BY \"__teaql_partition_rank\""
+        );
+        assert_eq!(query.params, vec![Value::from("retained"), Value::I64(1)]);
     }
 
     #[test]
@@ -385,6 +472,12 @@ mod tests {
         assert_eq!(
             query,
             CompiledQuery {
+                log_context: teaql_data_service::SqlLogContext {
+                    database_kind: Some("postgresql".into()),
+                    parameter_policies: vec![teaql_data_service::SqlParameterLogPolicy::Plain],
+                    generated_sql: true,
+                    ..Default::default()
+                },
                 sql: format!(
                     "SELECT {ORDER_DEFAULT_PROJECTION} FROM \"orders\" WHERE (SOUNDEX(\"name\") = SOUNDEX($1))"
                 ),
@@ -448,6 +541,159 @@ mod tests {
     }
 
     #[test]
+    fn tombstone_soft_delete_rejects_non_live_versions() {
+        for version in [i64::MIN, -902, -2, -1, 0] {
+            let command = DeleteCommand::new("Order", 7_u64).expected_version(version);
+            assert!(
+                TestDialect.compile_delete(&entity(), &command).is_err(),
+                "soft deletion must not recover or rewrite version {version}"
+            );
+            assert!(
+                TestDialect
+                    .compile_guarded_delete(&entity(), &command, &Expr::eq("name", "visible"))
+                    .is_err(),
+                "a customer guard must not bypass lifecycle admission"
+            );
+        }
+    }
+
+    #[test]
+    fn tombstone_live_boundary_cannot_overflow() {
+        for (version, tombstone) in [(1, -2), (i64::MAX, i64::MIN)] {
+            let query = TestDialect
+                .compile_delete(
+                    &entity(),
+                    &DeleteCommand::new("Order", 7_u64).expected_version(version),
+                )
+                .unwrap();
+            assert_eq!(
+                query.params,
+                vec![Value::I64(tombstone), Value::U64(7), Value::I64(version)]
+            );
+        }
+    }
+
+    #[test]
+    fn tombstone_blind_delete_requires_a_live_row() {
+        let command = DeleteCommand::new("Order", 7_u64);
+        let ordinary = TestDialect.compile_delete(&entity(), &command).unwrap();
+        let guarded = TestDialect
+            .compile_guarded_delete(&entity(), &command, &Expr::eq("name", "visible"))
+            .unwrap();
+        for query in [ordinary, guarded] {
+            assert!(query.sql.contains("\"version\" >= 1"), "{}", query.sql);
+            assert_eq!(query.params[0], Value::I64(-1));
+        }
+    }
+
+    #[test]
+    fn tombstone_hard_delete_retains_its_separate_meaning() {
+        let query = TestDialect
+            .compile_delete(
+                &entity(),
+                &DeleteCommand::new("Order", 7_u64)
+                    .expected_version(-902)
+                    .hard_delete(),
+            )
+            .unwrap();
+        assert!(query.sql.starts_with("DELETE FROM "));
+        assert!(!query.sql.contains(">= 1"));
+        assert_eq!(query.params, vec![Value::U64(7), Value::I64(-902)]);
+    }
+
+    #[test]
+    fn version_lifecycle_update_rejects_non_live_versions() {
+        for version in [i64::MIN, -902, -1, 0] {
+            let command = UpdateCommand::new("Order", 7_u64)
+                .expected_version(version)
+                .value("name", "changed");
+            assert!(TestDialect.compile_update(&entity(), &command).is_err());
+            assert!(
+                TestDialect
+                    .compile_guarded_update(&entity(), &command, &Expr::eq("name", "visible"))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_update_rejects_exhaustion_without_panicking() {
+        let command = UpdateCommand::new("Order", 7_u64)
+            .expected_version(i64::MAX)
+            .value("name", "changed");
+        assert!(TestDialect.compile_update(&entity(), &command).is_err());
+        assert!(
+            TestDialect
+                .compile_guarded_update(&entity(), &command, &Expr::eq("name", "visible"))
+                .is_err()
+        );
+    }
+
+    fn version_lifecycle_batch(version: i64) -> teaql_core::BatchUpdateCommand {
+        let mut command = teaql_core::BatchUpdateCommand::new("Order", vec!["name".into()]);
+        command.batch_ids = vec![Value::U64(6), Value::U64(7)];
+        command.batch_expected_versions = vec![Some(1), Some(version)];
+        command.batch_values = vec![
+            std::collections::BTreeMap::from([("name".to_owned(), Value::from("first"))]).into(),
+            std::collections::BTreeMap::from([("name".to_owned(), Value::from("second"))]).into(),
+        ];
+        command
+    }
+
+    #[test]
+    fn version_lifecycle_batch_rejects_non_live_versions() {
+        for version in [i64::MIN, -902, -1, 0] {
+            assert!(
+                TestDialect
+                    .compile_batch_update(&entity(), &version_lifecycle_batch(version))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_batch_rejects_exhaustion_without_panicking() {
+        assert!(
+            TestDialect
+                .compile_batch_update(&entity(), &version_lifecycle_batch(i64::MAX))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn version_lifecycle_recovery_rejects_unrepresentable_successor() {
+        for version in [i64::MIN, i64::MIN + 1] {
+            let command = RecoverCommand::new("Order", 7_u64, version);
+            assert!(TestDialect.compile_recover(&entity(), &command).is_err());
+            assert!(
+                TestDialect
+                    .compile_guarded_recover(&entity(), &command, &Expr::eq("name", "visible"))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn version_lifecycle_adjacent_representable_boundaries_remain_valid() {
+        let update = TestDialect
+            .compile_update(
+                &entity(),
+                &UpdateCommand::new("Order", 7_u64)
+                    .expected_version(i64::MAX - 1)
+                    .value("name", "changed"),
+            )
+            .unwrap();
+        assert_eq!(update.params[1], Value::I64(i64::MAX));
+        let recover = TestDialect
+            .compile_recover(
+                &entity(),
+                &RecoverCommand::new("Order", 7_u64, i64::MIN + 2),
+            )
+            .unwrap();
+        assert_eq!(recover.params[0], Value::I64(i64::MAX));
+    }
+
+    #[test]
     fn compiles_insert_update_delete_and_recover() {
         let insert = TestDialect
             .compile_insert(
@@ -492,6 +738,84 @@ mod tests {
         assert_eq!(
             recover.sql,
             "UPDATE \"orders\" SET \"version\" = $1 WHERE \"id\" = $2 AND \"version\" = $3"
+        );
+    }
+
+    #[test]
+    fn guarded_mutations_compile_tenant_predicate_in_the_same_statement() {
+        let guard = Expr::eq("tenant_id", 7_u64);
+        let update = TestDialect
+            .compile_guarded_update(
+                &tenant_entity(),
+                &UpdateCommand::new("Order", 1_u64)
+                    .expected_version(3)
+                    .value("name", "B"),
+                &guard,
+            )
+            .unwrap();
+        assert_eq!(
+            update.sql,
+            "UPDATE \"orders\" SET \"name\" = $1, \"version\" = $2 WHERE \"id\" = $3 AND \"version\" = $4 AND (\"tenant_id\" = $5)"
+        );
+        assert_eq!(
+            update.params,
+            vec![
+                Value::from("B"),
+                Value::I64(4),
+                Value::U64(1),
+                Value::I64(3),
+                Value::U64(7),
+            ]
+        );
+
+        let delete = TestDialect
+            .compile_guarded_delete(
+                &tenant_entity(),
+                &DeleteCommand::new("Order", 1_u64).expected_version(3),
+                &guard,
+            )
+            .unwrap();
+        assert_eq!(
+            delete.sql,
+            "UPDATE \"orders\" SET \"version\" = $1 WHERE \"id\" = $2 AND \"version\" = $3 AND (\"tenant_id\" = $4)"
+        );
+        assert_eq!(
+            delete.params,
+            vec![Value::I64(-4), Value::U64(1), Value::I64(3), Value::U64(7)]
+        );
+
+        let hard_delete = TestDialect
+            .compile_guarded_delete(
+                &tenant_entity(),
+                &DeleteCommand::new("Order", 1_u64)
+                    .expected_version(3)
+                    .hard_delete(),
+                &guard,
+            )
+            .unwrap();
+        assert_eq!(
+            hard_delete.sql,
+            "DELETE FROM \"orders\" WHERE \"id\" = $1 AND \"version\" = $2 AND (\"tenant_id\" = $3)"
+        );
+        assert_eq!(
+            hard_delete.params,
+            vec![Value::U64(1), Value::I64(3), Value::U64(7)]
+        );
+
+        let recover = TestDialect
+            .compile_guarded_recover(
+                &tenant_entity(),
+                &RecoverCommand::new("Order", 1_u64, -4),
+                &guard,
+            )
+            .unwrap();
+        assert_eq!(
+            recover.sql,
+            "UPDATE \"orders\" SET \"version\" = $1 WHERE \"id\" = $2 AND \"version\" = $3 AND (\"tenant_id\" = $4)"
+        );
+        assert_eq!(
+            recover.params,
+            vec![Value::I64(5), Value::U64(1), Value::I64(-4), Value::U64(7)]
         );
     }
 
@@ -683,6 +1007,7 @@ mod tests {
     #[test]
     fn renders_postgres_debug_sql_with_inlined_params() {
         let query = CompiledQuery {
+            log_context: Default::default(),
             sql: "SELECT * FROM \"orders\" WHERE ((\"name\" = $1) AND (\"id\" = ANY($2)) AND ('$3' = '$3'))".to_owned(),
             params: vec![
                 Value::from("Bob's Shop"),
@@ -700,6 +1025,7 @@ mod tests {
     #[test]
     fn renders_sqlite_debug_sql_with_inlined_params() {
         let query = CompiledQuery {
+            log_context: Default::default(),
             sql: "UPDATE \"orders\" SET \"name\" = ? WHERE ((\"id\" = ?) AND ('?' = '?'))"
                 .to_owned(),
             params: vec![Value::from("Alice's Shop"), Value::from(7_u64)],
@@ -715,6 +1041,7 @@ mod tests {
     #[test]
     fn debug_sql_renders_copy_paste_statement_with_shared_semantics() {
         let query = CompiledQuery {
+            log_context: Default::default(),
             sql: "SELECT * FROM school WHERE name = $1 AND active = $2 AND phone IS $3 AND repeated = $1 AND note = '$2'".to_owned(),
             params: vec![Value::from("O'Brien School"), Value::Bool(true), Value::Null],
             comment: None,
@@ -729,6 +1056,7 @@ mod tests {
     #[test]
     fn sqlite_debug_sql_preserves_comments_and_temporal_storage_literals() {
         let query = CompiledQuery {
+            log_context: Default::default(),
             sql: "-- line ? $1\nSELECT '?', \"identifier?\", ?, ? /* block ? */".to_owned(),
             params: vec![
                 Value::Date("2024-02-29".parse().unwrap()),
@@ -750,6 +1078,7 @@ mod tests {
             Value::Timestamp(teaql_core::time::Timestamp(-315_521_754_322)),
         ];
         let postgres = CompiledQuery {
+            log_context: Default::default(),
             sql: "-- ignored $1\nSELECT $1, $2 /* ignored $2 */".to_owned(),
             params: params.clone(),
             comment: None,
@@ -759,6 +1088,7 @@ mod tests {
             "-- ignored $1\nSELECT DATE '2024-02-29', TIMESTAMPTZ '1960-01-02 03:04:05.678Z' /* ignored $2 */"
         );
         let mysql = CompiledQuery {
+            log_context: Default::default(),
             sql: "SELECT ?, ? /* ignored ? */".to_owned(),
             params,
             comment: None,

@@ -10,12 +10,79 @@ use teaql_core::{
 };
 
 use crate::entity_status::EntityStatus;
+use crate::ledger_keys::storage_values_from_ledger;
 use crate::{
     DataServiceError, GraphMutationKind, GraphMutationPlan, GraphNode, GraphOperation,
     RuntimeError, ScopedCommentNode, TraceScopeToken, sorted_update_fields,
 };
 
 use super::{EntityDataService, helpers::*};
+
+/// Keep fields structured so the same owned names can reach the SQL command.
+/// Ordering preserves the legacy comma-joined signature without allocating it.
+#[derive(Debug, PartialEq, Eq)]
+struct UpdateBatchKey {
+    entity: String,
+    fields: Vec<teaql_core::MutationField>,
+}
+
+fn joined_field_bytes(fields: &[teaql_core::MutationField]) -> impl Iterator<Item = u8> + '_ {
+    fields.iter().enumerate().flat_map(|(index, field)| {
+        std::iter::once(b',')
+            .take(usize::from(index != 0))
+            .chain(field.name().bytes())
+    })
+}
+
+impl Ord for UpdateBatchKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.entity
+            .cmp(&other.entity)
+            .then_with(|| joined_field_bytes(&self.fields).cmp(joined_field_bytes(&other.fields)))
+            // Distinct field lists must not collide even if a name has a comma.
+            .then_with(|| self.fields.cmp(&other.fields))
+    }
+}
+
+impl PartialOrd for UpdateBatchKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[cfg(test)]
+#[path = "batch_field_key_tests.rs"]
+mod batch_field_key_tests;
+
+#[derive(Debug, Default)]
+pub(crate) struct LedgerExecutionOutcome {
+    pub(crate) generated_ids: BTreeMap<crate::EntityKey, Value>,
+    pub(crate) dynamic_readbacks: Option<Box<DynamicReadbacks>>,
+}
+
+/// Rare-path payload stays behind one pointer to protect ordinary async stacks.
+#[derive(Debug, Default)]
+pub(crate) struct DynamicReadbacks {
+    rows: BTreeMap<crate::EntityKey, teaql_core::dynamic_fields::DynamicFieldValues>,
+}
+impl std::ops::Deref for DynamicReadbacks {
+    type Target = BTreeMap<crate::EntityKey, teaql_core::dynamic_fields::DynamicFieldValues>;
+    fn deref(&self) -> &Self::Target {
+        &self.rows
+    }
+}
+impl std::ops::DerefMut for DynamicReadbacks {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.rows
+    }
+}
+
+impl std::ops::Deref for LedgerExecutionOutcome {
+    type Target = BTreeMap<crate::EntityKey, Value>;
+    fn deref(&self) -> &Self::Target {
+        &self.generated_ids
+    }
+}
 
 fn recover_trace_or_default(token: &Option<Arc<TraceScopeToken>>) -> Vec<teaql_core::TraceNode> {
     token
@@ -49,7 +116,15 @@ where
             ))));
         }
         let plan = self.plan_graph(node).await?;
-        self.execute_graph_plan_internal(plan).await
+        let policy_plan = crate::graph_policy_plan(self.data_service.metadata.context, &plan)
+            .map_err(DataServiceError::Runtime)?;
+        let governance = self
+            .data_service
+            .metadata
+            .context
+            .review_mutation_plan(&policy_plan)
+            .map_err(DataServiceError::Runtime)?;
+        crate::with_mutation_governance(governance, self.execute_graph_plan_internal(plan)).await
     }
 
     pub(crate) async fn save_entity_graph_from_internal(
@@ -75,6 +150,7 @@ where
                 comment: node.comment,
                 dirty_fields: None,
                 original_values: None,
+                dynamic_fields: None,
             }
         }
         self.save_graph_internal(convert(graph.root)).await
@@ -173,15 +249,21 @@ where
         &self,
         node: GraphNode,
     ) -> Result<GraphMutationPlan, DataServiceError<E::Error>> {
+        let intent = teaql_core::MutationIntent::from_optional(node.comment.as_deref())
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?;
         if node.entity != self.entity {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
                 "entity data service {} cannot plan graph root {}",
                 self.entity, node.entity
             ))));
         }
+        crate::mutation_version::graph_input(self.data_service.metadata.context, &node)
+            .map_err(DataServiceError::Runtime)?;
         let mut node = node;
         let mut plan = GraphMutationPlan::default();
-        self.collect_graph_plan(&mut node, &mut plan, None, None, false)
+        self.with_mutation_intent(intent)
+            .collect_graph_plan(&mut node, &mut plan, None, None, false)
             .await?;
         plan.planned_root = Some(node);
         plan.rebuild_batches();
@@ -189,6 +271,26 @@ where
     }
 
     pub(crate) async fn execute_graph_plan_internal(
+        &self,
+        plan: GraphMutationPlan,
+    ) -> Result<GraphNode, DataServiceError<E::Error>> {
+        let intent = teaql_core::MutationIntent::from_optional(
+            plan.planned_root
+                .as_ref()
+                .and_then(|node| node.comment.as_deref()),
+        )
+        .map_err(RuntimeError::from)
+        .map_err(DataServiceError::Runtime)?;
+        let scoped = self
+            .with_mutation_intent(intent)
+            .with_plan_privacy(&plan)
+            .map_err(DataServiceError::Runtime)?;
+        // Do not embed the complete executor state machine in each intent
+        // boundary. Generated bootstrap also runs on small test-thread stacks.
+        Box::pin(scoped.execute_graph_plan_scoped(plan)).await
+    }
+
+    async fn execute_graph_plan_scoped(
         &self,
         plan: GraphMutationPlan,
     ) -> Result<GraphNode, DataServiceError<E::Error>> {
@@ -256,6 +358,34 @@ where
                         }
                         let trace_chain = recover_trace_or_default(&item.scope_token);
                         self.delete_scoped_internal(&cmd, trace_chain).await?;
+                    }
+                }
+                GraphMutationKind::Recover => {
+                    for item in batch.items {
+                        let id = item.values.get("id").cloned().ok_or_else(|| {
+                            DataServiceError::Runtime(RuntimeError::Graph(
+                                "recover item missing identity".into(),
+                            ))
+                        })?;
+                        let version = item
+                            .values
+                            .get("version")
+                            .and_then(Value::try_i64)
+                            .ok_or_else(|| {
+                                DataServiceError::Runtime(RuntimeError::Graph(
+                                    "recover item missing original version".into(),
+                                ))
+                            })?;
+                        let mut cmd = teaql_core::RecoverCommand::new(&batch.entity, id, version);
+                        for field in &item.update_fields {
+                            if let Some(value) = item.values.get(field) {
+                                cmd.values.insert(field.clone(), value.clone());
+                            }
+                        }
+                        cmd.trace_chain = recover_trace_or_default(&item.scope_token);
+                        self.scoped_data_service_internal(batch.entity.clone())
+                            .recover_internal(&cmd)
+                            .await?;
                     }
                 }
                 GraphMutationKind::Reference => {
@@ -329,6 +459,7 @@ where
         let dirty_fields = entity.dirty_fields();
         let original_values = entity.original_values();
         let is_deleted = entity.is_marked_as_delete();
+        let is_recovered = entity.is_marked_as_recover();
         let comment = entity.get_comment();
         let mut node = self.graph_node_from_values(&descriptor.name, entity.into_values())?;
         node.dirty_fields = dirty_fields;
@@ -336,6 +467,9 @@ where
         if is_deleted {
             node.operation = GraphOperation::Remove;
             node.relations.clear();
+        }
+        if is_recovered {
+            node.operation = GraphOperation::Recover;
         }
         if let Some(c) = comment {
             node.set_comment(c);
@@ -367,14 +501,46 @@ where
                     return Ok(());
                 }
                 GraphOperation::Remove => {
+                    let scope = node.trace_scope(parent_token, plan.next_item_index);
                     plan.push(
                         node.entity.clone(),
                         GraphMutationKind::Delete,
                         node.values.clone().into(),
                         Vec::new(),
-                        parent_token,
+                        scope,
                         node.original_values.clone(),
                     );
+                    return Ok(());
+                }
+                GraphOperation::Recover => {
+                    let fields = node
+                        .dirty_fields
+                        .clone()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|field| field != "id" && field != "version")
+                        .collect();
+                    let scope = node.trace_scope(parent_token, plan.next_item_index);
+                    plan.push(
+                        node.entity.clone(),
+                        GraphMutationKind::Recover,
+                        node.values.clone().into(),
+                        fields,
+                        scope.clone(),
+                        node.original_values.clone(),
+                    );
+                    for children in node.relations.values_mut() {
+                        for child in children {
+                            self.collect_graph_plan(
+                                child,
+                                plan,
+                                parent_scope,
+                                scope.clone(),
+                                false,
+                            )
+                            .await?;
+                        }
+                    }
                     return Ok(());
                 }
                 GraphOperation::Upsert | GraphOperation::Create => {}
@@ -388,18 +554,9 @@ where
                 .map_err(DataServiceError::Runtime)?;
 
             // Create scope node on the current stack frame if this node has a comment
-            let current_scope = node.comment.as_ref().map(|c| ScopedCommentNode {
+            let current_scope = node.audit_trace_node().map(|track| ScopedCommentNode {
                 parent: parent_scope,
-                track: teaql_core::TraceNode {
-                    kind: teaql_core::TraceKind::AuditReason,
-                    entity_type: node.entity.clone(),
-                    entity_id: node.id().and_then(|v| match v {
-                        Value::U64(n) => Some(*n),
-                        Value::I64(n) => Some(*n as u64),
-                        _ => None,
-                    }),
-                    comment: c.clone(),
-                },
+                track,
             });
             let active_scope = current_scope.as_ref().or(parent_scope);
 
@@ -455,12 +612,18 @@ where
                     }
                 }
                 ensure_initial_version(&mut node.values, descriptor);
-                crate::data_service::helpers::ensure_timestamps(&mut node.values, descriptor, true);
+                crate::data_service::helpers::ensure_timestamps(
+                    &mut node.values,
+                    descriptor,
+                    true,
+                    self.data_service.metadata.context,
+                );
             } else {
                 crate::data_service::helpers::ensure_timestamps(
                     &mut node.values,
                     descriptor,
                     false,
+                    self.data_service.metadata.context,
                 );
             }
             let update_fields = if is_update {
@@ -482,26 +645,7 @@ where
 
             // Build the TraceScopeToken for this node (only if it has a comment).
             // This is an Arc-linked persistent list: zero-copy, O(1) creation.
-            let current_token = node
-                .comment
-                .as_ref()
-                .map(|c| {
-                    Arc::new(TraceScopeToken {
-                        parent: parent_token.clone(),
-                        track: teaql_core::TraceNode {
-                            kind: teaql_core::TraceKind::AuditReason,
-                            entity_type: node.entity.clone(),
-                            entity_id: node.id().and_then(|v| match v {
-                                Value::U64(n) => Some(*n),
-                                Value::I64(n) => Some(*n as u64),
-                                _ => None,
-                            }),
-                            comment: c.clone(),
-                        },
-                        node_index: plan.next_item_index,
-                    })
-                })
-                .or_else(|| parent_token.clone());
+            let current_token = node.trace_scope(parent_token, plan.next_item_index);
 
             plan.push(
                 node.entity.clone(),
@@ -559,7 +703,7 @@ where
                         )
                         .await;
                 }
-                GraphOperation::Remove => {
+                GraphOperation::Remove | GraphOperation::Recover => {
                     return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
                         "create graph cannot remove node {}",
                         node.entity
@@ -751,6 +895,44 @@ where
                     self.delete_graph_node(&node, parent_scope).await?;
                     return Ok(node);
                 }
+                GraphOperation::Recover => {
+                    let id = node.values.get("id").cloned().ok_or_else(|| {
+                        DataServiceError::Runtime(RuntimeError::Graph(
+                            "recover node missing identity".into(),
+                        ))
+                    })?;
+                    let version = node
+                        .values
+                        .get("version")
+                        .and_then(Value::try_i64)
+                        .ok_or_else(|| {
+                            DataServiceError::Runtime(RuntimeError::Graph(
+                                "recover node missing original version".into(),
+                            ))
+                        })?;
+                    let mut cmd = teaql_core::RecoverCommand::new(&node.entity, id, version);
+                    if let Some(fields) = &node.dirty_fields {
+                        for field in fields {
+                            if let Some(value) = node.values.get(field) {
+                                cmd.values.insert(field.clone(), value.clone());
+                            }
+                        }
+                    }
+                    cmd.trace_chain = active_scope
+                        .map(|scope| scope.to_trace_chain())
+                        .unwrap_or_default();
+                    self.scoped_data_service_internal(node.entity.clone())
+                        .recover_internal(&cmd)
+                        .await?;
+                    node.values.insert(
+                        "version".into(),
+                        Value::I64(
+                            crate::mutation_version::recovered(&node.entity, version)
+                                .map_err(DataServiceError::Runtime)?,
+                        ),
+                    );
+                    return Ok(node);
+                }
             }
 
             let descriptor = self
@@ -857,7 +1039,11 @@ where
                 {
                     node.values.insert(
                         version_property.name.clone(),
-                        Value::I64(expected_version + 1),
+                        Value::I64(
+                            crate::mutation_version::updated(&node.entity, Some(expected_version))
+                                .map_err(DataServiceError::Runtime)?
+                                .unwrap(),
+                        ),
                     );
                 }
                 node.values = self
@@ -1014,10 +1200,6 @@ where
             if let Some(Value::I64(expected_version)) = node.values.get(&version_property.name)
                 && expected_version != existing_version
             {
-                println!(
-                    "OptimisticLockConflict in validate_reference_node! entity={}, expected={}, existing={}",
-                    node.entity, expected_version, existing_version
-                );
                 return Err(DataServiceError::Runtime(
                     RuntimeError::OptimisticLockConflict {
                         entity: node.entity,
@@ -1035,6 +1217,7 @@ where
             comment: None,
             dirty_fields: None,
             original_values: None,
+            dynamic_fields: node.dynamic_fields,
         })
     }
 
@@ -1140,6 +1323,12 @@ where
                 }
                 continue;
             }
+            if field == "_is_recovered" {
+                if matches!(value, Value::Bool(true)) {
+                    node.operation = GraphOperation::Recover;
+                }
+                continue;
+            }
             let Some(relation) = descriptor.relation_by_name(&field) else {
                 node.values.insert(field, value);
                 continue;
@@ -1192,7 +1381,11 @@ where
             .data_service
             .metadata
             .context
-            .check_and_fix_values(&node.entity, &mut node.values);
+            .check_and_fix_storage_values_at(
+                &node.entity,
+                &mut node.values,
+                &crate::ObjectLocation::root(),
+            );
         crate::clear_entity_status(&mut node.values);
         check_result.map_err(DataServiceError::Runtime)?;
 
@@ -1291,11 +1484,45 @@ where
         let mut query = teaql_core::SelectQuery::new(entity)
             .filter(teaql_core::Expr::eq(id_property, id.clone()));
         query.trace_chain = trace_chain;
-        let mut rows = self
-            .scoped_data_service_internal(entity.to_owned())
-            .fetch_all_internal(&query)
-            .await?;
-        Ok(rows.pop())
+        let mut scoped = self.scoped_data_service_internal(entity.to_owned());
+        // The inherited mutation reason may mention this ID even though the
+        // SELECT compiler correctly treats its binding as plain. Carry the
+        // target only as free-text provenance, including IDs allocated during
+        // the write, without changing bindings or the reusable parent scope.
+        let mut redactions = scoped.query_intent_snapshot().unwrap_or_default();
+        redactions.capture_target_id(id);
+        scoped.query_log_intent = Some(std::sync::Mutex::new(redactions));
+        let mut rows = scoped.fetch_all_internal(&query).await?;
+        let row = rows.pop();
+        if let Some(row) = row.as_ref() {
+            let descriptor = self
+                .data_service
+                .metadata
+                .context
+                .require_entity(entity)
+                .map_err(DataServiceError::Runtime)?;
+            // Ordinary sparse Q results may omit fields. This full save
+            // readback may not: absence must never masquerade as loaded NULL.
+            // The normal compiler emits descriptor order, so validate that
+            // shape in one allocation-free pass. Reordered provider results
+            // remain legal and use the name-based fallback.
+            let ordered_complete = row.len() == descriptor.properties.len()
+                && row
+                    .keys()
+                    .zip(&descriptor.properties)
+                    .all(|(name, property)| name == &property.name);
+            if !ordered_complete {
+                for property in &descriptor.properties {
+                    if !row.contains_key(&property.name) {
+                        return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
+                            "authoritative readback missing mapped field {entity}.{}",
+                            property.name,
+                        ))));
+                    }
+                }
+            }
+        }
+        Ok(row)
     }
 
     pub(crate) fn order_new_ledger_keys(
@@ -1408,12 +1635,111 @@ where
         Ok(ordered)
     }
 
+    /// Resolve only declared ID references after the whole graph is allocated.
+    /// Do not rewrite arbitrary scalar values equal to a temporary ID, or mutate
+    /// the retryable source ledger. Both forward and reverse descriptors can
+    /// describe the same foreign key; their assignments must agree.
+    fn rebind_allocated_ledger_relations(
+        &self,
+        changes: &mut std::collections::BTreeMap<crate::EntityKey, crate::EntityValues>,
+        assigned: &std::collections::BTreeMap<crate::EntityKey, Value>,
+    ) -> Result<(), RuntimeError> {
+        if assigned.is_empty() {
+            return Ok(());
+        }
+        let mut bindings = std::collections::BTreeMap::<(crate::EntityKey, String), Value>::new();
+        for descriptor in self.data_service.metadata.context.all_entities() {
+            for relation in &descriptor.relations {
+                let (referencing_entity, referencing_field, referenced_entity) =
+                    if relation.many && relation.local_key == "id" {
+                        (
+                            &relation.target_entity,
+                            &relation.foreign_key,
+                            &descriptor.name,
+                        )
+                    } else if !relation.many && relation.foreign_key == "id" {
+                        (
+                            &descriptor.name,
+                            &relation.local_key,
+                            &relation.target_entity,
+                        )
+                    } else {
+                        continue;
+                    };
+                for (key, record) in changes
+                    .iter()
+                    .filter(|(key, _)| key.entity.as_ref() == referencing_entity)
+                {
+                    let Some(value) = record
+                        .get(referencing_field)
+                        .filter(|value| !matches!(value, Value::Null | Value::TypedNull(_)))
+                    else {
+                        continue;
+                    };
+                    let reference = crate::EntityKey::new(referenced_entity.clone(), value.clone());
+                    let Some(allocated) = assigned.get(&reference) else {
+                        continue;
+                    };
+                    let binding = (key.clone(), referencing_field.clone());
+                    if let Some(previous) = bindings.insert(binding, allocated.clone())
+                        && previous != *allocated
+                    {
+                        return Err(RuntimeError::Graph(format!(
+                            "conflicting allocated relation identities for {}.{}",
+                            key.entity, referencing_field
+                        )));
+                    }
+                }
+            }
+        }
+        for ((key, field), id) in bindings {
+            changes
+                .get_mut(&key)
+                .expect("binding owns a change record")
+                .insert(field, id);
+        }
+        Ok(())
+    }
+
     pub(crate) async fn execute_ledger_plan_internal(
         &self,
         root: crate::EntityRuntimeState,
         locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
-    ) -> Result<std::collections::BTreeMap<crate::EntityKey, Value>, DataServiceError<E::Error>>
-    {
+    ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
+        let changes = root.current_change_set();
+        self.execute_ledger_plan_internal_with_changes(root, locations, &changes)
+            .await
+    }
+
+    pub(crate) async fn execute_ledger_plan_internal_with_changes(
+        &self,
+        root: crate::EntityRuntimeState,
+        locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
+        changes: &crate::EntityChangeSet,
+    ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
+        if root.has_pending_dynamic_mutations() {
+            self.data_service
+                .metadata
+                .context
+                .dynamic_graph_provider()
+                .map_err(DataServiceError::Runtime)?;
+        }
+        let intent = teaql_core::MutationIntent::from_optional(root.get_comment().as_deref())
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?;
+        let scoped = self
+            .with_mutation_intent(intent)
+            .with_ledger_privacy_from(&root, changes)
+            .map_err(DataServiceError::Runtime)?;
+        Box::pin(scoped.execute_ledger_plan_scoped(root, locations, changes)).await
+    }
+
+    async fn execute_ledger_plan_scoped(
+        &self,
+        root: crate::EntityRuntimeState,
+        locations: &std::collections::BTreeMap<crate::EntityKey, crate::ObjectLocation>,
+        change_set: &crate::EntityChangeSet,
+    ) -> Result<LedgerExecutionOutcome, DataServiceError<E::Error>> {
         if let Some(error) = root.first_composition_error() {
             return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
                 "generated entity graph attachment failed before save: {error}"
@@ -1433,8 +1759,40 @@ where
             .unwrap_or_default();
 
         let deleted_keys = root.deleted_keys();
+        let recovered_keys = root.recovered_keys();
         let new_keys = root.new_keys();
-        let change_set = root.current_change_set();
+
+        // Resolve generated identities against this Context's model before any write.
+        // A compatibility key may carry a name, but a typed key cannot silently bind
+        // to another generation that happens to use the same name or numeric ID.
+        for (_, symbols) in change_set
+            .scoped_keys()
+            .chain(deleted_keys.iter().map(|key| (key, key.symbols())))
+            .chain(new_keys.iter().map(|key| (key, key.symbols())))
+            .chain(recovered_keys.iter().map(|key| (key, key.symbols())))
+        {
+            if let Some(symbols) = symbols {
+                self.data_service
+                    .metadata
+                    .context
+                    .require_entity_symbols(symbols)
+                    .map_err(DataServiceError::Runtime)?;
+            }
+        }
+        for key in &recovered_keys {
+            if new_keys.contains(key) || deleted_keys.contains(key) {
+                return Err(DataServiceError::Runtime(RuntimeError::Graph(
+                    "cannot recover a new entity or conflicting lifecycle intentions".into(),
+                )));
+            }
+            let version = root.get_original_version(key).ok_or_else(|| {
+                DataServiceError::Runtime(RuntimeError::Graph(
+                    "recovery requires a loaded original tombstone version".into(),
+                ))
+            })?;
+            crate::mutation_version::recovered(&key.entity, version)
+                .map_err(DataServiceError::Runtime)?;
+        }
 
         // Deletion of an existing versioned entity must carry the version
         // obtained by loading that entity. A newly created entity deleted
@@ -1447,7 +1805,7 @@ where
                 .data_service
                 .metadata
                 .context
-                .require_entity(&key.entity)
+                .require_entity_key(key)
                 .map_err(DataServiceError::Runtime)?;
             if descriptor.version_property().is_some() && root.get_original_version(key).is_none() {
                 return Err(DataServiceError::Runtime(RuntimeError::Graph(format!(
@@ -1468,25 +1826,37 @@ where
             if deleted_keys.contains(key) {
                 continue;
             }
-            let mut checked: crate::EntityValues = record.clone().into();
+            let descriptor = self
+                .data_service
+                .metadata
+                .context
+                .require_entity(&key.entity)
+                .map_err(DataServiceError::Runtime)?;
+            let mut checked = storage_values_from_ledger(descriptor, record)
+                .map_err(DataServiceError::Runtime)?;
             checked
                 .entry("id".to_owned())
                 .or_insert_with(|| key.id.clone());
             checked_changes.insert(key.clone(), checked);
         }
+        // Extension-only edits still require a native optimistic update.
+        if let Some(dynamic) = change_set.dynamic_changes() {
+            for key in dynamic.keys().filter(|key| !deleted_keys.contains(*key)) {
+                checked_changes
+                    .entry(key.clone())
+                    .or_insert_with(|| BTreeMap::from([("id".into(), key.id.clone())]).into());
+            }
+        }
 
         // Plan updates and inserts before any mutation. A sparse ledger CREATE
         // must be validated against the exact payload sent to SQL, not merely
         // against the typed object's default-filled in-memory snapshot.
-        let mut update_batches: std::collections::BTreeMap<
-            (String, String),
-            Vec<crate::EntityKey>,
-        > = std::collections::BTreeMap::new();
+        let mut update_batches: BTreeMap<UpdateBatchKey, Vec<crate::EntityKey>> = BTreeMap::new();
         let mut insert_batches: std::collections::BTreeMap<String, Vec<crate::EntityKey>> =
             std::collections::BTreeMap::new();
 
         for (key, record) in &checked_changes {
-            if deleted_keys.contains(key) {
+            if deleted_keys.contains(key) || recovered_keys.contains(key) {
                 continue;
             }
             let mut is_new = new_keys.contains(key);
@@ -1496,7 +1866,7 @@ where
                     .data_service
                     .metadata
                     .context
-                    .require_entity(&key.entity)
+                    .require_entity_key(key)
                     .map_err(DataServiceError::Runtime)?;
                 let id_property = descriptor.id_property().ok_or_else(|| {
                     DataServiceError::Runtime(RuntimeError::Graph(format!(
@@ -1533,11 +1903,15 @@ where
                         .push(key.clone());
                 }
                 false => {
-                    let mut fields: Vec<String> = record.keys().cloned().collect();
-                    fields.sort();
-                    let signature = fields.join(",");
+                    // Slot and named fields iterate in the legacy lexical order.
+                    // The command may append update_time and version after grouping.
+                    let mut fields = Vec::with_capacity(record.len() + 2);
+                    fields.extend(record.fields().map(|(field, _)| field));
                     update_batches
-                        .entry((key.entity.to_string(), signature))
+                        .entry(UpdateBatchKey {
+                            entity: key.entity.to_string(),
+                            fields,
+                        })
                         .or_default()
                         .push(key.clone());
                 }
@@ -1547,6 +1921,89 @@ where
         let ordered_insert_keys = self
             .order_new_ledger_keys(insert_batches.values().flatten().cloned(), &checked_changes)
             .map_err(DataServiceError::Runtime)?;
+        // Allocate the whole graph before recovering any item lineage. A child
+        // can inherit a root/ancestor scope created before its ID was known.
+        for key in &ordered_insert_keys {
+            if crate::data_service::helpers::is_unassigned_id_value(&key.id) {
+                let id = self
+                    .data_service
+                    .metadata
+                    .context
+                    .next_id(&key.entity)
+                    .map_err(DataServiceError::Runtime)?;
+                generated_ids.insert(key.clone(), Value::U64(id));
+            }
+        }
+        root.enrich_allocated_trace_scopes(&generated_ids);
+        self.rebind_allocated_ledger_relations(&mut checked_changes, &generated_ids)
+            .map_err(DataServiceError::Runtime)?;
+        let mut dynamic_writes = Vec::new();
+        let mut dynamic_keys = Vec::new();
+        if let Some(dynamic) = change_set
+            .dynamic_changes()
+            .filter(|changes| !changes.is_empty())
+        {
+            let context = self.data_service.metadata.context;
+            if !crate::commit_audit::has_scope(context) {
+                return Err(DataServiceError::Runtime(RuntimeError::DynamicField(
+                    teaql_core::dynamic_fields::DynamicFieldError {
+                        code: "DYNAMIC_FIELD_AUDIT_SCOPE_REQUIRED",
+                        field: "save".into(),
+                    },
+                )));
+            }
+            let provider = context
+                .dynamic_graph_provider()
+                .map_err(DataServiceError::Runtime)?;
+            let store = self
+                .data_service
+                .executor
+                .dynamic_field_store()
+                .ok_or_else(|| {
+                    DataServiceError::Runtime(RuntimeError::DynamicField(
+                        teaql_core::dynamic_fields::DynamicFieldError {
+                            code: "DYNAMIC_FIELD_TRANSACTION_BINDING_REQUIRED",
+                            field: "save".into(),
+                        },
+                    ))
+                })?;
+            for (key, changes) in dynamic
+                .iter()
+                .filter(|(key, _)| !deleted_keys.contains(*key))
+            {
+                let definitions = change_set.dynamic_definitions(key).ok_or_else(|| {
+                    DataServiceError::Runtime(RuntimeError::DynamicField(
+                        teaql_core::dynamic_fields::DynamicFieldError {
+                            code: "DYNAMIC_FIELD_DEFINITIONS_MISSING",
+                            field: key.entity.to_string(),
+                        },
+                    ))
+                })?;
+                let id = generated_ids
+                    .get(key)
+                    .unwrap_or(&key.id)
+                    .try_u64()
+                    .ok_or_else(|| {
+                        DataServiceError::Runtime(RuntimeError::DynamicField(
+                            teaql_core::dynamic_fields::DynamicFieldError {
+                                code: "DYNAMIC_FIELD_OWNER_ID_REQUIRED",
+                                field: key.entity.to_string(),
+                            },
+                        ))
+                    })?;
+                dynamic_writes.push(
+                    provider
+                        .prepare_graph_write(context, store, definitions, id, changes)
+                        .map_err(|error| {
+                            DataServiceError::Runtime(RuntimeError::DynamicField(error))
+                        })?,
+                );
+                dynamic_keys.push(key.clone());
+            }
+            store
+                .validate_writes(&dynamic_writes)
+                .map_err(|error| DataServiceError::Runtime(RuntimeError::DynamicField(error)))?;
+        }
         let mut ordered_insert_batches = Vec::<(String, Vec<crate::EntityKey>)>::new();
         for key in ordered_insert_keys {
             let entity = key.entity.to_string();
@@ -1571,27 +2028,19 @@ where
             let mut traces = Vec::new();
             for key in &keys {
                 let record = checked_changes.get(key).unwrap();
-                let mut db_record = crate::EntityValues::new();
-                let mut real_id = key.id.clone();
-                if crate::data_service::helpers::is_unassigned_id_value(&real_id) {
-                    let gen_id = self
-                        .data_service
-                        .metadata
-                        .context
-                        .next_id(&entity)
-                        .map_err(DataServiceError::Runtime)?;
-                    real_id = Value::U64(gen_id);
-                    generated_ids.insert(key.clone(), real_id.clone());
-                }
-                db_record.insert("id".to_owned(), real_id);
-                for (field, value) in record {
-                    if field == "id" {
-                        continue;
-                    }
-                    db_record.insert(field.clone(), value.clone());
-                }
+                let mut db_record: crate::EntityValues = record.clone_with_capacity(2).into();
+                let real_id = generated_ids
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| key.id.clone());
+                db_record.insert_named("id", real_id);
                 crate::data_service::helpers::ensure_initial_version(&mut db_record, descriptor);
-                crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, true);
+                crate::data_service::helpers::ensure_timestamps(
+                    &mut db_record,
+                    descriptor,
+                    true,
+                    self.data_service.metadata.context,
+                );
                 let location = locations.get(key).cloned().unwrap_or_default();
                 self.data_service
                     .metadata
@@ -1626,24 +2075,42 @@ where
             self.execute_prepared_batch_insert(cmd).await?;
         }
 
-        let mut update_order: Vec<(String, String)> = update_batches.keys().cloned().collect();
-        update_order.sort();
+        for key in &recovered_keys {
+            let version = root
+                .get_original_version(key)
+                .expect("recovery versions preflighted");
+            let mut cmd =
+                teaql_core::RecoverCommand::new(key.entity.as_ref(), key.id.clone(), version);
+            if let Some(values) = checked_changes.get(key) {
+                for (field, value) in values {
+                    if field != "id" && field != "version" {
+                        cmd.values.insert(field.clone(), value.clone());
+                    }
+                }
+            }
+            cmd.trace_chain = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
+            self.scoped_data_service_internal(key.entity.to_string())
+                .recover_internal(&cmd)
+                .await?;
+        }
 
-        for signature in update_order {
-            let keys = update_batches.get(&signature).unwrap();
+        for (signature, keys) in update_batches {
             let descriptor = self
                 .data_service
                 .metadata
                 .context
-                .require_entity(&signature.0)
+                .require_entity(&signature.entity)
                 .map_err(DataServiceError::Runtime)?;
-            let mut update_fields: Vec<String> =
-                signature.1.split(',').map(|s| s.to_string()).collect();
+            let mut update_fields: Vec<String> = signature
+                .fields
+                .into_iter()
+                .map(|field| field.name().to_owned())
+                .collect();
             if descriptor
                 .properties
                 .iter()
                 .any(|p| p.name == "update_time")
-                && !update_fields.contains(&"update_time".to_owned())
+                && !update_fields.iter().any(|field| field == "update_time")
             {
                 update_fields.push("update_time".to_owned());
             }
@@ -1654,27 +2121,27 @@ where
             }
             let mut cmd = teaql_core::BatchUpdateCommand::new(&descriptor.name, update_fields);
             let mut traces = Vec::new();
-            for key in keys {
+            for key in &keys {
                 let record = checked_changes.get(key).unwrap();
-                let mut db_record = crate::EntityValues::new();
-                db_record.insert("id".to_owned(), key.id.clone());
-                for (field, value) in record {
-                    if field == "id" {
-                        continue;
-                    }
-                    db_record.insert(field.clone(), value.clone());
-                }
+                let mut db_record: crate::EntityValues = record.clone_with_capacity(2).into();
+                db_record.insert_named("id", key.id.clone());
                 crate::data_service::helpers::increment_version(
                     &mut db_record,
                     descriptor,
                     root.get_original_version(key),
+                )
+                .map_err(DataServiceError::Runtime)?;
+                crate::data_service::helpers::ensure_timestamps(
+                    &mut db_record,
+                    descriptor,
+                    false,
+                    self.data_service.metadata.context,
                 );
-                crate::data_service::helpers::ensure_timestamps(&mut db_record, descriptor, false);
                 cmd.batch_values.push(db_record.into());
                 cmd.batch_ids.push(key.id.clone());
                 cmd.batch_expected_versions
                     .push(root.get_original_version(key));
-                cmd.batch_old_values.push(None); // or fetch from original state if needed
+                cmd.batch_old_values.push(root.original_values_for(key));
                 let my_trace = resolve_trace_chain(root.get_trace_chain(key), &trace_chain);
                 traces.push(my_trace);
             }
@@ -1682,6 +2149,166 @@ where
             self.execute_prepared_batch_update(cmd).await?;
         }
 
-        Ok(generated_ids)
+        let mut outcome = LedgerExecutionOutcome {
+            generated_ids,
+            dynamic_readbacks: None,
+        };
+        if !dynamic_writes.is_empty() {
+            outcome.dynamic_readbacks = Some(Box::new(DynamicReadbacks {
+                rows: Box::pin(self.persist_dynamic_writes(
+                    &root,
+                    change_set,
+                    &dynamic_keys,
+                    &dynamic_writes,
+                ))
+                .await?,
+            }));
+        }
+        Ok(outcome)
+    }
+
+    async fn persist_dynamic_writes(
+        &self,
+        root: &crate::EntityRuntimeState,
+        change_set: &crate::EntityChangeSet,
+        keys: &[crate::EntityKey],
+        writes: &[teaql_data_service::dynamic_fields::DynamicFieldWrite],
+    ) -> Result<
+        BTreeMap<crate::EntityKey, teaql_core::dynamic_fields::DynamicFieldValues>,
+        DataServiceError<E::Error>,
+    > {
+        use teaql_core::dynamic_fields::{
+            DynamicFieldError, DynamicFieldMutation, DynamicFieldSelection, DynamicFieldValues,
+        };
+        let invalid = |code, field: String| {
+            DataServiceError::Runtime(RuntimeError::DynamicField(DynamicFieldError {
+                code,
+                field,
+            }))
+        };
+        let store = self
+            .data_service
+            .executor
+            .dynamic_field_store()
+            .ok_or_else(|| invalid("DYNAMIC_FIELD_TRANSACTION_BINDING_REQUIRED", "save".into()))?;
+        let intent = teaql_core::MutationIntent::from_optional(root.get_comment().as_deref())
+            .map_err(RuntimeError::from)
+            .map_err(DataServiceError::Runtime)?;
+        store
+            .apply_writes(writes, &intent)
+            .await
+            .map_err(|error| DataServiceError::Runtime(RuntimeError::DynamicField(error)))?;
+        let query_intent = teaql_core::QueryIntent::new(
+            intent.comment(),
+            "runtime: read authoritative graph extensions",
+        )
+        .map_err(RuntimeError::from)
+        .map_err(DataServiceError::Runtime)?;
+        let mut readbacks = BTreeMap::new();
+        for (key, write) in keys.iter().zip(writes) {
+            let mut codes = write
+                .changes
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            if key.entity.as_ref() == self.entity
+                && let Some(loaded) = root.loaded_dynamic_fields()
+            {
+                codes.extend(loaded.selected_codes().iter().cloned());
+            }
+            let selection = DynamicFieldSelection::fields(
+                codes
+                    .into_iter()
+                    .map(|code| {
+                        write
+                            .definitions
+                            .data_type(&code)
+                            .map(|data_type| (code, data_type))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| {
+                        DataServiceError::Runtime(RuntimeError::DynamicField(error))
+                    })?,
+            )
+            .map_err(|error| DataServiceError::Runtime(RuntimeError::DynamicField(error)))?;
+            let mut rows = store
+                .load_values(
+                    &write.namespace,
+                    &write.definitions,
+                    &[write.owner_id],
+                    &selection,
+                    &query_intent,
+                )
+                .await
+                .map_err(|error| DataServiceError::Runtime(RuntimeError::DynamicField(error)))?;
+            if rows.len() != 1 || !rows.contains_key(&write.owner_id) {
+                return Err(invalid(
+                    "DYNAMIC_FIELD_READBACK_MISMATCH",
+                    key.entity.to_string(),
+                ));
+            }
+            let values = rows.remove(&write.owner_id).unwrap();
+            if values.keys().any(|code| !selection.contains(code)) {
+                return Err(invalid(
+                    "DYNAMIC_FIELD_UNSELECTED_VALUE",
+                    key.entity.to_string(),
+                ));
+            }
+            for (code, mutation) in &write.changes {
+                if matches!(mutation, DynamicFieldMutation::Set(_)) != values.contains_key(code) {
+                    return Err(invalid("DYNAMIC_FIELD_READBACK_MISMATCH", code.clone()));
+                }
+            }
+            let fields = DynamicFieldValues::from_values(write.definitions.clone(), values)
+                .map_err(|error| DataServiceError::Runtime(RuntimeError::DynamicField(error)))?;
+            let changes = write
+                .changes
+                .iter()
+                .map(|(code, mutation)| {
+                    crate::EntityPropertyChange::new(
+                        format!("#{code}"),
+                        change_set
+                            .dynamic_originals(key)
+                            .and_then(|values| values.get(code))
+                            .cloned()
+                            .flatten(),
+                        Some(crate::dynamic_fields::mutation_audit_value(
+                            mutation,
+                            fields.values().get(code),
+                        )),
+                    )
+                })
+                .collect::<Vec<_>>();
+            crate::commit_audit::enrich_dynamic(
+                self.data_service.metadata.context,
+                &key.entity,
+                write.owner_id,
+                changes,
+            )
+            .map_err(DataServiceError::Runtime)?;
+            readbacks.insert(key.clone(), fields);
+        }
+        Ok(readbacks)
+    }
+}
+
+#[cfg(test)]
+mod ledger_trace_resolution_tests {
+    use super::resolve_trace_chain;
+    use teaql_core::{TraceKind, TraceNode};
+
+    #[test]
+    fn complete_ledger_chain_replaces_fallback_and_empty_chain_inherits_it() {
+        let root = TraceNode::typed(TraceKind::AuditReason, "CustomerOrder", Some(1), "root");
+        let child = TraceNode::typed(TraceKind::AuditReason, "OrderItem", Some(1), "child");
+        let fallback = vec![root.clone()];
+        let specific = vec![root, child];
+        assert_eq!(resolve_trace_chain(specific.clone(), &fallback), specific);
+        assert_eq!(resolve_trace_chain(Vec::new(), &fallback), fallback);
+        assert_eq!(resolve_trace_chain(Vec::new(), &[]), Vec::new());
+        // Neither resolving the specific item nor its sibling consumes or
+        // mutates the shared fallback. Equal numeric IDs remain typed.
+        assert_eq!(resolve_trace_chain(Vec::new(), &fallback), fallback);
+        assert_eq!(fallback.len(), 1);
     }
 }

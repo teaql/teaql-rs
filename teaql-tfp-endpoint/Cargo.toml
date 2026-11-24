@@ -17,6 +17,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 axum = { version = "0.8" }
+rusqlite = { workspace = true }
+teaql-provider-sqlite = { workspace = true }
+teaql-sql = { workspace = true }

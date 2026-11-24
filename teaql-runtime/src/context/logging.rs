@@ -4,6 +4,10 @@ use std::time::{Duration, SystemTime};
 use super::UserContext;
 use teaql_core::Value;
 
+#[cfg(test)]
+#[path = "logging_vectors_tests.rs"]
+mod vectors_tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SqlLogOperation {
     Select,
@@ -75,11 +79,13 @@ impl SqlLogOptions {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SqlLogEntry {
+    pub log_context: teaql_data_service::SqlLogContext,
     pub operation: SqlLogOperation,
     pub comment: Option<String>,
     pub purpose: Option<String>,
     pub audit_reason: Option<String>,
     pub trace_path: Vec<teaql_core::TraceNode>,
+    pub trace_chain: Vec<teaql_core::TraceNode>,
     pub sql: String,
     pub params: Vec<Value>,
     pub debug_sql: String,
@@ -96,9 +102,9 @@ pub struct SqlLogEntry {
 impl SqlLogEntry {
     /// Number of bound parameters without exposing their values.
     ///
-    /// Safe/default log entries retain one `Value::Null` slot per parameter;
-    /// sensitive diagnostic entries retain the original values. The count is
-    /// therefore stable across both views of the same execution.
+    /// Safe/default entries retain projected values (null, visible, or masked)
+    /// in the original positions. The count is stable across log views; raw
+    /// executor bindings are never mutated by projection.
     pub fn parameter_count(&self) -> usize {
         self.params.len()
     }
@@ -182,16 +188,23 @@ impl UserContext {
     }
 
     pub(crate) fn record_metadata_log(&self, metadata: &teaql_data_service::ExecutionMetadata) {
+        if !metadata.statements.is_empty() {
+            for statement in &metadata.statements {
+                self.record_metadata_log(statement);
+            }
+            return;
+        }
         let operation = match metadata.operation {
             teaql_data_service::DataServiceOperation::Query => SqlLogOperation::Select,
             teaql_data_service::DataServiceOperation::Insert => SqlLogOperation::Insert,
             teaql_data_service::DataServiceOperation::Update => SqlLogOperation::Update,
             teaql_data_service::DataServiceOperation::Delete => SqlLogOperation::Delete,
-            teaql_data_service::DataServiceOperation::Recover => SqlLogOperation::Update,
+            teaql_data_service::DataServiceOperation::Recover => SqlLogOperation::Recover,
             teaql_data_service::DataServiceOperation::Batch => SqlLogOperation::Update,
             teaql_data_service::DataServiceOperation::Schema => SqlLogOperation::Update,
         };
-        if !self.sql_log_options.enabled_for(operation) {
+        let logging = self.sql_log_options.enabled_for(operation);
+        if !logging && !self.records_sql_diagnostics() {
             return;
         }
         let trace_path =
@@ -207,12 +220,43 @@ impl UserContext {
             .unwrap_or_default();
         let debug_sql = metadata.debug_query.as_deref().unwrap_or_default();
         let sensitive_entry = SqlLogEntry {
+            log_context: {
+                let mut context = metadata.sql_log.clone();
+                if let Some(telemetry) = &mut context.telemetry {
+                    Arc::make_mut(telemetry).mutation_lineage = metadata
+                        .trace_chain
+                        .iter()
+                        .filter(|node| node.kind == teaql_core::TraceKind::AuditReason)
+                        .cloned()
+                        .collect();
+                }
+                if context.database_kind.is_none() {
+                    context.database_kind = Some(metadata.backend.clone());
+                }
+                context
+            },
             operation,
-            comment: trace_value(&metadata.trace_chain, teaql_core::TraceKind::Comment)
-                .or_else(|| metadata.comment.clone()),
+            comment: if metadata.sql_log.request_trace_chain.is_empty() {
+                trace_value(&metadata.trace_chain, teaql_core::TraceKind::Comment)
+                    .or_else(|| metadata.comment.clone())
+            } else {
+                metadata.comment.clone()
+            },
             purpose: trace_value(&metadata.trace_chain, teaql_core::TraceKind::Purpose),
-            audit_reason: trace_value(&metadata.trace_chain, teaql_core::TraceKind::AuditReason),
+            audit_reason: {
+                let local = trace_value(&metadata.trace_chain, teaql_core::TraceKind::AuditReason);
+                // Executed mutations and their readback retain request-owned
+                // intent in metadata.comment. A descendant's local reason is
+                // lineage, not a replacement for that root. Standalone legacy
+                // metadata without owned intent keeps its canonical fold.
+                if operation != SqlLogOperation::Select || local.is_some() {
+                    metadata.comment.clone().or(local)
+                } else {
+                    None
+                }
+            },
             trace_path: trace_path.clone(),
+            trace_chain: metadata.sql_log.request_trace_chain.clone(),
             sql: metadata.parameterized_query.clone().unwrap_or_default(),
             params: metadata.params.clone(),
             pretty_sql: pretty_sql(debug_sql),
@@ -228,20 +272,18 @@ impl UserContext {
             affected_rows: metadata.affected_rows,
             result_summary,
         };
-        // The ordinary context buffer and default operator log are safe
-        // telemetry. Values and copy-paste SQL are only sent to an explicitly
-        // configured diagnostic sink, never retained in this buffer.
-        let mut safe_entry = sensitive_entry.clone();
-        // Preserve only the non-sensitive shape. Clearing the vector used to
-        // make a parameterized query indistinguishable from a literal-only
-        // query, while retaining the values would leak customer data.
-        safe_entry
-            .params
-            .iter_mut()
-            .for_each(|value| *value = Value::Null);
-        safe_entry.debug_sql.clear();
-        safe_entry.pretty_sql.clear();
-        self.append_sql_log(metadata.started_at, trace_path, safe_entry, sensitive_entry);
+        // Retain the safe expanded representation, never raw diagnostic SQL.
+        let safe_entry = crate::log_privacy::sql_entry(&sensitive_entry, false);
+        self.export_sql_diagnostic(&safe_entry);
+        if !logging {
+            return;
+        }
+        self.append_sql_log(
+            metadata.started_at,
+            safe_entry.trace_path.clone(),
+            safe_entry,
+            sensitive_entry,
+        );
     }
 
     fn append_sql_log(
@@ -260,11 +302,15 @@ impl UserContext {
             entries.push(UnifiedLogEntry {
                 timestamp,
                 user_identifier: self.user_identifier.clone(),
-                trace_chain: trace_path.clone(),
+                trace_chain: if safe_entry.trace_chain.is_empty() {
+                    trace_path.clone()
+                } else {
+                    safe_entry.trace_chain.clone()
+                },
                 payload: LogPayload::Sql(safe_entry.clone()),
             });
         }
-        crate::log_formatter::LogManager::write_sql_log(&trace_path, &safe_entry);
+        self.runtime_logger.sql(&safe_entry);
         crate::log_formatter::LogManager::write_sensitive_sql_log(&trace_path, &sensitive_entry);
     }
 }

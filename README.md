@@ -1,426 +1,350 @@
-# teaql-rs
+# TeaQL Rust
+
+An AI-native library and runtime for building reviewable business applications in Rust.
+
+TeaQL gives coding agents business-shaped APIs, model-aware guidance and
+software checks. People review the business operation instead of reconstructing
+pages of query-building, relationship-loading and persistence code.
+
+Automatic execution logs make those operations easier to debug and operate,
+without adding logging statements to every business method.
+
+[Try with your coding agent](#try-it-with-your-coding-agent) ·
+[Run the local example](#run-the-local-example) ·
+[See automatic logs](#automatic-logs-without-handwritten-logging-code)
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13608/badge)](https://www.bestpractices.dev/projects/13608)
 
-**TeaQL is an AI-native runtime designed for Coding Agents and modern application development.** 
+## Why this is an AI native library
 
-While traditional frameworks assume a human is writing every line of code, TeaQL provides a strict, typed, and auditable Capability Sandbox tailored specifically for autonomous AI Agents (and humans) to execute code securely.
+AI-native does not mean the library was written by AI, or that every query
+calls an LLM. It means the APIs, knowledge delivery and verification workflow
+are designed for how coding agents work: limited context, incomplete knowledge
+of a project and a tendency to guess unfamiliar operations.
 
-## Recommended Agent Harness
+The semantic model describes your business objects, fields, relationships and
+states. A generated domain library turns those words into language-native
+**Q** queries, **E** expressions and mutation methods. This repository provides
+the reusable, domain-independent **runtime** that executes them through
+metadata, Context, Checker, Policy and database providers.
 
-When building database-backed applications with the TeaQL Rust runtime, we
-recommend using it together with the [TeaQL Agent Kit](https://github.com/teaql/teaql-agent-kit).
-The Agent Kit is TeaQL's continuously evolving **Harness Engineering** method.
-It gives coding agents a model-mediated, executable workflow for domain
-modeling, deterministic evaluation and repair, code generation, implementation,
-and evidence-based verification as the generator and runtimes evolve.
+The application workspace keeps business code and concise project guidance
+together. Progressive **Assist** supplies the exact API guidance needed for
+the next operation, instead of asking the agent to explore the entire generated
+library. Compilation, runtime checks and tests provide feedback beyond a prompt.
 
-### The Five Safeguards of AI Coding
+## Less code for a reviewer to reconstruct
 
-To ensure absolute safety and governance when AI Agents interact with production systems, the TeaQL runtime enforces the following five safeguards:
+The benefit is visible in the application code: the query, data access path
+and audited change stay together, while shared mechanics live in the library
+and runtime.
 
-1. **Mandatory Identity (UserContext):** Every operation must pass through a runtime `UserContext`. The system explicitly records whether the action was performed by a human or an AI Agent.
-2. **Intent Auditing (Typestate/Builder):** Agents cannot simply call `.execute()`. They are forced by the compiler to declare their intent using `.purpose()` (for reads) or `.audit_as()` (for writes) before the execution terminal is unlocked.
-3. **Capability Sandbox (SPI/Features):** Dangerous operations (HTTP, File IO, Message Queues) are physically isolated. Unless explicitly granted in the project dependencies (via Cargo features), the Agent is structurally blocked from accessing them.
-4. **Graph Mutability Control:** Agents do not manually assemble SQL `UPDATE`s or relationship loops. They operate on typed Entity Graphs (`save_graph`), reducing hallucination-induced data corruption.
-5. **Universal Error Translation:** The runtime intercepts infrastructure errors and translates them into semantic business codes, preventing the Agent from getting stuck in stack trace loops.
+| Application code to review | Shared work handled by TeaQL |
+| --- | --- |
+| A composed Q request | SQL construction and selected relation loading |
+| An E access path | Loaded-field checks and explicit NULL handling |
+| A mutation with an audit reason | Change tracking, Checker and configured Policy execution |
+| Business intent and audit reason | Automatic execution logs and trace context without per-operation logging code |
 
----
+Reviewers still decide whether the requested data, business rules and
+authorization policy are correct. They have less application plumbing to
+trace before making that decision; reuse does not make business logic correct
+automatically.
 
-TeaQL is a DDD-oriented data runtime for applications that want generated,
-typed domain APIs instead of hand-written repository boilerplate.
+**Token savings have not yet been measured in a controlled comparison.**
+We make no numerical token-saving claim. Loading guidance only when needed
+is a context-management strategy; the smaller application review surface is
+visible in the examples, not a measured percentage reduction in review time.
 
-The Rust workspace provides the runtime pieces: entity metadata, a query AST,
-SQL compilation, relation enhancement, graph writes, checkers, mutation events,
-and PostgreSQL, MySQL, and SQLite executors. The sibling `teaql-code-gen`
-project can turn a compact domain model into a typed Rust service crate with
-entity structs, `Q::merchants()`-style query builders, behavior/checker hooks,
-and audited graph-save entrypoints.
+## See a business operation execute
 
-TeaQL is not trying to be a general replacement for Diesel, SeaORM, or direct
-`sqlx` use:
+The [Robot Task Board showcase](https://teaql.io/blog/robot-task-board-showcase/)
+makes the idea concrete: move a task and follow the state change, generated
+SQL, field-level audit and refreshed board.
 
-- use TeaQL when the domain model is central, relation graphs matter, and you
-  want generated high-level APIs that resemble the Java TeaQL style;
-- use Diesel or SeaORM when you want a conventional Rust ORM with a broad
-  ecosystem;
-- use `sqlx` directly when explicit SQL is the right abstraction and generated
-  domain APIs would get in the way.
+![TeaQL Robot Task Board](https://teaql.io/img/003-task-board.png)
 
-The Rust rewrite keeps the scope deliberately narrow:
+Explore the [open-source demo](https://github.com/teaql/robot-task-board).
+The showcase is a Rust application; the examples below use this repository's
+own Rust APIs.
 
-- PostgreSQL, MySQL, and SQLite database providers
-- Rust-native metadata and query AST
-- SQL compiler and runtime separated from optional web and cache integrations
-- compatibility with every Java implementation detail is not a goal, but the
-  high-level TeaQL programming model is being carried over where it is useful
+## Q API composes business queries
 
-For the latest published Rust runtime package, see
-[`teaql-runtime` on crates.io](https://crates.io/crates/teaql-runtime).
-The `main` branch can contain changes that have not yet been packaged; use a
-specific released version when validating a downloaded artifact.
-For release provenance, run `./scripts/verify-release-provenance.sh <version>`
-from a checkout with the relevant tags and signing public key. It compares the
-archives for every crate in the retained public-release contract with crates.io
-checksums, requires one VCS source commit, and verifies that `v<version>` is
-signed and points to that commit. Run the script with `--list-crates` to inspect
-the exact current package boundary instead of relying on a duplicated count in
-documentation.
-This is a provenance gate, not a functional database-conformance test.
-
-## Cloud Integration
-
-TeaQL provides cloud-native crates for embedding Rust services into Java (Spring Cloud) microservice architectures:
+These application-code excerpts assume the example's generated imports, trusted
+Context and an existing object identity. `Q` and `E` belong to the generated
+domain library, not a generic runtime object with arbitrary field strings.
+See the [application source](examples/school-management/src/main.rs) for complete setup.
 
 ```rust
-use teaql_cloud_starter::CloudApp;
+let school_type_details = Q::school_types_minimal().select_name().select_code();
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    CloudApp::new()
-        .nacos("127.0.0.1:8848")
-        .namespace("production")
-        .service_name("order-service-rust")
-        .port(8080)
-        .routes(my_business_routes())
-        .start()
-        .await?;
-    Ok(())
-}
+let mut school = Q::schools()
+    .with_name_is("Riverside Primary School")
+    .select_platform_with(Q::platforms_minimal().select_name().select_base_url())
+    .select_school_type_with(school_type_details)
+    .comment("what: load the school and its reference data")
+    .purpose("why: review a school before editing")
+    .execute_for_one(&context)
+    .await?
+    .expect("School must exist");
 ```
 
-| Crate | Purpose |
-|-------|---------|
-| `teaql-cloud-core` | Backend-agnostic traits (ServiceRegistry, ServiceDiscovery, ConfigSource, HealthIndicator, MetricsCollector) |
-| `teaql-cloud-actuator` | Spring Boot Actuator-compatible endpoints (health, info, metrics) |
-| `teaql-cloud-nacos` | Nacos v2 gRPC implementation |
-| `teaql-cloud-starter` | One-line bootstrap — connects Nacos, registers service, starts HTTP, graceful shutdown |
+The child request is a query in its own right. Give it a business name,
+extract it into a helper and compose it into other requests like a Lego brick.
+The reviewer can see which relationships are loaded without following a
+separate set of SQL loops. `comment` describes **what**; `purpose` describes
+**why**. Both must be non-empty, even when logging is disabled.
 
-See [design document](docs/2026-07-20-cloud-integration-design.md) for details.
+## E API protects business reads
 
-## Build & Install
+```rust
+let name = E::school(&school).get_name().eval();
+let type_code = E::school(&school).get_school_type().get_code().eval();
+```
 
-To build TeaQL from source:
+E reads the loaded graph without implicitly querying the database. A loaded
+NULL and a field that was **NotLoaded** are different facts. A business rule
+must not conclude that a value is absent merely because the query never
+requested it.
+
+The access path is explicit, so the reviewer checks whether Q loaded the
+required data and whether the code handles a real NULL appropriately.
+Unloaded access produces the language-specific diagnostic; a NULL fallback
+is not permission to ignore an unloaded property.
+
+## Mutation API keeps changes behind one Save boundary
+
+The application declares the change and its reason instead of writing its own
+persistence loop. A graph can stage additions, updates and deletions before Save.
+
+Load the complete scalar fields of every persisted object you actually modify.
+A display-only partial projection is not a complete mutation input. Unmodified
+reference objects do not have to become fully loaded just to save their parent.
+
+```rust
+school.update_name("Riverside Academy");
+let saved = school.audit_as("Rename the reviewed school").save(&context).await?;
+```
+
+Save traverses the reached mutation graph, runs Checker/Fix and the configured
+customer Mutation Policy, then uses the provider transaction boundary.
+An explicit policy denial blocks persistence. Missing customer policy or exact
+approval emits a warning; it is not automatic rejection. Marking for deletion
+stages a change—the audited Save performs it. Atomicity is provider/route scoped,
+not a distributed transaction across unrelated databases.
+
+Optimistic versions are signed 64-bit values with checked lifecycle transitions:
+updates require a live positive version; soft deletion maps `v` to `-v-1`, and
+explicit recovery maps a negative version to `-v+1`. Exhausted successors reject
+with a structured `version_exhausted` check at `/version`, before customer graph
+policy or provider execution, while retaining pending changes. No transition
+wraps, saturates or silently resets the version. Low-level SQL compilers enforce
+the same domains; physical hard deletion remains a separate operation. The
+`RawAuditEvent::recovered_with_old_values` helper is now fallible: callers handle
+its `Result` instead of risking an overflow while constructing recovery evidence.
+The local Fix/E example includes exact-boundary generated Q/E/Save probes.
+
+## Automatic logs without handwritten logging code
+
+**Debuggability and operability are core design goals.** The Q and Save
+examples above contain no logging calls: you declare the business intent,
+and the runtime produces the execution diagnostics and trace context.
+Configured audit sinks receive change events without each application
+method having to construct its own field-level diff.
+
+The intent declarations already belong to the business operation:
+
+- `comment` describes what the query does.
+- `purpose` explains why it runs.
+- `audit_as` gives the reason for a saved change.
+
+No-code logging means no handwritten logger calls in each business method,
+not an application without code or intent declarations. Runtime startup
+still configures any required sink; custom formats and destinations use the
+logging extension points rather than edits to every business operation.
+
+- **Debugging:** connect a query's intent to generated SQL, execution outcome
+  and the trace path when a screen or business operation behaves unexpectedly.
+- **Operations:** follow query and mutation activity and use audit reasons
+  and safely exposed changes to investigate incidents.
+- **Review:** inspect the business operation without separately checking
+  that every TeaQL execution path has a matching application logging statement.
+
+Query and Mutation diagnostic logs are enabled by default and can be switched
+off independently. Logging off does not disable intent validation or Policy.
+
+Illustrative, shortened view of the rename operation, not a literal logger
+format or a captured test result; the SQL excerpt omits additional selected fields:
+
+```text
+query entity=School comment="load the reviewed object" purpose="edit form" outcome=success
+SQL: SELECT id, version, name FROM school_data WHERE id = 42;
+trace: School -> request -> sqlite -> select
+mutation entity=School auditReason="Rename the reviewed school" outcome=committed
+change: name "Riverside Primary School" -> "Riverside Academy"
+lineage: School#42("Rename the reviewed school")
+```
+
+The declarations explain **why**; SQL and audit evidence show **what happened**.
+Together they help locate the relevant operation without reconstructing the
+entire call path from scattered application code.
+
+SQL execution stays parameterized. Diagnostic SQL has parameters substituted
+after field-aware masking; it is not a question-mark template you must manually
+reconstruct. Ordinary bindings stay visible, sensitive bindings use the shared
+mask algorithm, and credentials/unknown bindings stay hidden. A masked statement
+is labeled `MASKED; NOT REPLAYABLE`; SQL that cannot be safely rendered is omitted.
+Application mutation audits are delivered after commit and discarded on rollback.
+This is not a durable audit outbox. Do not put secrets in comment or purpose.
+
+## Discover only the API needed next
+
+A coding agent does not need every generated method in its context. Start with
+the generated application's `AGENTS.md` and workspace guidance, request an
+entity/action Assist, then ask for field-specific help only for the field
+being used.
+
+For a model in `models/`, the Rust query path is:
 
 ```bash
-git clone https://github.com/teaql/teaql-rs.git
-cd teaql-rs
-cargo build --workspace --all-targets --exclude teaql-provider-linux
+cargo teaql rust-assist-query/school --input models/
+cargo teaql rust-assist-query/school.established_date --input models/
 ```
 
-On Linux, include the `/proc` data provider with `cargo build --all-targets`.
+These commands call the model-aware service; the model must match the generated
+library. Assist uses canonical KSML entity and field names, even when the
+language-native API uses a different naming style. Cargo TeaQL is a service
+client for multiple languages, not just Rust.
 
-To use TeaQL in your project, add the relevant crates to your `Cargo.toml`:
+Use Assist to discover operations instead of reading generated library source
+or guessing names. If the required operation is missing, report
+`MISSING_ASSIST` rather than inventing an API. The
+[Agent Kit](https://github.com/teaql/teaql-agent-kit) defines this progressive
+workflow. Library and runtime maintenance are separate from application coding.
+
+## Software checks complement agent instructions
+
+AI proposes the model and application logic; software checks the parts that
+can be verified mechanically. The library is one part of the TeaQL harness,
+not a replacement for business review.
+
+| Stage | TeaQL support | Feedback to inspect |
+| --- | --- | --- |
+| Model and repair | Semantic model evaluation | Errors, warnings and repair guidance |
+| Generate | Domain library combined with this runtime | Language tooling checks the generated API contract |
+| Customize the workspace | Progressive Assist, Q, E and mutation APIs | Build diagnostics, Checker and configured Policy results |
+| Verify and operate | Tests, runtime startup, intent and audit evidence | Actual outcomes, remaining failures and execution paths |
+
+Build checks verify API use, not whether the business decision is right.
+Tests must still verify the application's behavior. A prompt, successful
+generation or a clean build alone does not prove the finished application correct.
+
+## Try it with your coding agent
+
+You can start with an agent you already use. Paste this prompt:
+
+```text
+Follow the current instructions at https://github.com/teaql/teaql-agent-kit.
+Build a small school-management application in Rust using SQLite.
+Evaluate and repair the model, generate the domain library and prepare a runnable
+application workspace. Verify Q, E, Checker and audited Save.
+Finish with a report of commands, results and
+remaining frictions. Include Q/E examples and relevant intent/audit logs.
+Do not claim token savings without a measured comparison.
+```
+
+The [Agent Kit](https://github.com/teaql/teaql-agent-kit) guides modeling,
+evaluation/repair, generation and application customization. It may install
+toolchains and download dependencies; review installation permissions and the
+final execution report. It is a workflow, not a guarantee of unattended correctness.
+
+## Run the local example
+
+A stable Rust toolchain supporting edition 2024. SQLite examples need no database server. From a checkout of this repository:
+
+```bash
+cargo run --manifest-path examples/school-management/Cargo.toml
+```
+
+The [School example](examples/school-management/README.md)
+exercises SQLite schema/bootstrap and generated application APIs against this
+repository's local runtime. No external database server or generator is needed
+to run the retained generated example. Use only the example's test database;
+reset/repeated-run behavior is documented in its README.
+
+## Use the published runtime
+
+Current documented runtime: **5.0.6**. Keep domain-library and runtime
+versions compatible; regenerate older libraries when their provider or graph
+adapter SPI has changed.
 
 ```toml
 [dependencies]
-teaql-core = "4.2.2"
-# Add other providers as needed
+teaql-core = "5.0.6"
+teaql-runtime = "5.0.6"
+teaql-provider-sqlite = "5.0.6"
 ```
 
-## Try It
+Generation is a separate service; see the [Agent Kit](https://github.com/teaql/teaql-agent-kit)
+for producing the application-specific library and workspace. Repository examples
+use local source; isolated released-package regression is a separate gate.
 
-The quickest demo uses SQLite in memory and needs no database server:
+## Supported scope
+
+Rust is a backend reference runtime with PostgreSQL, MySQL, SQLite and in-memory execution. Optional web, cache, cloud and tool integrations are separate crates. A generated domain library supplies application-specific Q/E APIs; the runtime is reusable and domain-independent.
+
+One semantic model can produce language-native applications across
+[Java](https://github.com/teaql/teaql-java),
+[Rust](https://github.com/teaql/teaql-rs),
+[TypeScript](https://github.com/teaql/teaql-ts),
+[Go](https://github.com/teaql/teaql-golang),
+[Swift](https://github.com/teaql/teaql-swift),
+[.NET](https://github.com/teaql/teaql-dotnet) and
+[Python](https://github.com/teaql/teaql-python).
+That does not imply identical APIs, providers or complete cross-language feature parity.
+The semantic model defines business objects, fields, relationships and states;
+it is not the language model used by a coding agent.
+The [conformance matrices](https://github.com/teaql/teaql-conformance)
+distinguish implemented source, executed examples, artifact verification and release.
+
+## Verification and customization
 
 ```bash
-cargo run -p teaql-examples --bin sqlite_relations_graph
+cargo test --workspace --exclude teaql-provider-linux
+bash scripts/verify-examples.sh
 ```
 
-It bootstraps the schema, submits an `Order` graph containing `OrderLine` and
-`Product` objects, fetches the order again, and prints the typed result.
+The full example gate is the acceptance entry point for local runtime changes.
+External-provider tests need their configured services; skips are not live-provider
+evidence. A committed-operation error after audit delivery failure must not be
+retried as if the business transaction rolled back.
 
-For a smaller schema/bootstrap and CRUD path:
+Install application-owned policies, ID/business-ID services, logging sinks,
+transports and other supported SPIs through trusted runtime/Context setup.
+Request JSON is not allowed to replace those trusted capabilities.
+
+- [Runtime guide: modules, SPI and advanced verification](RUNTIME_GUIDE.md)
+- [Workspace and provider details](RUNTIME_GUIDE.md#workspace-layout)
+- [SQLite transactions](teaql-provider-sqlite/README.md)
+- [Inherited saves through generated Q and E APIs](examples/inheritance-save/README.md)
+- [Shared load state](examples/shared-load-state/README.md)
+- [Binary object storage and temporary S3 URLs](examples/object-storage/README.md)
+- [Context-owned HTTP with bounded retries and safe diagnostics](examples/http-resilience/README.md)
+- [Trace Chain example](examples/trace-chain/README.md)
+- [Supplier onboarding in 15 locales](examples/supplier-onboarding-i18n/README.md)
+- [Benchmarks and reproduction](https://github.com/teaql/teaql-runtime-benchmark)
+
+## Safe troubleshooting
+
+Default diagnostics do not authorize plaintext sensitive data. Controlled
+debugging requires the exact acknowledgement below and any sensitive sink
+required by the runtime:
 
 ```bash
-cargo run -p teaql-examples --bin sqlite_schema_crud
+export TEAQL_ALLOW_SENSITIVE_PLAINTEXT_LOGS=I_UNDERSTAND_SENSITIVE_DATA_MAY_BE_WRITTEN_TO_DISK
 ```
 
-For generated-service style APIs, use `teaql-code-gen` to generate a service
-crate and write application code against `Q`:
-
-```rust
-use crm_erp_service::Q;
-
-let platforms = Q::platforms()
-    .select_merchant_list_with(
-        Q::merchants()
-            .select_name()
-            .with_name_containing("TeaQL"),
-    )
-    .comment("Load platforms with filtered merchant names")
-    .purpose("Displaying platform-merchant overview for dashboard")
-    .execute_for_list(&ctx)
-    .await?;
-```
-
-## Workspace layout
-
-- `teaql-core`: metadata, entity traits, base entity data, values, filters, ordering, aggregates, query model, and `SmartList<T>`
-- `teaql-sql`: SQL dialect trait, compiled query types, DDL helpers, and AST-to-SQL compiler
-- `teaql-runtime`: minimal runtime mechanism, `UserContext`, metadata lookup, repository boundary, repository registry, behavior registry, checker registry, entity event sink, id generation, `RuntimeModule`, and in-memory execution
-- `teaql-provider-postgres`: PostgreSQL native adapter (deadpool-postgres), schema bootstrap, transaction wrapper, row decoding, and ID-space generator
-- `teaql-provider-sqlite`: SQLite native adapter (rusqlite), schema bootstrap, transaction wrapper, row decoding, and ID-space generator
-- `teaql-provider-mysql`: MySQL native adapter (mysql_async), schema bootstrap, transaction wrapper, row decoding, and ID-space generator
-- `teaql-data-service`: database-neutral query and mutation service contracts
-- `teaql-web-integration-axum`: Axum integration for TeaQL web responses and request contexts
-- `teaql-cache-integration-redis`: Redis-backed runtime cache and ownership-safe Remote Lock integration
-- `teaql-provider-meilisearch`: Meilisearch query provider
-- `teaql-provider-linux`: Linux `/proc` data provider
-- `teaql-macros`: `TeaqlEntity` derive macro plus attribute parsing and record/entity mapping generation
-
-## Current scope
-
-The Rust implementation currently covers the core TeaQL runtime:
-
-- **Typed domain model** — Entity and relation metadata, `TeaqlEntity`
-  derive support, typed entity mapping, and `SmartList<T>`.
-- **Queries and aggregates** — Filters, projections, sorting, pagination,
-  subqueries, relation loading, grouped aggregates, and `HAVING`.
-- **Audited persistence** — Create, update, soft delete, recover,
-  optimistic locking, transactions, and audited entity-graph saves.
-- **Runtime governance** — `UserContext`, repository behavior hooks,
-  checkers, translated validation messages, mutation events, and ID generation.
-- **Relation graphs** — Typed nested relation enhancement, aggregate
-  relations, graph planning, references, removal, and missing-child handling.
-- **Providers and integrations** — PostgreSQL, MySQL, SQLite, in-memory,
-  Meilisearch, Linux `/proc`, Axum, Redis, and cloud integration crates.
-
-See [Workspace layout](#workspace-layout) for crate responsibilities,
-[Typed entities](#typed-entities-and-smartlistt), and
-[Typed relation enhancement](#typed-relation-enhancement) for examples.
-
-## Typed entities and `SmartList<T>`
-
-`TeaqlEntity` derive now generates both metadata and typed `Entity` mapping.
-Entity data-service APIs can return either raw `Record` rows or typed
-`SmartList<T>` collections.
-
-```rust
-use teaql_core::{Expr, SelectQuery, SmartList, TeaqlEntity};
-use teaql_macros::TeaqlEntity;
-use teaql_runtime::PurposedSelectQuery;
-
-#[derive(Clone, Debug, Default, TeaqlEntity)]
-#[teaql(entity = "CatalogProduct", table = "catalog_product_data")]
-struct CatalogProductRow {
-    #[teaql(id, column = "id")]
-    id: u64,
-    #[teaql(version, column = "version")]
-    version: i64,
-    #[teaql(column = "name")]
-    name: String,
-}
-
-let query = PurposedSelectQuery::new(
-    SelectQuery::new("CatalogProduct")
-        .filter(Expr::eq("name", "desk"))
-        .comment("Load catalog products named desk"),
-    "Display matching catalog products",
-);
-let products: SmartList<CatalogProductRow> =
-    data_service.fetch_entities::<CatalogProductRow>(&query).await?;
-```
-
-`SmartList<T>` keeps TeaQL-style list metadata alongside the typed rows:
-
-- `data`
-- `total_count`
-- `aggregations`
-- `summary`
-
-When the entity defines `#[teaql(id)]` or `#[teaql(version)]`, `SmartList<T>` also exposes:
-
-- `ids()`
-- `versions()`
-- `into_records()`
-
-## Typed relation enhancement
-
-`fetch_enhanced_entities::<T>()` runs record-based relation enhancement first, then converts the
-result into typed nested entities.
-
-```rust
-use teaql_core::{SelectQuery, SmartList, TeaqlEntity};
-use teaql_macros::TeaqlEntity;
-use teaql_runtime::PurposedSelectQuery;
-
-#[derive(Clone, Debug, Default, TeaqlEntity)]
-#[teaql(entity = "Product", table = "product_data")]
-struct ProductRow {
-    #[teaql(id, column = "id")]
-    id: u64,
-    #[teaql(version, column = "version")]
-    version: i64,
-    #[teaql(column = "name")]
-    name: String,
-}
-
-#[derive(Clone, Debug, Default, TeaqlEntity)]
-#[teaql(entity = "OrderLine", table = "order_line_data")]
-struct OrderLineRow {
-    #[teaql(id, column = "id")]
-    id: u64,
-    #[teaql(version, column = "version")]
-    version: i64,
-    #[teaql(column = "order_id")]
-    order_id: u64,
-    #[teaql(column = "product_id")]
-    product_id: u64,
-    #[teaql(
-        relation(
-            target = "Product",
-            local_key = "product_id",
-            foreign_key = "id"
-        )
-    )]
-    product: Option<ProductRow>,
-}
-
-#[derive(Clone, Debug, Default, TeaqlEntity)]
-#[teaql(entity = "Order", table = "order_data")]
-struct OrderRow {
-    #[teaql(id, column = "id")]
-    id: u64,
-    #[teaql(version, column = "version")]
-    version: i64,
-    #[teaql(
-        relation(
-            target = "OrderLine",
-            local_key = "id",
-            foreign_key = "order_id",
-            many
-        )
-    )]
-    lines: SmartList<OrderLineRow>,
-}
-
-let query = PurposedSelectQuery::new(
-    SelectQuery::new("Order").comment("Load orders and configured relations"),
-    "Display orders and configured relations",
-);
-let orders: SmartList<OrderRow> =
-    data_service.fetch_enhanced_entities::<OrderRow>(&query).await?;
-```
-
-For nested enhancement, register relation paths from repository behavior, for example:
-
-- `lines`
-- `lines.product`
-
-## Database provider schema bootstrap
-
-Schema setup is implemented by the selected database provider, but exposed through
-the database-neutral runtime entry point:
-
-```rust
-ctx.ensure_schema().await?;
-```
-
-Each database provider exposes a registration helper that installs its dialect,
-executor, and schema provider into `UserContext`.
-
-PostgreSQL:
-
-```rust
-use teaql_provider_postgres::{
-    PgMutationExecutor, PostgresProviderExt,
-};
-
-ctx.use_postgres_provider(PgMutationExecutor::new(pg_pool));
-ctx.ensure_schema().await?;
-```
-
-SQLite:
-
-```rust
-use rusqlite::Connection;
-use teaql_provider_sqlite::{SqliteMutationExecutor, SqliteProviderExt};
-
-let executor = SqliteMutationExecutor::from_connection(Connection::open("app.db")?);
-ctx.use_sqlite_provider(executor);
-ctx.ensure_schema().await?;
-```
-
-MySQL:
-
-```rust
-use teaql_provider_mysql::{
-    MysqlMutationExecutor, MysqlProviderExt,
-};
-
-ctx.use_mysql_provider(MysqlMutationExecutor::new(mysql_pool));
-ctx.ensure_schema().await?;
-```
-
-Current `ensure_schema` scope:
-
-- create missing tables
-- add missing columns to existing tables
-- do not attempt destructive migrations such as drop column, type rewrite, or primary-key rebuild
-
-## Examples
-
-Runnable examples live in the `teaql-examples` workspace package:
-
-```bash
-cargo run -p teaql-examples --bin sqlite_schema_crud
-cargo run -p teaql-examples --bin sqlite_relations_graph
-cargo run -p teaql-examples --bin school_example
-cargo run -p teaql-examples --bin test_default_log
-```
-
-Current examples cover:
-
-- SQLite schema bootstrap, audited create/update/delete, and typed entity fetch
-- SQLite entity graph writes and typed relation enhancement
-- audited graph saves through `entity.audit_as("why").save(&ctx)`
-- default SQL trace-log output
-
-Ledger-backed `save(&ctx)` reads the authoritative persisted root row on the
-write transaction before committing. The returned typed entity therefore uses
-database-generated IDs, defaults and actual versions from that transaction,
-including an existing soft-delete tombstone. If the readback fails, the write
-transaction rolls back and the mutation ledger remains retryable. An executor
-already bound to an outer transaction uses that same executor and leaves commit
-or rollback to its owner. See [issue #127](https://github.com/teaql/teaql-rs/issues/127)
-for the retained concurrency and rollback regression.
-
-## Live SQL provider verification
-
-The PostgreSQL and MySQL provider tests contain real-database cases that return
-early when their URL is absent. A green plain `cargo test` result therefore does
-not by itself prove those cases executed. Use the retained gate instead:
-
-```bash
-TEAQL_TEST_POSTGRES_URL='postgresql://<user>:<password>@<host>/<dedicated-db>' \
-TEAQL_TEST_MYSQL_URL='mysql://<user>:<password>@<host>/<dedicated-db>' \
-  scripts/verify-live-sql-providers.sh
-```
-
-Create a disposable database named `teaql_rust_provider_*` on each engine first.
-The script rejects missing URLs and other database names, then runs the complete
-SQLite, PostgreSQL and MySQL provider suites. It does **not** create or drop the
-databases; the caller must verify and clean up those exact test databases after
-the run. The provider tests create and remove fixed-name fixture tables within
-them, so never point this gate at a shared or production database.
-
-## Environment Variables
-
-TeaQL supports the following environment variables for configuration and debugging:
-
-- `TEAQL_LOG_ENDPOINT`: Sends internal execution logs to `stdout` or appends them to the specified file path.
-- `TEAQL_LOG_FORMAT`: Controls the format of the output log specified by `TEAQL_LOG_ENDPOINT`. Can be set to `json` (or `debug`) for structured JSON logging, or `human` (default) for human-readable output.
-- `TEAQL_DOMAIN`: Sets the default log filename to `<domain>.log` when `TEAQL_LOG_ENDPOINT` is not set.
-
-## Reporting Bugs
-
-If you find a bug, please create an issue on [GitHub Issues](https://github.com/teaql/teaql-rs/issues).
-Please include as much detail as possible, such as TeaQL version, Rust version, database type, and steps to reproduce.
-For security vulnerabilities, please see our [Security Policy](SECURITY.md).
-
-## Next steps
-
-1. Expand `MemoryRepository` toward relation enhancement and richer parity with the SQL-backed path.
-2. Add typed checker generation and richer Java-style validation semantics.
-3. Keep expanding value coverage beyond the current JSON/date/timestamp/Decimal set, especially `Uuid` and bytes.
-4. Decide whether a Rust-native service layer is needed above repository/runtime APIs.
+Debug output is explicitly labeled. Credentials and unknown bindings remain
+protected; the flag does not erase old files or govern application/driver
+prints outside TeaQL. Restrict access and retention, then unset it and restart.
+See the [runtime guide](RUNTIME_GUIDE.md) for log switches and extension details.

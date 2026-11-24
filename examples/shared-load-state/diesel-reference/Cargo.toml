@@ -1,0 +1,16 @@
+[package]
+name = "teaql-diesel-test-reference"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+diesel = { version = "=2.3.14", default-features = false, features = ["sqlite"] }
+# Legacy binding is confined to a trusted-fixture reference executable, never
+# linked into TeaQL or shipped in its runtime artifacts. Do not use on input
+# databases: its bundled engine is retained solely for reference correctness.
+libsqlite3-sys = { version = "=0.38.1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

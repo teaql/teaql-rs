@@ -6,10 +6,29 @@ Minimal runtime repository and graph persistence layer for TeaQL Rust.
 assembly, behaviors, checkers, events, graph planning, and in-memory execution.
 Database execution is supplied by provider crates.
 
+## Fallible in-memory query execution
+
+The approved source candidate makes `InMemoryQueryEngine::execute` return
+`Result<QueryResult, InMemoryQueryError>`. Direct callers must propagate or
+handle that result; the Linux provider retains the structured error as its
+source. Do not replace a failed query with an empty result or a null SUM.
+
+SUM retains integer and Decimal domains instead of routing exact values through
+`f64`. Empty/all-null SUM remains null; a genuine cancelling sum is numeric zero.
+Overflow, non-numeric inputs, non-finite floats, incompatible floating/exact
+domains, and unrepresentable Decimal precision are explicit errors. Diagnostics
+identify the field, alias and error code without retaining input values.
+
+This is a local source adoption, not a public version or installed-package
+acceptance claim. Its implementation and tests are unchanged from qualified
+candidate `894672f10babbd8c347514f4feb926a42fe6e75f`; private-package verification
+remains a separate gate.
+
 ## What It Provides
 
 - `UserContext` for metadata, typed resources, request locals, and runtime options
 - request policy hooks for platform-level security, observability, and resource limits
+- whole-graph mutation policy review, exact policy approval, warnings, and audit evidence
 - repository registry and behavior registry
 - in-memory query engine plus an internal data-service test harness
 - checker registry and translated validation results
@@ -17,6 +36,82 @@ Database execution is supplied by provider crates.
 - graph save planning and execution
 - typed entity graph extraction
 - SQL debug logging options on `UserContext`
+- context-bound `tqr1` entity references and `tqd1` document snapshots
+
+## Standard OpenTelemetry Module
+
+The local source candidate has an optional `standard-telemetry` feature. Enable
+that feature on the existing `teaql-runtime` dependency, keeping its configured
+version or local path, then set:
+
+```bash
+export TEAQL_TELEMETRY_ENABLED=true
+export TEAQL_TELEMETRY_SERVICE_NAME=my-application
+export TEAQL_TELEMETRY_OTLP_ENDPOINT=http://localhost:4318
+```
+
+Context initialization reports support and these three settings. Without
+enablement it creates no export pipeline; without the optional feature it reports
+that the module is unavailable. Enabled mode records traces, metrics, runtime
+diagnostics and masked expanded SQL without application instrumentation for each
+query or save. Ordinary SQL logging is independent of telemetry enablement.
+
+The module owns its SDK providers and official OTLP protobuf encoders. Its HTTP
+transport has a three-second timeout, no retries or redirects, and a four-MiB
+acknowledgement limit. Remote error text and response bodies never become SDK
+log messages. Trace and log queues each admit at most 2,048 records, counting
+both queued and currently exporting records; batches contain at most 128.
+`teaql.telemetry.export.lost` distinguishes failed export, queue overflow,
+shutdown and SDK-handoff failure;
+`teaql.telemetry.export.rejected` counts receiver-rejected spans, log records or
+metric data points. Partial success, warning and invalid-response diagnostics
+have separate counters. Export failures do not change business results or the
+independent durable audit sink. Shutdown closes only owned resources; existing
+customer SDKs and their configuration are not replaced.
+
+Telemetry completion and SDK handoff are serialized with shutdown, but business
+callbacks run outside those locks. A closed pipeline is not reused for a new
+context. After shutdown, late handoffs remain visible through fixed local
+notices and counters; already-closed providers cannot export another metrics
+snapshot. Repeated loss notices are bounded to one per signal/reason while
+counters retain the exact cumulative totals.
+
+Run the generated graph example from the runtime repository root:
+
+```bash
+cargo run --manifest-path examples/trace-chain/Cargo.toml \
+  --features standard-telemetry --bin standard-telemetry-graph
+```
+
+Local examples and tests qualify this source candidate, including real queue
+pressure and recovery through generated Q/E APIs. Advanced graph/stream
+scenarios, internal-registry consumers and publication remain separate gates.
+
+## Context-Bound Document Round Trips
+
+The runtime separates a stable Business ID from temporary, actor-bound editing
+references. `UserContext::open_document` delegates domain loading and
+projection to a `ContextBoundDocumentService`. The service issues one
+authenticated `tqd1` snapshot containing the aggregate revision, child
+versions, document-local row map, loaded/writable fields, relation
+completeness, and allowed mutation kinds. `UserContext::accept_document`
+verifies that snapshot and delegates mutation reconstruction to the same
+domain service.
+
+The runtime cryptographic boundary always rechecks the current authorization
+policy. Decryption alone never grants access. Tokens are bound to service,
+environment, Domain Root, actor, purpose, aggregate and lifetime, and the key
+provider supports one current key plus decode-only previous keys. The domain
+service remains responsible for loading the complete editing surface,
+rechecking field/action policy, Checker/Fix, mutation-ledger construction and
+atomic save.
+
+The executable Order/Items POC is retained in
+`examples/tests/context_bound_order_document.rs`. It proves actor-specific
+views, non-transferability, projection enforcement, explicit removal,
+invisible-row preservation, aggregate and child version conflicts, retry after
+validation failure, refreshed snapshots, restart continuity, environment
+isolation and current authorization revocation.
 
 ## Source Layout
 
@@ -44,6 +139,44 @@ such as default relation loading or entity-specific command enrichment.
 
 The runtime applies entity behavior first and request policy last, so platform
 policy remains the final enforcement point before repository execution.
+
+## Customer-Owned Mutation Policy
+
+`MutationPolicy` is the application-owned boundary for an audited graph save.
+After Checker/Fix and graph planning produce the complete immutable
+`MutationPlan`, the runtime reviews it before the first provider mutation. A
+denial on the context-owned save path happens before transaction begin. An
+allowed save attaches one `MutationGovernanceSnapshot` to every audit event.
+
+Applications install a typed `MutationPolicyRegistry`, an optional exact
+`MutationPolicyApprovalProvider`, and an optional warning sink through trusted
+`UserContext` assembly. Remote payloads cannot choose these implementations.
+No customer policy remains backward compatible but emits
+`MUTATION-POLICY-001`; an unapproved or identity-mismatched customer policy
+emits `MUTATION-POLICY-002`. Approval matches policy ID, version, and
+fingerprint.
+
+See the maintained `examples/order-management` mutation-policy probe for an
+approved save, a denied save with zero persisted rows, and a repeated run
+against the same SQLite database.
+
+## Safe Audit Target Identity
+
+`SafeAuditEvent.entity` and `entity_id: Option<u64>` identify the modified
+object independently of its changed fields and inherited responsibility chain.
+Updates need not change ID; deletes and recoveries need not have a new ID field
+value. The target comes from the authoritative raw event's positive integer ID,
+never from an ancestor reason or an old snapshot. Schema events and events with
+no valid integer ID retain `None`. Adding this identity does not add a changed
+field, a child reason or a write, and does not weaken existing value/intent
+masking. Applications constructing safe events with struct literals must provide
+the new field; ordinary sinks consuming runtime-produced events need no factory.
+
+`tests/safe_audit_target.rs` covers all four mutation kinds, root-only inherited
+lineage, equal IDs across entity types, snapshot ownership, invalid IDs and
+schema events. The generated `examples/trace-chain` SQLite gate also deletes an
+unannotated child through its clean parent and verifies the child's committed
+identity without inventing a local reason.
 
 ## Example
 
