@@ -1,6 +1,6 @@
 use order_management_service_core::teaql_core::Entity as _;
 use order_management_service_core::{
-    E, Q, ServiceRuntimeConfig, request_support::AuditedSave as _, service_runtime,
+    request_support::AuditedSave as _, service_runtime, ServiceRuntimeConfig, E, Q,
 };
 
 #[tokio::main]
