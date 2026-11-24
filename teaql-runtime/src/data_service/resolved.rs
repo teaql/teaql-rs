@@ -10,6 +10,7 @@ use teaql_core::{
     AggregationCacheOptions, CompactRow, DeleteCommand, Entity, Expr, InsertCommand, Record,
     RecoverCommand, RelationAggregate, SelectQuery, SmartList, SortDirection, UpdateCommand, Value,
 };
+use teaql_data_service::{QueryExecutor, StreamQueryExecutor};
 
 use crate::{
     CheckObjectStatus, ContinuousPageCursor, DataServiceError, EntityDataServiceBehavior,
@@ -592,6 +593,9 @@ where
         &self,
         query: SelectQuery,
     ) -> (SelectQuery, Option<ContinuousPageExecution>) {
+        if self.data_service.metadata.context.bound_transaction.is_some() {
+            return (query, None);
+        }
         let Some(options) = query.continuous_page_fetch.as_ref() else {
             self.data_service
                 .metadata
@@ -814,6 +818,9 @@ where
         &self,
         mut query: SelectQuery,
     ) -> Result<(SelectQuery, Option<u64>), DataServiceError<E::Error>> {
+        if self.data_service.metadata.context.bound_transaction.is_some() {
+            return Ok((query, None));
+        }
         let Some(options) = query.id_set_pagination.clone() else {
             self.data_service
                 .metadata

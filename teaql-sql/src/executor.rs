@@ -2209,6 +2209,22 @@ impl<'a, D, Tx: SqlTransport + SqlTransaction, S> SqlDataServiceTransaction<'a, 
 where
     S: teaql_data_service::SchemaProvider,
 {
+    /// Keep the native lease and bind it to independently owned compiler metadata.
+    #[doc(hidden)]
+    pub fn with_compile_metadata<'metadata>(
+        self,
+        dialect: &'metadata D,
+        schema_provider: &'metadata S,
+    ) -> SqlDataServiceTransaction<'metadata, D, Tx, S> {
+        SqlDataServiceTransaction {
+            dialect,
+            transport: self.transport,
+            schema_provider,
+            descriptor_cache: self.descriptor_cache,
+            select_plan_cache: self.select_plan_cache,
+        }
+    }
+
     fn entity_descriptor(&self, name: &str) -> Option<Arc<teaql_core::EntityDescriptor>> {
         if let Ok(cache) = self.descriptor_cache.read()
             && let Some(descriptor) = cache.get(name)

@@ -3183,6 +3183,10 @@ pub async fn save_audited_ledger_entity<T>(
 where
     T: crate::LedgerEntity + Send + 'static,
 {
+    if let Some(transaction) = &context.bound_transaction {
+        let executor = transaction.save_executor();
+        return Box::pin(transaction.saves.save(audited, context, &executor)).await;
+    }
     context
         .observe_runtime_mutation_request(
             || T::entity_descriptor().name.clone(),
@@ -3210,6 +3214,53 @@ where
     T: crate::LedgerEntity + Send + 'static,
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
 {
+    let (entity, graph) = save_transaction_graph(audited, context, executor).await?;
+    let ledger = graph.map(|mut graph| {
+        graph.automatic.accept();
+        graph.ledger
+    });
+    Ok((entity, ledger))
+}
+
+pub(crate) struct SavedTransactionGraph {
+    ledger: crate::EntityRuntimeState,
+    automatic: context_undo::ContextUndo,
+}
+
+pub(crate) struct StagedTransactionGraph {
+    ledger: crate::entity_runtime::LedgerSaveUndo,
+    automatic: context_undo::ContextUndo,
+}
+
+impl SavedTransactionGraph {
+    pub(crate) fn stage(self) -> StagedTransactionGraph {
+        StagedTransactionGraph {
+            ledger: self.ledger.stage_transaction_save(),
+            automatic: self.automatic,
+        }
+    }
+}
+
+impl StagedTransactionGraph {
+    pub(crate) fn restore(self) {
+        self.ledger.restore();
+        drop(self.automatic);
+    }
+
+    pub(crate) fn discard(mut self) {
+        self.automatic.accept();
+    }
+}
+
+pub(crate) async fn save_transaction_graph<T, E>(
+    audited: teaql_core::Audited<T>,
+    context: &UserContext,
+    executor: &E,
+) -> Result<(T, Option<SavedTransactionGraph>), RuntimeError>
+where
+    T: crate::LedgerEntity + Send + 'static,
+    E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
+{
     context
         .observe_runtime_mutation_request(
             || T::entity_descriptor().name.clone(),
@@ -3225,7 +3276,7 @@ async fn save_audited_ledger_entity_with_executor_inner<T, E>(
     audited: teaql_core::Audited<T>,
     context: &UserContext,
     executor: &E,
-) -> Result<(T, Option<crate::EntityRuntimeState>), RuntimeError>
+) -> Result<(T, Option<SavedTransactionGraph>), RuntimeError>
 where
     T: crate::LedgerEntity + Send + 'static,
     E: teaql_data_service::QueryExecutor + teaql_data_service::MutationExecutor + Send + Sync,
@@ -3304,8 +3355,6 @@ where
             .await
             .map_err(data_service_error_into_runtime)?;
 
-            context_undo.accept();
-
             if let Some(readbacks) = &mut generated_ids.dynamic_readbacks {
                 node.dynamic_fields = readbacks
                     .remove(&root_key)
@@ -3344,7 +3393,10 @@ where
                 preserve_relations,
                 &original_relation_fields,
             )?;
-            return Ok((entity, Some(root)));
+            return Ok((entity, Some(SavedTransactionGraph {
+                ledger: root,
+                automatic: context_undo,
+            })));
         }
         if restoration::graph_is_unchanged(&node) {
             teaql_core::MutationIntent::from_optional(node.comment.as_deref())?;

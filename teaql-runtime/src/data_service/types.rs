@@ -1,6 +1,7 @@
 use teaql_core::{EntityDescriptor, SelectQuery};
 
 use crate::{MetadataStore, UserContext};
+use crate::context::ContextExecutor;
 
 pub(crate) struct RuntimeDataService<'a, M, E> {
     pub(super) metadata: &'a M,
@@ -11,7 +12,7 @@ pub(crate) struct RuntimeDataService<'a, M, E> {
 
 pub(crate) struct ContextDataService<'a, E> {
     pub(super) metadata: UserContextMetadata<'a>,
-    pub(crate) executor: &'a E,
+    pub(crate) executor: ContextExecutor<'a, E>,
     pub(super) mutation_intent: Option<teaql_core::MutationIntent>,
     pub(super) mutation_privacy: Option<std::sync::Arc<teaql_data_service::SqlIntentRedactions>>,
 }
@@ -171,7 +172,7 @@ impl<'a, E> EntityDataService<'a, E> {
             entity: entity.into(),
             data_service: ContextDataService {
                 metadata: UserContextMetadata { context },
-                executor,
+                executor: ContextExecutor::Original(executor),
                 mutation_intent: None,
                 mutation_privacy: None,
             },

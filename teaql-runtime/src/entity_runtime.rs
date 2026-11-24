@@ -767,6 +767,7 @@ impl ChangeSetStack {
 
 #[derive(Debug, Clone, Default)]
 struct EntityMutationLedger {
+    transaction_readback_rolled_back: bool,
     change_sets: ChangeSetStack,
     /// A commit/rollback error may have left this graph durable. Do not retry
     /// its retained mutation intent until the caller reloads authoritative data.
@@ -869,6 +870,74 @@ impl LedgerPreflightView<'_> {
                 })
                 .flatten()
         })
+    }
+}
+
+pub(crate) struct LedgerSaveUndo {
+    root: EntityRuntimeState,
+    before: EntityMutationLedger,
+}
+
+impl LedgerSaveUndo {
+    pub(crate) fn restore(self) {
+        self.root.write_context(|current| {
+            let later = std::mem::replace(current, self.before);
+            for change_set in later.change_sets.stack {
+                current.change_sets.append_pending(change_set);
+            }
+            current.deleted_keys.extend(later.deleted_keys);
+            current.recovered_keys.extend(later.recovered_keys);
+            current.new_keys.extend(later.new_keys);
+            current.trace_chains.extend(later.trace_chains);
+            current
+                .unassigned_trace_scopes
+                .extend(later.unassigned_trace_scopes);
+            current.entity_comments.extend(later.entity_comments);
+            if later.comment.is_some() {
+                current.comment = later.comment;
+            }
+            current.is_new |= later.is_new;
+            current.transaction_outcome_unknown_requires_reload |=
+                later.transaction_outcome_unknown_requires_reload;
+            current.transaction_readback_rolled_back |= later.transaction_readback_rolled_back;
+            current.composition_errors.extend(later.composition_errors);
+        });
+    }
+}
+
+impl ChangeSetStack {
+    fn append_pending(&mut self, source: EntityChangeSet) {
+        for (key, values) in source.changes {
+            for (field, value) in values {
+                self.set(key.clone(), field, value);
+            }
+        }
+        if let Some(changes) = source.dynamic_changes {
+            let metadata = source
+                .dynamic_metadata
+                .expect("typed dynamic mutation definitions");
+            for (key, fields) in *changes {
+                let definitions = metadata
+                    .definitions
+                    .get(&key)
+                    .expect("typed dynamic mutation definitions");
+                for (code, mutation) in fields {
+                    let original = metadata
+                        .originals
+                        .get(&key)
+                        .and_then(|originals| originals.get(&code))
+                        .cloned()
+                        .flatten();
+                    self.current_mut().set_dynamic(
+                        key.clone(),
+                        code,
+                        mutation,
+                        definitions.clone(),
+                        original,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1155,6 +1224,12 @@ impl EntityRuntimeState {
     /// Explicit graph composition changes ledger ownership, not the entity view's loaded data.
     #[doc(hidden)]
     pub fn with_loaded_view_from(mut self, source: &Self) -> Self {
+        if source.transaction_outcome_unknown() {
+            self.fence_transaction_outcome();
+        }
+        if source.transaction_readback_rolled_back() {
+            self.mark_readback_rolled_back();
+        }
         self.json_view = source.json_view;
         self.loaded_snapshot = source.loaded_snapshot.clone();
         self.dynamic_fields = source.dynamic_fields.clone();
@@ -1268,6 +1343,10 @@ impl EntityRuntimeState {
         // another graph, including when the composition later fails.
         if snapshot.transaction_outcome_unknown_requires_reload {
             self.mark_transaction_outcome_unknown();
+        }
+        if snapshot.transaction_readback_rolled_back {
+            self.mark_readback_rolled_back();
+            return Err(LedgerCompositionError::TransactionReadbackRolledBack);
         }
         let loaded_version = source
             .loaded_snapshot
@@ -1725,14 +1804,47 @@ impl EntityRuntimeState {
         self.write_context(|context| context.transaction_outcome_unknown_requires_reload = true);
     }
 
-    pub(crate) fn require_known_transaction_outcome(&self) -> Result<(), crate::RuntimeError> {
-        if self.read_context(false, |context| {
-            context.transaction_outcome_unknown_requires_reload
-        }) {
-            Err(crate::RuntimeError::TransactionOutcomeUnknownReloadRequired)
-        } else {
-            Ok(())
+    pub(crate) fn fence_transaction_outcome(&self) {
+        self.mark_transaction_outcome_unknown();
+    }
+
+    pub(crate) fn stage_transaction_save(&self) -> LedgerSaveUndo {
+        LedgerSaveUndo {
+            root: self.clone(),
+            before: self.write_context(std::mem::take),
         }
+    }
+
+    pub(crate) fn transaction_outcome_unknown(&self) -> bool {
+        self.read_context(false, |ledger| {
+            ledger.transaction_outcome_unknown_requires_reload
+        })
+    }
+
+    pub(crate) fn shares_mutation_ledger(&self, other: &Self) -> bool {
+        self.inner.shares_slot(&other.inner)
+            || matches!((self.inner.get(), other.inner.get()), (Some(a), Some(b)) if Arc::ptr_eq(a, b))
+    }
+
+    pub(crate) fn mark_readback_rolled_back(&self) {
+        self.write_context(|ledger| ledger.transaction_readback_rolled_back = true);
+    }
+
+    fn transaction_readback_rolled_back(&self) -> bool {
+        self.read_context(false, |ledger| ledger.transaction_readback_rolled_back)
+    }
+
+    pub(crate) fn require_known_transaction_outcome(&self) -> Result<(), crate::RuntimeError> {
+        if self.transaction_outcome_unknown() {
+            return Err(crate::RuntimeError::TransactionOutcomeUnknownReloadRequired);
+        }
+        if self.transaction_readback_rolled_back() {
+            return Err(crate::RuntimeError::Transaction(
+                "TRANSACTION_READBACK_ROLLED_BACK: reload the affected records before saving"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn set(&self, key: EntityKey, field: impl Into<String>, value: impl Into<Value>) {
@@ -2236,6 +2348,7 @@ pub enum LedgerCompositionError {
     ConflictingSymbolLayout {
         entity: String,
     },
+    TransactionReadbackRolledBack,
     ConflictingDynamicDefinitions {
         entity: String,
     },
@@ -2255,6 +2368,10 @@ impl std::fmt::Display for LedgerCompositionError {
             Self::ConflictingSymbolLayout { entity } => write!(
                 formatter,
                 "cannot compose incompatible generated symbol layouts for {entity}"
+            ),
+            Self::TransactionReadbackRolledBack => write!(
+                formatter,
+                "TRANSACTION_READBACK_ROLLED_BACK: reload the affected records before composing this graph"
             ),
             Self::ConflictingDynamicDefinitions { entity } => write!(
                 formatter,

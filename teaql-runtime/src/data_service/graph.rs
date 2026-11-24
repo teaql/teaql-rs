@@ -8,6 +8,7 @@ use teaql_core::{
     DeleteCommand, Entity, EntityDescriptor, InsertCommand, MutationValues, PropertyDescriptor,
     UpdateCommand, Value,
 };
+use teaql_data_service::QueryExecutor;
 
 use crate::entity_status::EntityStatus;
 use crate::ledger_keys::storage_values_from_ledger;
