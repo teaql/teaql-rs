@@ -3,7 +3,7 @@ use teaql_sql::SqlCompileError;
 
 use crate::CheckResult;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RuntimeError {
     DynamicField(teaql_core::dynamic_fields::DynamicFieldError),
     RequestIntent(teaql_core::RequestIntentError),
@@ -111,6 +111,7 @@ pub enum ContextError {
     MissingResource(String),
     MissingTypedResource(&'static str),
     MissingEntityDataService(String),
+    TransactionRouteMismatch,
 }
 
 impl std::fmt::Display for ContextError {
@@ -121,6 +122,10 @@ impl std::fmt::Display for ContextError {
             Self::MissingEntityDataService(name) => {
                 write!(f, "missing entity data service for entity: {name}")
             }
+            Self::TransactionRouteMismatch => write!(
+                f,
+                "TRANSACTION_ROUTE_MISMATCH: the Context is bound to another data service"
+            ),
         }
     }
 }

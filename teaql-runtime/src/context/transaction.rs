@@ -7,7 +7,143 @@ use teaql_data_service::{
     Transaction, TransactionExecutor,
 };
 
-use crate::{ContextError, EntityDataService, RuntimeError, UserContext};
+use crate::{ContextError, EntityDataService, EntityRuntimeState, RuntimeError, UserContext};
+
+#[derive(Default)]
+pub(crate) struct TransactionSaveState {
+    failure: Mutex<Option<RuntimeError>>,
+    attempted: Mutex<Vec<EntityRuntimeState>>,
+    readbacks: Mutex<Vec<EntityRuntimeState>>,
+    staged: Mutex<Vec<crate::entity_save::StagedTransactionGraph>>,
+    gate: futures_util::lock::Mutex<()>,
+    settled: bool,
+}
+
+impl TransactionSaveState {
+    fn remember(ledgers: &Mutex<Vec<EntityRuntimeState>>, ledger: EntityRuntimeState) {
+        let mut ledgers = ledgers.lock().unwrap_or_else(|error| error.into_inner());
+        if !ledgers.iter().any(|existing| existing == &ledger) {
+            ledgers.push(ledger);
+        }
+    }
+
+    pub(crate) fn failure(&self) -> Option<RuntimeError> {
+        self.failure
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn fail(&self, error: &RuntimeError) {
+        self.failure
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_insert_with(|| error.clone());
+    }
+
+    pub(super) fn require_writable(&self) -> Result<(), RuntimeError> {
+        if self.failure().is_some() {
+            return Err(RuntimeError::Transaction(
+                "TRANSACTION_ROLLBACK_ONLY: a previous save failed".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn save<T, E>(
+        &self,
+        audited: teaql_core::Audited<T>,
+        context: &UserContext,
+        executor: &E,
+    ) -> Result<T, RuntimeError>
+    where
+        T: crate::LedgerEntity + Send + 'static,
+        E: QueryExecutor + MutationExecutor + Send + Sync,
+    {
+        let _guard = self.gate.lock().await;
+        self.require_writable()?;
+        let original = audited.entity().entity_runtime_state();
+        if let Some(root) = &original {
+            Self::remember(&self.attempted, root.clone());
+        }
+        match Box::pin(crate::entity_save::save_transaction_graph(
+            audited, context, executor,
+        ))
+        .await
+        {
+            Ok((entity, graph)) => {
+                if let Some(root) = entity.entity_runtime_state() {
+                    if graph.is_some()
+                        && !original
+                            .as_ref()
+                            .is_some_and(|input| input.shares_mutation_ledger(&root))
+                    {
+                        Self::remember(&self.readbacks, root.clone());
+                    }
+                    Self::remember(&self.attempted, root);
+                }
+                if let Some(graph) = graph {
+                    self.staged
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(graph.stage());
+                }
+                Ok(entity)
+            }
+            Err(error) => {
+                self.fail(&error);
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn settle(&mut self, committed: bool) {
+        self.settled = true;
+        let staged = self
+            .staged
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner());
+        while let Some(graph) = staged.pop() {
+            if committed {
+                graph.discard();
+            } else {
+                graph.restore();
+            }
+        }
+        if !committed {
+            for ledger in self
+                .readbacks
+                .get_mut()
+                .unwrap_or_else(|error| error.into_inner())
+            {
+                ledger.mark_readback_rolled_back();
+            }
+        }
+    }
+}
+
+impl Drop for TransactionSaveState {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        for ledger in self
+            .attempted
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner())
+        {
+            ledger.fence_transaction_outcome();
+        }
+        for graph in self
+            .staged
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner())
+            .drain(..)
+        {
+            graph.discard();
+        }
+    }
+}
 
 /// A real provider transaction bound to a [`UserContext`].
 ///
@@ -22,11 +158,7 @@ where
 {
     context: &'context UserContext,
     transaction: Option<E::Tx<'context>>,
-    // A failed save may have written part of its graph before rollback fails.
-    attempted_ledgers: Mutex<Vec<crate::EntityRuntimeState>>,
-    flushed_ledgers: Mutex<Vec<crate::EntityRuntimeState>>,
-    // Dropping an in-flight commit/rollback future may lose its acknowledgement.
-    completion_confirmed: bool,
+    saves: TransactionSaveState,
 }
 
 impl UserContext {
@@ -45,9 +177,7 @@ impl UserContext {
         Ok(TransactionScope {
             context: self,
             transaction: Some(transaction),
-            attempted_ledgers: Mutex::new(Vec::new()),
-            flushed_ledgers: Mutex::new(Vec::new()),
-            completion_confirmed: false,
+            saves: TransactionSaveState::default(),
         })
     }
 
@@ -167,6 +297,7 @@ where
     where
         E::Tx<'context>: MutationExecutor,
     {
+        self.saves.require_writable()?;
         let observer = (self.context.sql_log_options().mutation
             || self.context.records_sql_diagnostics())
         .then(|| {
@@ -181,7 +312,11 @@ where
                 observer,
             ))
             .await
-            .map_err(|error| RuntimeError::Transaction(error.to_string()))?;
+            .map_err(|error| {
+                let error = RuntimeError::Transaction(error.to_string());
+                self.saves.fail(&error);
+                error
+            })?;
         self.context.record_metadata_log(&result.metadata);
         Ok(result)
     }
@@ -196,22 +331,9 @@ where
         T: crate::LedgerEntity + Send + 'static,
         E::Tx<'context>: QueryExecutor + MutationExecutor + Send + Sync,
     {
-        if let Some(ledger) = audited.entity().entity_runtime_state() {
-            self.track_ledger(&self.attempted_ledgers, ledger);
-        }
-        // Bound this composition point: the generic graph/SQL save future is
-        // large in debug builds. Keeping it inline multiplies the caller's
-        // transaction and task-local frames and can overflow a default stack.
-        let (entity, ledger) = Box::pin(crate::save_audited_ledger_entity_with_executor(
-            audited,
-            self.context,
-            self.transaction(),
-        ))
-        .await?;
-        if let Some(ledger) = ledger {
-            self.track_ledger(&self.flushed_ledgers, ledger);
-        }
-        Ok(entity)
+        self.saves
+            .save(audited, self.context, self.transaction())
+            .await
     }
 
     /// Run a callback and complete this transaction deterministically.
@@ -253,25 +375,17 @@ where
     where
         E::Tx<'context>: Send + Sync,
     {
+        let result = self.saves.failure().map_or(result, Err);
         match result {
             Ok(value) => {
                 let transaction = self
                     .transaction
                     .take()
                     .expect("transaction scope cannot be completed twice");
-                Transaction::commit(transaction).await.map_err(|_| {
-                    self.mark_attempted_ledgers_unknown();
-                    RuntimeError::TransactionOutcomeUnknown
-                })?;
-                for ledger in self
-                    .flushed_ledgers
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .drain(..)
-                {
-                    ledger.clear_committed();
-                }
-                self.completion_confirmed = true;
+                Transaction::commit(transaction)
+                    .await
+                    .map_err(|_| RuntimeError::TransactionOutcomeUnknown)?;
+                self.saves.settle(true);
                 Ok(value)
             }
             Err(error) => {
@@ -279,48 +393,12 @@ where
                     .transaction
                     .take()
                     .expect("transaction scope cannot be completed twice");
-                Transaction::rollback(transaction).await.map_err(|_| {
-                    self.mark_attempted_ledgers_unknown();
-                    RuntimeError::TransactionOutcomeUnknown
-                })?;
-                self.completion_confirmed = true;
+                Transaction::rollback(transaction)
+                    .await
+                    .map_err(|_| RuntimeError::TransactionOutcomeUnknown)?;
+                self.saves.settle(false);
                 Err(error)
             }
-        }
-    }
-
-    fn track_ledger(
-        &self,
-        collection: &Mutex<Vec<crate::EntityRuntimeState>>,
-        ledger: crate::EntityRuntimeState,
-    ) {
-        let mut ledgers = collection.lock().unwrap_or_else(|error| error.into_inner());
-        if !ledgers.iter().any(|pending| pending == &ledger) {
-            ledgers.push(ledger);
-        }
-    }
-
-    fn mark_attempted_ledgers_unknown(&self) {
-        let ledgers = self
-            .attempted_ledgers
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        for ledger in ledgers.iter() {
-            ledger.mark_transaction_outcome_unknown();
-        }
-    }
-}
-
-impl<E> Drop for TransactionScope<'_, E>
-where
-    E: TransactionExecutor,
-{
-    fn drop(&mut self) {
-        // A cancelled future can disappear while the provider is committing or
-        // rolling back. There is no portable proof of the durable outcome at
-        // that point, so surviving graph ledgers must not remain replayable.
-        if !self.completion_confirmed {
-            self.mark_attempted_ledgers_unknown();
         }
     }
 }
@@ -407,6 +485,14 @@ mod transaction_outcome_tests {
         }
     }
 
+    fn attempted(ledgers: impl IntoIterator<Item = EntityRuntimeState>) -> TransactionSaveState {
+        let saves = TransactionSaveState::default();
+        for ledger in ledgers {
+            TransactionSaveState::remember(&saves.attempted, ledger);
+        }
+        saves
+    }
+
     #[tokio::test]
     async fn unknown_outer_transaction_poison_all_attempted_ledgers_without_leaking_errors() {
         let context = UserContext::default();
@@ -416,11 +502,7 @@ mod transaction_outcome_tests {
             let scope = TransactionScope::<FailingExecutor> {
                 context: &context,
                 transaction: Some(FailingTransaction(mode)),
-                attempted_ledgers: Mutex::new(vec![first.clone(), second.clone()]),
-                // The second graph wrote before its save returned an error, so
-                // it is attempted but not eligible for confirmed-commit cleanup.
-                flushed_ledgers: Mutex::new(vec![first.clone()]),
-                completion_confirmed: false,
+                saves: attempted([first.clone(), second.clone()]),
             };
             let result = match mode {
                 FailureMode::Commit => scope.complete(Ok(())).await,
@@ -457,9 +539,7 @@ mod transaction_outcome_tests {
             let scope = TransactionScope::<FailingExecutor> {
                 context: &context,
                 transaction: Some(FailingTransaction(mode)),
-                attempted_ledgers: Mutex::new(vec![ledger.clone()]),
-                flushed_ledgers: Mutex::new(vec![ledger.clone()]),
-                completion_confirmed: false,
+                saves: attempted([ledger.clone()]),
             };
             let result = match mode {
                 FailureMode::CommitSuccess => scope.complete(Ok(())).await,
@@ -493,9 +573,7 @@ mod transaction_outcome_tests {
             let scope = TransactionScope::<FailingExecutor> {
                 context: &context,
                 transaction: Some(FailingTransaction(mode)),
-                attempted_ledgers: Mutex::new(vec![first.clone(), second.clone()]),
-                flushed_ledgers: Mutex::new(vec![first.clone()]),
-                completion_confirmed: false,
+                saves: attempted([first.clone(), second.clone()]),
             };
             let result = match mode {
                 FailureMode::PendingCommit => {

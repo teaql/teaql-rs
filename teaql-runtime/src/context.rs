@@ -40,12 +40,15 @@ use teaql_core::business_id::BusinessIdAllocator;
 use teaql_core::{EntityDescriptor, Value};
 
 mod boolean_validation;
+mod bound_transaction;
 mod json;
 mod locking;
 mod logging;
 mod numeric_validation;
 mod pagination;
 mod transaction;
+pub(crate) use bound_transaction::ContextExecutor;
+pub use bound_transaction::ContextTransactionExecutor;
 pub use locking::RemoteLockProvider;
 use locking::next_local_lock_owner;
 pub use logging::{
@@ -180,36 +183,37 @@ impl FixEvidence {
 
 pub struct UserContext {
     active_root: OnceLock<ContextEntityRef>,
-    pub(crate) metadata: Option<Box<dyn MetadataStore>>,
-    pub(crate) entity_registry: Option<Box<dyn EntityRegistry>>,
+    pub(crate) bound_transaction: Option<bound_transaction::BoundTransaction>,
+    pub(crate) metadata: Option<Arc<dyn MetadataStore>>,
+    pub(crate) entity_registry: Option<Arc<dyn EntityRegistry>>,
     pub(crate) entity_graph_decoders: InMemoryEntityGraphDecoderRegistry,
     pub(crate) entity_data_service_behavior_registry:
-        Option<Box<dyn EntityDataServiceBehaviorRegistry>>,
-    pub(crate) request_policy: Option<Box<dyn RequestPolicy>>,
+        Option<Arc<dyn EntityDataServiceBehaviorRegistry>>,
+    pub(crate) request_policy: Option<Arc<dyn RequestPolicy>>,
     pub(crate) mutation_policy_registry: Arc<dyn crate::MutationPolicyRegistry>,
     pub(crate) mutation_policy_approval_provider: Arc<dyn crate::MutationPolicyApprovalProvider>,
     pub(crate) mutation_governance_sink: Arc<dyn crate::MutationGovernanceSink>,
-    pub(crate) emitted_mutation_governance_warnings: Mutex<BTreeSet<String>>,
-    pub(crate) checker_registry: Option<Box<dyn CheckerRegistry>>,
-    pub(crate) event_sink: Option<Box<dyn RawAuditEventSink>>,
-    pub(crate) custom_event_sink: Option<Box<dyn crate::SafeAuditEventSink>>,
-    pub(crate) internal_id_generator: Option<Box<dyn InternalIdGenerator>>,
-    business_clock: Box<dyn BusinessClock>,
-    schema_provider: Option<Box<dyn SchemaProvider>>,
+    pub(crate) emitted_mutation_governance_warnings: Arc<Mutex<BTreeSet<String>>>,
+    pub(crate) checker_registry: Option<Arc<dyn CheckerRegistry>>,
+    pub(crate) event_sink: Option<Arc<dyn RawAuditEventSink>>,
+    pub(crate) custom_event_sink: Option<Arc<dyn crate::SafeAuditEventSink>>,
+    pub(crate) internal_id_generator: Option<Arc<dyn InternalIdGenerator>>,
+    business_clock: Arc<dyn BusinessClock>,
+    schema_provider: Option<Arc<dyn SchemaProvider>>,
     generated_schema_bootstraps: Vec<GeneratedSchemaBootstrap>,
     language: Language,
     pub(crate) i18n_catalog: Arc<crate::I18nCatalog>,
     pub(crate) checker_message_catalog: Arc<crate::checker_messages::CheckerMessageCatalog>,
     pub(crate) checker_presentation_model: Arc<crate::checker_messages::CheckerPresentationModel>,
     pub(crate) checker_message_renderer: Arc<dyn crate::checker_messages::CheckerMessageRenderer>,
-    typed_resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
-    named_resources: BTreeMap<String, Box<dyn Any + Send + Sync>>,
+    typed_resources: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    named_resources: BTreeMap<String, Arc<dyn Any + Send + Sync>>,
     locals: BTreeMap<String, Value>,
     pub(crate) initial_graphs: Vec<GraphNode>,
     pub(crate) root_graphs: Vec<GraphNode>,
     entity_runtime_state: EntityRuntimeState,
     sql_log_options: SqlLogOptions,
-    sql_log_entries: Mutex<Vec<SqlLogEntry>>,
+    sql_log_entries: Arc<Mutex<Vec<SqlLogEntry>>>,
     user_identifier: Option<String>,
     timezone: Option<String>,
     trace_id: String,
@@ -247,6 +251,7 @@ impl UserContext {
         let owner_sequence = next_local_lock_owner();
         Self {
             active_root: OnceLock::new(),
+            bound_transaction: None,
             metadata: None,
             entity_registry: None,
             entity_graph_decoders: InMemoryEntityGraphDecoderRegistry::default(),
@@ -255,12 +260,12 @@ impl UserContext {
             mutation_policy_registry: Arc::new(crate::EmptyMutationPolicyRegistry),
             mutation_policy_approval_provider: Arc::new(crate::NoMutationPolicyApprovalProvider),
             mutation_governance_sink: Arc::new(crate::DefaultMutationGovernanceSink),
-            emitted_mutation_governance_warnings: Mutex::new(BTreeSet::new()),
+            emitted_mutation_governance_warnings: Arc::default(),
             checker_registry: None,
             event_sink: None,
             custom_event_sink: None,
             internal_id_generator: None,
-            business_clock: Box::new(SystemBusinessClock),
+            business_clock: Arc::new(SystemBusinessClock),
             schema_provider: None,
             language: Language::default(),
             i18n_catalog: crate::I18nCatalog::builtin().clone(),
@@ -282,7 +287,7 @@ impl UserContext {
             // They remain independently controllable because performance and
             // retention policy may differ between the two operation families.
             sql_log_options: SqlLogOptions::default(),
-            sql_log_entries: Mutex::new(Vec::new()),
+            sql_log_entries: Arc::default(),
             user_identifier: Some(user_id),
             timezone: Some("UTC".to_owned()),
             trace_id: format!(
@@ -309,6 +314,60 @@ impl UserContext {
             runtime_telemetry: crate::telemetry_startup::standard_runtime_telemetry(),
             runtime_logger,
             last_fix_evidence: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn transaction_view(&self, transaction: bound_transaction::BoundTransaction) -> Self {
+        let mut typed_resources = self.typed_resources.clone();
+        typed_resources.remove(&transaction.owner());
+        typed_resources.remove(&TypeId::of::<crate::InMemoryAggregationCache>());
+        typed_resources.remove(&TypeId::of::<Arc<dyn crate::AggregationCacheBackend>>());
+        Self {
+            active_root: self.active_root.clone(),
+            bound_transaction: Some(transaction),
+            metadata: self.metadata.clone(),
+            entity_registry: self.entity_registry.clone(),
+            entity_graph_decoders: self.entity_graph_decoders.clone(),
+            entity_data_service_behavior_registry: self
+                .entity_data_service_behavior_registry
+                .clone(),
+            request_policy: self.request_policy.clone(),
+            mutation_policy_registry: self.mutation_policy_registry.clone(),
+            mutation_policy_approval_provider: self.mutation_policy_approval_provider.clone(),
+            mutation_governance_sink: self.mutation_governance_sink.clone(),
+            emitted_mutation_governance_warnings: self.emitted_mutation_governance_warnings.clone(),
+            checker_registry: self.checker_registry.clone(),
+            event_sink: self.event_sink.clone(),
+            custom_event_sink: self.custom_event_sink.clone(),
+            internal_id_generator: self.internal_id_generator.clone(),
+            business_clock: self.business_clock.clone(),
+            schema_provider: None,
+            generated_schema_bootstraps: Vec::new(),
+            language: self.language,
+            i18n_catalog: self.i18n_catalog.clone(),
+            checker_message_catalog: self.checker_message_catalog.clone(),
+            checker_presentation_model: self.checker_presentation_model.clone(),
+            checker_message_renderer: self.checker_message_renderer.clone(),
+            typed_resources,
+            named_resources: self.named_resources.clone(),
+            locals: self.locals.clone(),
+            initial_graphs: self.initial_graphs.clone(),
+            root_graphs: self.root_graphs.clone(),
+            entity_runtime_state: EntityRuntimeState::default(),
+            sql_log_options: self.sql_log_options,
+            sql_log_entries: self.sql_log_entries.clone(),
+            user_identifier: self.user_identifier.clone(),
+            timezone: self.timezone.clone(),
+            trace_id: self.trace_id.clone(),
+            continuous_page_cursor_store: Arc::new(InMemoryContinuousPageCursorStore::default()),
+            continuous_page_observation: Mutex::new(("DISABLED".to_owned(), None)),
+            id_set_store: Arc::new(InMemoryIdSetStore::default()),
+            id_set_observation: Mutex::new(("ID_SET_DISABLED".to_owned(), None)),
+            local_lock_owner: self.local_lock_owner,
+            remote_lock_owner: self.remote_lock_owner.clone(),
+            runtime_telemetry: self.runtime_telemetry.clone(),
+            runtime_logger: self.runtime_logger.clone(),
+            last_fix_evidence: Mutex::default(),
         }
     }
 }
@@ -533,21 +592,21 @@ impl UserContext {
     }
 
     pub fn with_metadata(mut self, metadata: impl MetadataStore + 'static) -> Self {
-        self.metadata = Some(Box::new(metadata));
+        self.metadata = Some(Arc::new(metadata));
         self
     }
 
     pub fn set_metadata(&mut self, metadata: impl MetadataStore + 'static) {
-        self.metadata = Some(Box::new(metadata));
+        self.metadata = Some(Arc::new(metadata));
     }
 
     pub fn with_entity_registry(mut self, registry: impl EntityRegistry + 'static) -> Self {
-        self.entity_registry = Some(Box::new(registry));
+        self.entity_registry = Some(Arc::new(registry));
         self
     }
 
     pub fn set_entity_registry(&mut self, registry: impl EntityRegistry + 'static) {
-        self.entity_registry = Some(Box::new(registry));
+        self.entity_registry = Some(Arc::new(registry));
     }
 
     pub fn set_entity_graph_decoder_registry(
@@ -660,7 +719,7 @@ impl UserContext {
         mut self,
         registry: impl EntityDataServiceBehaviorRegistry + 'static,
     ) -> Self {
-        self.entity_data_service_behavior_registry = Some(Box::new(registry));
+        self.entity_data_service_behavior_registry = Some(Arc::new(registry));
         self
     }
 
@@ -668,16 +727,16 @@ impl UserContext {
         &mut self,
         registry: impl EntityDataServiceBehaviorRegistry + 'static,
     ) {
-        self.entity_data_service_behavior_registry = Some(Box::new(registry));
+        self.entity_data_service_behavior_registry = Some(Arc::new(registry));
     }
 
     pub fn with_request_policy(mut self, policy: impl RequestPolicy + 'static) -> Self {
-        self.request_policy = Some(Box::new(policy));
+        self.request_policy = Some(Arc::new(policy));
         self
     }
 
     pub fn set_request_policy(&mut self, policy: impl RequestPolicy + 'static) {
-        self.request_policy = Some(Box::new(policy));
+        self.request_policy = Some(Arc::new(policy));
     }
 
     pub fn clear_request_policy(&mut self) {
@@ -685,55 +744,55 @@ impl UserContext {
     }
 
     pub fn with_checker_registry(mut self, registry: impl CheckerRegistry + 'static) -> Self {
-        self.checker_registry = Some(Box::new(registry));
+        self.checker_registry = Some(Arc::new(registry));
         self
     }
 
     pub fn set_checker_registry(&mut self, registry: impl CheckerRegistry + 'static) {
-        self.checker_registry = Some(Box::new(registry));
+        self.checker_registry = Some(Arc::new(registry));
     }
 
     #[cfg(test)]
     pub(crate) fn with_event_sink(mut self, sink: impl RawAuditEventSink + 'static) -> Self {
-        self.event_sink = Some(Box::new(sink));
+        self.event_sink = Some(Arc::new(sink));
         self
     }
 
     pub(crate) fn set_event_sink(&mut self, sink: impl RawAuditEventSink + 'static) {
-        self.event_sink = Some(Box::new(sink));
+        self.event_sink = Some(Arc::new(sink));
     }
 
     pub fn with_custom_event_sink(
         mut self,
         sink: impl crate::SafeAuditEventSink + 'static,
     ) -> Self {
-        self.custom_event_sink = Some(Box::new(sink));
+        self.custom_event_sink = Some(Arc::new(sink));
         self
     }
 
     pub fn set_custom_event_sink(&mut self, sink: impl crate::SafeAuditEventSink + 'static) {
-        self.custom_event_sink = Some(Box::new(sink));
+        self.custom_event_sink = Some(Arc::new(sink));
     }
 
     pub fn with_internal_id_generator(
         mut self,
         generator: impl InternalIdGenerator + 'static,
     ) -> Self {
-        self.internal_id_generator = Some(Box::new(generator));
+        self.internal_id_generator = Some(Arc::new(generator));
         self
     }
 
     pub fn set_internal_id_generator(&mut self, generator: impl InternalIdGenerator + 'static) {
-        self.internal_id_generator = Some(Box::new(generator));
+        self.internal_id_generator = Some(Arc::new(generator));
     }
 
     pub fn with_business_clock(mut self, clock: impl BusinessClock + 'static) -> Self {
-        self.business_clock = Box::new(clock);
+        self.business_clock = Arc::new(clock);
         self
     }
 
     pub fn set_business_clock(&mut self, clock: impl BusinessClock + 'static) {
-        self.business_clock = Box::new(clock);
+        self.business_clock = Arc::new(clock);
     }
 
     pub fn business_time(&self) -> chrono::DateTime<chrono::Utc> {
@@ -748,7 +807,7 @@ impl UserContext {
     }
 
     pub fn with_schema_provider(mut self, provider: impl SchemaProvider + 'static) -> Self {
-        self.schema_provider = Some(Box::new(provider));
+        self.schema_provider = Some(Arc::new(provider));
         self
     }
 
@@ -764,7 +823,7 @@ impl UserContext {
     }
 
     pub fn set_schema_provider(&mut self, provider: impl SchemaProvider + 'static) {
-        self.schema_provider = Some(Box::new(provider));
+        self.schema_provider = Some(Arc::new(provider));
     }
 
     pub async fn ensure_schema(&self) -> Result<(), RuntimeError> {
@@ -960,7 +1019,7 @@ impl UserContext {
         T: Send + Sync + 'static,
     {
         self.typed_resources
-            .insert(TypeId::of::<T>(), Box::new(resource));
+            .insert(TypeId::of::<T>(), Arc::new(resource));
     }
 
     pub fn with_http_request_service(mut self, service: Arc<dyn HttpRequestService>) -> Self {
@@ -1263,7 +1322,7 @@ impl UserContext {
     where
         T: Send + Sync + 'static,
     {
-        self.named_resources.insert(name.into(), Box::new(resource));
+        self.named_resources.insert(name.into(), Arc::new(resource));
     }
 
     pub fn get_named_resource<T>(&self, name: &str) -> Option<&T>

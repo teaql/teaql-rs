@@ -712,7 +712,7 @@ where
     > {
         Box::pin(async move {
             let capabilities =
-                teaql_data_service::DataServiceExecutor::capabilities(self.data_service.executor);
+                teaql_data_service::DataServiceExecutor::capabilities(&self.data_service.executor);
             let parent_count = unique_relation_values(parent_keys, &plan.local_key).len();
             let selected_plan = relation_top_n_execution_plan(&capabilities, plan, parent_count);
             let scope = self.data_service.metadata.context.start_runtime_operation(
@@ -1375,7 +1375,7 @@ where
         }
 
         let capabilities =
-            teaql_data_service::DataServiceExecutor::capabilities(self.data_service.executor);
+            teaql_data_service::DataServiceExecutor::capabilities(&self.data_service.executor);
         let probe = relation_top_n_execution_plan(&capabilities, plan, ids.len())
             == RelationTopNExecutionPlan::BoundedProbes;
 

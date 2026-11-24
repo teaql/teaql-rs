@@ -10,6 +10,7 @@ use teaql_core::{
     UpdateCommand,
 };
 
+use crate::context::ContextExecutor;
 use crate::{ContextError, DataServiceError, UserContext};
 
 use super::{
@@ -34,7 +35,10 @@ impl UserContext {
             return Err(ContextError::MissingResource("metadata".to_owned()));
         }
 
-        let executor = self.require_resource::<E>()?;
+        let executor = match &self.bound_transaction {
+            Some(transaction) => transaction.executor::<E>()?,
+            None => ContextExecutor::Original(self.require_resource::<E>()?),
+        };
         Ok(ContextDataService {
             metadata: UserContextMetadata { context: self },
             executor,
@@ -174,8 +178,10 @@ where
         })
     }
 
-    fn data_service(&self) -> RuntimeDataService<'_, UserContextMetadata<'_>, E> {
-        let mut service = RuntimeDataService::new(&self.metadata, self.executor);
+    fn data_service(
+        &self,
+    ) -> RuntimeDataService<'_, UserContextMetadata<'_>, ContextExecutor<'_, E>> {
+        let mut service = RuntimeDataService::new(&self.metadata, &self.executor);
         service.mutation_intent = self.mutation_intent.clone();
         service.mutation_privacy = self.mutation_privacy.clone();
         service

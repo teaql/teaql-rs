@@ -3997,6 +3997,223 @@ mod tests {
     }
 
     #[test]
+    fn unacknowledged_commit_fences_every_attempted_graph_after_the_write_is_durable() {
+        unacknowledged_completion_fences_every_attempted_graph(true);
+    }
+
+    #[test]
+    fn unacknowledged_rollback_fences_every_attempted_graph_after_the_write_is_removed() {
+        unacknowledged_completion_fences_every_attempted_graph(false);
+    }
+
+    fn unacknowledged_completion_fences_every_attempted_graph(commit: bool) {
+        use teaql_data_service::{
+            DataServiceCapabilities, DataServiceExecutor, MutationExecutor, MutationRequest,
+            MutationResult, QueryExecutor, QueryRequest, QueryResult, QueryStream,
+            TransactionExecutor,
+        };
+        use teaql_sql::{
+            SqlTransaction, SqlTransactionTransport, SqlTransport, StreamingSqlTransport,
+        };
+
+        struct LoseAcknowledgement(SqliteMutationExecutor, bool);
+        struct Unacknowledged(SqliteTransaction, bool);
+
+        macro_rules! sqlite_transport {
+            ($type:ty) => {
+                impl SqlTransport for $type {
+                    type Error = MutationExecutorError;
+
+                    async fn fetch_all_compact_sql(
+                        &self,
+                        query: &CompiledQuery,
+                    ) -> Result<Vec<CompactRow>, Self::Error> {
+                        self.0.fetch_all_compact_sql(query).await
+                    }
+
+                    async fn execute_sql(&self, query: &CompiledQuery) -> Result<u64, Self::Error> {
+                        self.0.execute_sql(query).await
+                    }
+                }
+            };
+        }
+        sqlite_transport!(LoseAcknowledgement);
+        sqlite_transport!(Unacknowledged);
+
+        impl SqlTransactionTransport for LoseAcknowledgement {
+            type Tx<'a> = Unacknowledged;
+
+            async fn begin_sql(&self) -> Result<Self::Tx<'_>, Self::Error> {
+                self.0
+                    .begin_sql()
+                    .await
+                    .map(|native| Unacknowledged(native, self.1))
+            }
+        }
+
+        impl SqlTransaction for Unacknowledged {
+            type Error = MutationExecutorError;
+
+            async fn commit_sql(self) -> Result<(), Self::Error> {
+                self.0.commit_sql().await?;
+                if self.1 {
+                    return Err(MutationExecutorError::Bind(
+                        "private acknowledgement failure".to_owned(),
+                    ));
+                }
+                Ok(())
+            }
+
+            async fn rollback_sql(self) -> Result<(), Self::Error> {
+                self.0.rollback_sql().await?;
+                if !self.1 {
+                    return Err(MutationExecutorError::Bind(
+                        "private acknowledgement failure".to_owned(),
+                    ));
+                }
+                Ok(())
+            }
+        }
+
+        impl StreamingSqlTransport for Unacknowledged {
+            fn stream_sql(
+                &self,
+                query: CompiledQuery,
+                size: usize,
+            ) -> QueryStream<'_, Self::Error> {
+                self.0.stream_sql(query, size)
+            }
+        }
+
+        type Executor = teaql_sql::SqlDataServiceExecutor<
+            SqliteDialect,
+            LoseAcknowledgement,
+            InMemoryMetadataStore,
+        >;
+        struct Owner(Executor);
+        impl DataServiceExecutor for Owner {
+            type Error = <Executor as DataServiceExecutor>::Error;
+
+            fn capabilities(&self) -> DataServiceCapabilities {
+                self.0.capabilities()
+            }
+        }
+        impl QueryExecutor for Owner {
+            async fn query(&self, request: QueryRequest) -> Result<QueryResult, Self::Error> {
+                self.0.query(request).await
+            }
+        }
+        impl MutationExecutor for Owner {
+            async fn mutate(
+                &self,
+                request: MutationRequest,
+            ) -> Result<MutationResult, Self::Error> {
+                self.0.mutate(request).await
+            }
+        }
+        impl TransactionExecutor for Owner {
+            type Tx<'a> = <Executor as TransactionExecutor>::Tx<'a>;
+
+            async fn begin(&self) -> Result<Self::Tx<'_>, Self::Error> {
+                self.0.begin().await
+            }
+        }
+        impl teaql_runtime::ContextTransactionExecutor for Owner {
+            type OwnedTransaction = <Executor as TransactionExecutor>::Tx<'static>;
+
+            async fn begin_context_transaction(
+                &self,
+            ) -> Result<Self::OwnedTransaction, Self::Error> {
+                static METADATA: std::sync::LazyLock<InMemoryMetadataStore> =
+                    std::sync::LazyLock::new(|| {
+                        InMemoryMetadataStore::new()
+                            .with_entity(TransactionSchool::entity_descriptor().clone())
+                    });
+                Ok(self
+                    .begin()
+                    .await?
+                    .with_compile_metadata(&SqliteDialect, &*METADATA))
+            }
+        }
+
+        let connection =
+            SqliteMutationExecutor::from_connection(Connection::open_in_memory().unwrap());
+        connection.connection().lock().unwrap().execute_batch(
+            "CREATE TABLE transaction_school (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, name TEXT NOT NULL, memo TEXT NOT NULL, stable TEXT NOT NULL, optional_note TEXT, occurred_at TIMESTAMP NOT NULL)"
+        ).unwrap();
+        let metadata = InMemoryMetadataStore::new()
+            .with_entity(TransactionSchool::entity_descriptor().clone());
+        let mut context = UserContext::new().with_metadata(metadata.clone());
+        context.register_executor(Owner(teaql_sql::SqlDataServiceExecutor::new(
+            SqliteDialect,
+            LoseAcknowledgement(connection.clone(), commit),
+            metadata,
+        )));
+        context.register_context_transactions::<Owner>();
+        let (first, first_ledger) = TransactionSchool::new(1, "first");
+        let (second, second_ledger) = TransactionSchool::new(2, "second");
+
+        futures_executor::block_on(async {
+            let failure = context
+                .transaction(|view| {
+                    Box::pin(async move {
+                        assert!(matches!(
+                            view.entity_data_service::<Executor>("TransactionSchool"),
+                            Err(teaql_runtime::ContextError::TransactionRouteMismatch),
+                        ));
+                        teaql_runtime::save_audited_ledger_entity(
+                            first.audit_as("create first school"),
+                            view,
+                        )
+                        .await?;
+                        teaql_runtime::save_audited_ledger_entity(
+                            second.audit_as("create second school"),
+                            view,
+                        )
+                        .await?;
+                        if commit {
+                            Ok(())
+                        } else {
+                            Err(RuntimeError::Transaction(
+                                "cancel school registration".to_owned(),
+                            ))
+                        }
+                    })
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(failure, RuntimeError::TransactionOutcomeUnknown),
+                "{failure:?}"
+            );
+            assert!(!failure.to_string().contains("private acknowledgement"));
+            for (id, ledger) in [(1, first_ledger), (2, second_ledger)] {
+                let (mut retry, _) = TransactionSchool::new(id, "unsafe retry");
+                retry.__teaql_runtime_state = ledger;
+                assert!(matches!(
+                    teaql_runtime::save_audited_ledger_entity(
+                        retry.audit_as("retry school"),
+                        &context
+                    )
+                    .await,
+                    Err(RuntimeError::TransactionOutcomeUnknownReloadRequired),
+                ));
+            }
+        });
+        let sql = connection.connection();
+        let count: i64 = sql
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM transaction_school WHERE version = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, if commit { 2 } else { 0 });
+    }
+
+    #[test]
     fn typed_audited_saves_share_commit_and_rollback_boundary() {
         let executor = SqliteMutationExecutor::from_connection(
             Connection::open_in_memory().expect("open audited transaction fixture"),

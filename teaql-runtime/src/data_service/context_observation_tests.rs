@@ -100,7 +100,7 @@ async fn exercise(enabled: bool, fail: bool, broken_adapter: bool) {
     let executor = Executor;
     let service = ContextDataService {
         metadata: UserContextMetadata { context: &context },
-        executor: &executor,
+        executor: crate::context::ContextExecutor::Original(&executor),
         mutation_intent: None,
         mutation_privacy: None,
     };
@@ -168,7 +168,7 @@ async fn instrumented_box_does_not_contain_the_large_business_future() {
     let executor = Executor;
     let service = ContextDataService {
         metadata: UserContextMetadata { context: &context },
-        executor: &executor,
+        executor: crate::context::ContextExecutor::Original(&executor),
         mutation_intent: None,
         mutation_privacy: None,
     };
@@ -206,7 +206,7 @@ async fn unpolled_instrumented_work_is_dropped_without_starting_observation() {
     let executor = Executor;
     let service = ContextDataService {
         metadata: UserContextMetadata { context: &context },
-        executor: &executor,
+        executor: crate::context::ContextExecutor::Original(&executor),
         mutation_intent: None,
         mutation_privacy: None,
     };
@@ -241,7 +241,7 @@ async fn pending_instrumented_work_can_be_cancelled_without_finishing_observatio
     let executor = Executor;
     let service = ContextDataService {
         metadata: UserContextMetadata { context: &context },
-        executor: &executor,
+        executor: crate::context::ContextExecutor::Original(&executor),
         mutation_intent: None,
         mutation_privacy: None,
     };
@@ -280,7 +280,7 @@ async fn instrumented_observation_propagates_business_panic() {
     let executor = Executor;
     let service = ContextDataService {
         metadata: UserContextMetadata { context: &context },
-        executor: &executor,
+        executor: crate::context::ContextExecutor::Original(&executor),
         mutation_intent: None,
         mutation_privacy: None,
     };
