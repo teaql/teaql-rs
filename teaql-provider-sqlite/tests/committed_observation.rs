@@ -326,19 +326,13 @@ fn unauthorized_source_counts_and_absent_lag_is_not_zero() {
 fn dropped_callback_is_unresolved_not_confirmed_failure() {
     use std::{
         future::Future,
-        sync::Arc,
-        task::{Context, Poll, Wake, Waker},
+        task::{Context, Poll, Waker},
     };
-    struct Nop;
-    impl Wake for Nop {
-        fn wake(self: Arc<Self>) {}
-    }
     let (e, c, _o) = fixture();
     let mut future = Box::pin(e.publish_committed_batch(SOURCE, TARGET, MODEL, 1, |_| {
         std::future::pending::<Result<InboxOutcome, CommittedEventError>>()
     }));
-    let waker = Waker::from(Arc::new(Nop));
-    let mut cx = Context::from_waker(&waker);
+    let mut cx = Context::from_waker(Waker::noop());
     assert!(matches!(future.as_mut().poll(&mut cx), Poll::Pending));
     drop(future);
     block_on(async {
@@ -595,15 +589,16 @@ fn telemetry_is_safe_and_exporter_failures_are_fail_open() {
                 .backlog,
             2
         );
-        let recorded = events.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
-        assert!(
-            recorded[0]
-                .attributes
-                .contains_key("teaql.replication.retries")
-        );
-        assert!(!format!("{recorded:?}").contains("CANARY"));
-        drop(recorded);
+        {
+            let recorded = events.lock().unwrap();
+            assert_eq!(recorded.len(), 1);
+            assert!(
+                recorded[0]
+                    .attributes
+                    .contains_key("teaql.replication.retries")
+            );
+            assert!(!format!("{recorded:?}").contains("CANARY"));
+        }
         let c = c.with_runtime_telemetry(Arc::new(Telemetry {
             events,
             broken: true,

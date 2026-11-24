@@ -17,6 +17,8 @@ type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 const SOURCE: &str = "snapshot-example";
 const MODEL: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 const ID: i64 = 9_007_199_254_740_993;
+type SnapshotRow = (i64, i64, String, i64, i64, Option<String>);
+
 struct Fixture {
     context: UserContext,
     executor: SqliteMutationExecutor,
@@ -71,7 +73,7 @@ impl Fixture {
             )
             .await?)
     }
-    fn state(&self) -> Result<Vec<(i64, i64, String, i64, i64, Option<String>)>> {
+    fn state(&self) -> Result<Vec<SnapshotRow>> {
         let shared = self.executor.connection();
         let connection = shared.lock().unwrap();
         let mut statement = connection.prepare(

@@ -157,15 +157,15 @@ impl SqliteMutationExecutor {
         }
         let record = prepared.snapshot;
         let attempt = self
-            .journal_begin(
-                &source.source_runtime_id,
+            .journal_begin(crate::committed_observation::JournalDelivery {
+                source: &source.source_runtime_id,
                 target,
-                &source.model_hash,
-                "snapshot",
-                record.source_sequence,
-                &record.snapshot_id,
-                &record.payload_sha256,
-            )
+                model: &source.model_hash,
+                kind: "snapshot",
+                sequence: record.source_sequence,
+                identity: &record.snapshot_id,
+                payload: &record.payload_sha256,
+            })
             .await?;
         let ack = match deliver(record.clone()).await {
             Ok(receipt) => receipt,

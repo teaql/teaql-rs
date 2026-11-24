@@ -114,17 +114,30 @@ pub(crate) fn journal_ack(
     if db.execute("UPDATE teaql_event_delivery_journal SET last_outcome='ACKNOWLEDGED',last_reason='NONE',dead_letter=0,dead_reason='NONE' WHERE source_runtime_id=?1 AND target_id=?2 AND kind=?3 AND source_sequence=?4 AND attempts=?5 AND last_outcome='STARTED'",params![source,target,attempt.kind,attempt.sequence as i64,attempt.ordinal])?!=1{return Err(CommittedEventError::CursorConflict);}
     Ok(())
 }
+pub(crate) struct JournalDelivery<'a> {
+    pub source: &'a str,
+    pub target: &'a str,
+    pub model: &'a str,
+    pub kind: &'static str,
+    pub sequence: u64,
+    pub identity: &'a str,
+    pub payload: &'a str,
+}
+
 impl SqliteMutationExecutor {
     pub(crate) async fn journal_begin(
         &self,
-        source: &str,
-        target: &str,
-        model: &str,
-        kind: &'static str,
-        sequence: u64,
-        identity: &str,
-        payload: &str,
+        delivery: JournalDelivery<'_>,
     ) -> Result<Attempt, CommittedEventError> {
+        let JournalDelivery {
+            source,
+            target,
+            model,
+            kind,
+            sequence,
+            identity,
+            payload,
+        } = delivery;
         valid(source, target, model)?;
         let n = i64::try_from(sequence).map_err(|_| unavailable())?;
         if !["event", "snapshot"].contains(&kind)

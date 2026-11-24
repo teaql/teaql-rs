@@ -95,6 +95,15 @@ impl Certificates {
                 "server.csr",
             ],
         );
+        for (filename, address) in [("server.ext", "127.0.0.1"), ("wrong-host.ext", "127.0.0.2")] {
+            std::fs::write(
+                path.join(filename),
+                format!(
+                    "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:{address}\n"
+                ),
+            )
+            .unwrap();
+        }
         for i in 0..2 {
             openssl(
                 path,
@@ -104,8 +113,8 @@ impl Certificates {
                     "-days",
                     "1",
                     "-CAcreateserial",
-                    "-copy_extensions",
-                    "copy",
+                    "-extfile",
+                    "server.ext",
                     "-in",
                     "server.csr",
                     "-CA",
@@ -140,8 +149,8 @@ impl Certificates {
                 "-days",
                 "1",
                 "-CAcreateserial",
-                "-copy_extensions",
-                "copy",
+                "-extfile",
+                "wrong-host.ext",
                 "-in",
                 "wrong-host.csr",
                 "-CA",
@@ -221,8 +230,13 @@ fn serve(socket: TcpStream, config: &Arc<rustls::ServerConfig>, count: &AtomicUs
     let mut reader = BufReader::new(&mut stream);
     let mut line = String::new();
     // Invalid/untrusted/hostname-mismatched clients cannot enter HTTP.
-    if reader.read_line(&mut line).is_err() || line.is_empty() {
-        return;
+    match reader.read_line(&mut line) {
+        Ok(0) => return,
+        Err(error) => {
+            eprintln!("Loopback TLS rejected before HTTP: {error}");
+            return;
+        }
+        Ok(_) => {}
     }
     assert!(line.starts_with("GET /status HTTP/1.1"));
     loop {

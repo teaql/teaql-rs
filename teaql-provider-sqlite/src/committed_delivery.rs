@@ -124,15 +124,15 @@ impl SqliteMutationExecutor {
             }
             let sequence = record.source_sequence;
             let attempt = self
-                .journal_begin(
-                    source_runtime_id,
-                    target_id,
-                    model_hash,
-                    "event",
+                .journal_begin(crate::committed_observation::JournalDelivery {
+                    source: source_runtime_id,
+                    target: target_id,
+                    model: model_hash,
+                    kind: "event",
                     sequence,
-                    &record.change_set_id,
-                    &record.payload_sha256,
-                )
+                    identity: &record.change_set_id,
+                    payload: &record.payload_sha256,
+                })
                 .await?;
             let outcome = match deliver(record).await {
                 Ok(outcome) => outcome,
