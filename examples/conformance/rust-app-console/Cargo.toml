@@ -12,6 +12,6 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 runtime_example_conformance_service_core = { package = "runtime-example-conformance-service-core", path = "../rust-lib-core/lib" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-teaql-core = "=8.2.0"
-teaql-runtime = "=8.2.0"
+teaql-core = "=8.3.0"
+teaql-runtime = "=8.3.0"
 chrono = "0.4"
