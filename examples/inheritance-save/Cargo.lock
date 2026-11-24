@@ -1103,10 +1103,13 @@ dependencies = [
  "encoding_rs",
  "futures-core",
  "futures-util",
+ "hmac",
  "num-bigint",
  "rusqlite",
  "rust_decimal",
+ "serde",
  "serde_json",
+ "sha2",
  "teaql-core",
  "teaql-data-service",
  "teaql-runtime",
@@ -1138,6 +1141,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -1306,6 +1310,17 @@ name = "utf_types"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
+
+[[package]]
+name = "uuid"
+version = "1.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
+dependencies = [
+ "getrandom 0.4.3",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "vcpkg"
